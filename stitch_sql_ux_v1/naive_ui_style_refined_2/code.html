@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-tertiary": "#ffffff",
+                        "surface": "#f9f9ff",
+                        "tertiary": "#954500",
+                        "on-tertiary-fixed-variant": "#753400",
+                        "inverse-on-surface": "#eef0fa",
+                        "on-surface": "#181c22",
+                        "on-background": "#181c22",
+                        "on-secondary-fixed": "#001c38",
+                        "surface-container-low": "#f1f3fd",
+                        "tertiary-container": "#bb5800",
+                        "secondary-container": "#bcd6fe",
+                        "primary-fixed-dim": "#a9c7ff",
+                        "surface-dim": "#d8dae3",
+                        "on-tertiary-fixed": "#321300",
+                        "surface-container-high": "#e6e8f1",
+                        "on-primary-fixed-variant": "#00468c",
+                        "secondary": "#466082",
+                        "on-secondary": "#ffffff",
+                        "primary-container": "#0073e0",
+                        "outline-variant": "#c1c6d6",
+                        "on-secondary-container": "#435d7f",
+                        "surface-variant": "#e0e2ec",
+                        "on-primary-container": "#fefcff",
+                        "secondary-fixed-dim": "#aec8f0",
+                        "primary-fixed": "#d6e3ff",
+                        "tertiary-fixed-dim": "#ffb68b",
+                        "outline": "#717785",
+                        "surface-container-lowest": "#ffffff",
+                        "on-secondary-fixed-variant": "#2e4869",
+                        "surface-container": "#ecedf7",
+                        "on-surface-variant": "#414753",
+                        "surface-tint": "#005db7",
+                        "surface-bright": "#f9f9ff",
+                        "on-primary": "#ffffff",
+                        "primary": "#005bb3",
+                        "on-error-container": "#93000a",
+                        "inverse-surface": "#2d3038",
+                        "secondary-fixed": "#d3e4ff",
+                        "error-container": "#ffdad6",
+                        "on-tertiary-container": "#fffbff",
+                        "on-primary-fixed": "#001b3d",
+                        "surface-container-highest": "#e0e2ec",
+                        "tertiary-fixed": "#ffdbc8",
+                        "background": "#f9f9ff",
+                        "on-error": "#ffffff",
+                        "inverse-primary": "#a9c7ff",
+                        "error": "#ba1a1a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "gutter": "12px",
+                        "sm": "8px",
+                        "lg": "24px",
+                        "md": "16px",
+                        "unit": "4px",
+                        "xl": "32px",
+                        "xs": "4px",
+                        "panel-padding": "20px"
+                    },
+                    "fontFamily": {
+                        "h1": ["Inter"],
+                        "h2": ["Inter"],
+                        "label-sm": ["Inter"],
+                        "code": ["JetBrains Mono", "monospace"],
+                        "body": ["Inter"]
+                    },
+                    "fontSize": {
+                        "h1": ["20px", {"lineHeight": "28px", "fontWeight": "600"}],
+                        "h2": ["16px", {"lineHeight": "24px", "fontWeight": "600"}],
+                        "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+                        "code": ["13px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "body": ["14px", {"lineHeight": "22px", "fontWeight": "400"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+            font-size: 20px;
+        }
+        body {
+            background-color: #fbfcfd;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #efeff5;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="font-body text-body text-on-surface">
+<div class="flex h-screen overflow-hidden">
+<!-- SideNavBar - JSON Data Implementation -->
+<aside class="flex flex-col h-full py-5 px-4 gap-y-2 h-screen w-64 border-r border-[#efeff5] bg-[#fbfcfd] dark:bg-slate-950 font-['Inter'] text-sm antialiased">
+<div class="flex items-center gap-3 px-2 mb-8">
+<div class="w-8 h-8 bg-[#2080f0] rounded-lg flex items-center justify-center text-white">
+<span class="material-symbols-outlined" data-icon="database">database</span>
+</div>
+<div>
+<h1 class="text-lg font-semibold text-slate-900 dark:text-slate-50 leading-tight">SQL AI</h1>
+<p class="text-[10px] text-slate-400 font-medium tracking-wider">v1.2.0</p>
+</div>
+</div>
+<nav class="flex-1 space-y-1">
+<div class="flex items-center px-3 py-2.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors duration-200 cursor-pointer active:opacity-80 transition-opacity">
+<span class="material-symbols-outlined mr-3" data-icon="database">database</span>
+<span>Workbench</span>
+</div>
+<div class="flex items-center px-3 py-2.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors duration-200 cursor-pointer active:opacity-80 transition-opacity">
+<span class="material-symbols-outlined mr-3" data-icon="storage">storage</span>
+<span>Data Sources</span>
+</div>
+<!-- ACTIVE STATE: Audit Logs -->
+<div class="relative text-[#2080f0] dark:text-blue-400 before:content-[''] before:absolute before:left-[-16px] before:top-1/2 before:-translate-y-1/2 before:w-[3px] before:h-6 before:bg-[#2080f0] before:rounded-r-full flex items-center px-3 py-2.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 cursor-pointer active:opacity-80 transition-opacity">
+<span class="material-symbols-outlined mr-3" data-icon="history">history</span>
+<span class="font-medium">Audit Logs</span>
+</div>
+<div class="flex items-center px-3 py-2.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors duration-200 cursor-pointer active:opacity-80 transition-opacity">
+<span class="material-symbols-outlined mr-3" data-icon="settings">settings</span>
+<span>Settings</span>
+</div>
+</nav>
+<div class="pt-4 border-t border-[#efeff5] dark:border-slate-800">
+<div class="flex items-center gap-3 px-3 py-2">
+<img alt="User Profile" class="w-8 h-8 rounded-full border border-outline-variant" data-alt="close-up portrait of a professional woman with a friendly expression in a modern office setting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBWquDBHfMBKY2B0mVRbuZzuKXp9C7u-W03dbZVTelVLj66OJosGNM4gp85OnFBzfxCX51fCqEfPOwGoglUcUEcCjE6uF7a8_8x5Z25IsLEJvZHIE-9gvByODhuq4yJkl2AQdtoIwGJH5nTdmu5VjqJyKNeV6LAKmAzXXMruED2PLa6GQusmZ3agwCBAnaEWZ9gzeKAbBuqWD7ft8oTi1PcftkHezbgkpBKKw1oVAyTk3QgRUtM-OSw_xbb4PzeYB3JC6xDcrz-vFI8"/>
+<div class="flex flex-col">
+<span class="font-medium text-slate-900 dark:text-slate-50 text-xs">管理员</span>
+<span class="text-[10px] text-slate-400">admin@sqlai.io</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="flex-1 flex flex-col overflow-hidden">
+<!-- Audit Log Header Area -->
+<div class="h-16 px-6 border-b border-[#efeff5] flex items-center justify-between bg-white">
+<div class="flex items-center gap-4">
+<h2 class="font-h1 text-h1 text-on-surface">审计日志</h2>
+<span class="px-2 py-0.5 bg-surface-container text-on-surface-variant text-[11px] font-bold rounded-sm border border-outline-variant">TOTAL 2,481</span>
+</div>
+<div class="flex items-center gap-3">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline" data-icon="search">search</span>
+<input class="pl-10 pr-4 py-1.5 bg-surface border border-outline-variant rounded-lg text-body focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all w-64" placeholder="搜索 SQL 或 用户..." type="text"/>
+</div>
+<button class="flex items-center gap-2 px-3 py-1.5 border border-outline-variant rounded-lg text-body hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined" data-icon="filter_list">filter_list</span>
+<span>筛选</span>
+</button>
+<button class="flex items-center gap-2 px-3 py-1.5 border border-outline-variant rounded-lg text-body hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined" data-icon="download">download</span>
+<span>导出</span>
+</button>
+</div>
+</div>
+<!-- Content Split View -->
+<div class="flex-1 flex overflow-hidden">
+<!-- Table Section -->
+<div class="flex-1 overflow-auto custom-scrollbar bg-[#fbfcfd]">
+<table class="w-full border-collapse text-left">
+<thead class="sticky top-0 z-10 border-b border-[#efeff5] bg-white">
+<tr>
+<th class="py-4 font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider px-8">时间戳</th>
+<th class="py-4 font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider px-8">状态</th>
+<th class="py-4 font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider px-8">SQL 代码片段</th>
+<th class="py-4 font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider text-right px-8">延迟 (ms)</th>
+<th class="py-4 font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider px-8">用户</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-[#f0f0f5]">
+<!-- Row 1 (Selected/Active) -->
+<tr class="bg-white cursor-pointer transition-colors bg-blue-50/30">
+<td class="py-4 font-code text-code text-on-surface-variant px-8">2023-11-24 14:20:05</td>
+<td class="py-4 px-8"><span class="inline-flex items-center px-2 py-0.5 rounded-sm bg-green-50 text-green-600 text-[12px] font-medium border border-green-200/50">成功</span></td>
+<td class="py-4 font-code text-code text-on-surface truncate max-w-[300px] px-8">SELECT * FROM users JOIN orders ON users.id = orders.user_id...</td>
+<td class="py-4 font-code text-code text-on-surface-variant text-right px-8">124</td>
+<td class="py-4 flex items-center gap-2 px-8">
+<div class="w-6 h-6 rounded-full bg-secondary-container flex items-center justify-center text-[10px] text-on-secondary-container font-bold">JD</div>
+<span class="text-body">John Doe</span>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-slate-50 transition-colors cursor-pointer bg-[#fbfcfd]">
+<td class="py-4 font-code text-code text-on-surface-variant px-8">2023-11-24 14:18:22</td>
+<td class="py-4 px-8"><span class="inline-flex items-center px-2 py-0.5 rounded-sm bg-red-50 text-red-600 text-[12px] font-medium border border-red-200/50">语法错误</span></td>
+<td class="py-4 font-code text-code text-on-surface truncate max-w-[300px] px-8">INSERT INTO logging_records (event, timestamp) VALUES ('login', NOW()</td>
+<td class="py-4 font-code text-code text-on-surface-variant text-right px-8">--</td>
+<td class="py-4 flex items-center gap-2 px-8">
+<div class="w-6 h-6 rounded-full bg-tertiary-container flex items-center justify-center text-[10px] text-on-tertiary-container font-bold">ZH</div>
+<span class="text-body">Zhang Hao</span>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-slate-50 transition-colors cursor-pointer bg-white">
+<td class="py-4 font-code text-code text-on-surface-variant px-8">2023-11-24 14:15:10</td>
+<td class="py-4 px-8"><span class="inline-flex items-center px-2 py-0.5 rounded-sm bg-green-50 text-green-600 text-[12px] font-medium border border-green-200/50">成功</span></td>
+<td class="py-4 font-code text-code text-on-surface truncate max-w-[300px] px-8">UPDATE products SET stock = stock - 1 WHERE sku = 'PROD-001'</td>
+<td class="py-4 font-code text-code text-on-surface-variant text-right px-8">45</td>
+<td class="py-4 flex items-center gap-2 px-8">
+<div class="w-6 h-6 rounded-full bg-primary-container flex items-center justify-center text-[10px] text-white font-bold">LI</div>
+<span class="text-body">Li Wei</span>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-slate-50 transition-colors cursor-pointer bg-[#fbfcfd]">
+<td class="py-4 font-code text-code text-on-surface-variant px-8">2023-11-24 14:12:44</td>
+<td class="py-4 px-8"><span class="inline-flex items-center px-2 py-0.5 rounded-sm bg-orange-50 text-orange-600 text-[12px] font-medium border border-orange-200/50">超时</span></td>
+<td class="py-4 font-code text-code text-on-surface truncate max-w-[300px] px-8">SELECT COUNT(*) FROM very_large_audit_table GROUP BY user_id</td>
+<td class="py-4 font-code text-code text-on-surface-variant text-right px-8">30,000</td>
+<td class="py-4 flex items-center gap-2 px-8">
+<div class="w-6 h-6 rounded-full bg-secondary-container flex items-center justify-center text-[10px] text-on-secondary-container font-bold">JD</div>
+<span class="text-body">John Doe</span>
+</td>
+</tr>
+<!-- Repeating for density -->
+<tr class="hover:bg-slate-50 transition-colors cursor-pointer bg-white">
+<td class="py-4 font-code text-code text-on-surface-variant px-8">2023-11-24 14:10:02</td>
+<td class="py-4 px-8"><span class="inline-flex items-center px-2 py-0.5 rounded-sm bg-green-50 text-green-600 text-[12px] font-medium border border-green-200/50">成功</span></td>
+<td class="py-4 font-code text-code text-on-surface truncate max-w-[300px] px-8">SHOW TABLES LIKE '%config%'</td>
+<td class="py-4 font-code text-code text-on-surface-variant text-right px-8">12</td>
+<td class="py-4 flex items-center gap-2 px-8">
+<div class="w-6 h-6 rounded-full bg-outline-variant flex items-center justify-center text-[10px] text-on-surface font-bold">SY</div>
+<span class="text-body">System</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Detail View Panel (Right side) -->
+<div class="w-[450px] border-l border-[#efeff5] bg-white flex flex-col shadow-[-4px_0_12px_rgba(0,0,0,0.02)] z-20">
+<div class="p-6 border-b border-[#efeff5] flex items-center justify-between">
+<h3 class="font-h2 text-h2 text-on-surface">执行详情</h3>
+<button class="text-outline hover:text-on-surface">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto space-y-8 custom-scrollbar p-8">
+<!-- Summary Metrics -->
+<div class="grid grid-cols-2 gap-4">
+<div class="p-4 rounded-xl bg-surface-container-low border border-outline-variant">
+<p class="text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-wider">执行耗时</p>
+<div class="flex items-end gap-1">
+<span class="text-xl font-bold text-primary">124</span>
+<span class="text-xs text-on-surface-variant mb-1">ms</span>
+</div>
+</div>
+<div class="p-4 rounded-xl bg-surface-container-low border border-outline-variant">
+<p class="text-[10px] uppercase font-bold text-on-surface-variant mb-1 tracking-wider">影响行数</p>
+<div class="flex items-end gap-1">
+<span class="text-xl font-bold text-primary">1,240</span>
+<span class="text-xs text-on-surface-variant mb-1">rows</span>
+</div>
+</div>
+</div>
+<!-- Info List -->
+<div class="space-y-4">
+<div class="flex justify-between items-center border-b border-[#efeff5]">
+<span class="text-on-surface-variant font-medium">请求 ID</span>
+<span class="font-code text-xs text-on-surface">req_9281_0xAF4</span>
+</div>
+<div class="flex justify-between items-center border-b border-[#efeff5]">
+<span class="text-on-surface-variant font-medium">数据库</span>
+<span class="text-body text-on-surface">production_v2</span>
+</div>
+<div class="flex justify-between items-center border-b border-[#efeff5]">
+<span class="text-on-surface-variant font-medium">连接模式</span>
+<span class="text-body text-on-surface">ReadOnly Cluster</span>
+</div>
+<div class="flex justify-between items-center border-b border-[#efeff5]">
+<span class="text-on-surface-variant font-medium">源 IP</span>
+<span class="font-code text-xs text-on-surface">192.168.1.104</span>
+</div>
+</div>
+<!-- SQL Statement Box -->
+<div class="space-y-3">
+<div class="flex items-center justify-between">
+<h4 class="font-h2 text-[14px] text-on-surface">SQL 完整语句</h4>
+<button class="flex items-center gap-1 text-[12px] text-primary hover:underline">
+<span class="material-symbols-outlined text-[16px]" data-icon="content_copy">content_copy</span>
+                                    复制
+                                </button>
+</div>
+<div class="p-4 bg-slate-900 rounded-xl font-code text-code text-slate-300 overflow-x-auto leading-relaxed border border-slate-800 shadow-inner">
+<span class="text-blue-400">SELECT</span> * <span class="text-blue-400">FROM</span> users <br/>
+<span class="text-blue-400">JOIN</span> orders <span class="text-blue-400">ON</span> users.id = orders.user_id <br/>
+<span class="text-blue-400">WHERE</span> users.active = <span class="text-emerald-400">TRUE</span> <br/>
+<span class="text-blue-400">AND</span> orders.created_at &gt; <span class="text-emerald-400">'2023-01-01'</span> <br/>
+<span class="text-blue-400">ORDER BY</span> orders.total <span class="text-blue-400">DESC</span> <br/>
+<span class="text-blue-400">LIMIT</span> <span class="text-amber-400">50</span>;
+                            </div>
+</div>
+<!-- Visualization / Timeline (Decorative) -->
+</div>
+<!-- Footer Action -->
+<div class="p-6 border-t border-[#efeff5] bg-[#fbfcfd]">
+<button class="w-full py-2.5 bg-primary text-white font-medium rounded-lg hover:bg-primary-container transition-colors shadow-sm">
+                            重新运行此 SQL
+                        </button>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>
