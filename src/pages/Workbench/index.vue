@@ -6,7 +6,7 @@ import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'
 import HermesProcess from './components/HermesProcess.vue'
 import type { HermesStep } from './components/HermesProcess.vue'
-import { compactResultForStorage, formatClarification } from './workbenchState'
+import { appendHermesClarification, compactResultForStorage, formatClarification, startNextProcessRound } from './workbenchState'
 import { API_BASE_URL, get, post } from '../../services/request'
 
 const STORAGE_KEY = 'workbench_state'
@@ -94,7 +94,7 @@ const saveState = () => {
   }
 }
 
-watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, hasExecutedSql, messageHistory, currentAuditLogId], saveState, { deep: true })
+watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, hasExecutedSql, messageHistory, currentAuditLogId, hermesSteps], saveState, { deep: true })
 
 watch(generatedSql, async (newSql) => {
   if (!newSql) {
@@ -180,6 +180,11 @@ const startProgressiveRender = (fullSql: string) => {
   renderRafId = requestAnimationFrame(render)
 }
 
+const processActorForPhase = (phase: string): HermesStep['actor'] => {
+  if (phase === 'searching_notes' || phase === 'warning') return 'system'
+  return 'hermes'
+}
+
 // ---------------------------------------------------------------------------
 // SSE 流式问答
 // ---------------------------------------------------------------------------
@@ -198,7 +203,7 @@ const handleQuerySubmit = (question: string) => {
   sqlExplanation.value = ''
   queryResult.value = null
   hasExecutedSql.value = false
-  hermesSteps.value = []
+  hermesSteps.value = startNextProcessRound(hermesSteps.value, question) as HermesStep[]
   currentAuditLogId.value = null
 
   // 将当前问题存入历史记录 (只保留最近 10 条以防 Prompt 太长)
@@ -233,6 +238,7 @@ const handleQuerySubmit = (question: string) => {
     const data = JSON.parse(e.data)
     hermesSteps.value.push({
       phase: data.phase,
+      actor: processActorForPhase(data.phase),
       message: data.message,
       timestamp: Date.now(),
     })
@@ -258,7 +264,30 @@ const handleQuerySubmit = (question: string) => {
     } else {
       hermesSteps.value.push({
         phase: 'note_hit',
+        actor: 'system',
         message: `命中笔记: ${data.note}`,
+        detail: data.comment || undefined,
+        timestamp: Date.now(),
+      })
+    }
+  })
+
+  source.addEventListener('note_used', (e: MessageEvent) => {
+    const data = JSON.parse(e.data)
+    const lastStep = hermesSteps.value[hermesSteps.value.length - 1]
+    
+    if (lastStep && lastStep.phase === 'note_used') {
+      lastStep.message += `, ${data.note}`
+      if (data.comment) {
+        lastStep.detail = lastStep.detail 
+          ? `${lastStep.detail}; ${data.comment}` 
+          : data.comment
+      }
+    } else {
+      hermesSteps.value.push({
+        phase: 'note_used',
+        actor: 'hermes',
+        message: `参考笔记: ${data.note}`,
         detail: data.comment || undefined,
         timestamp: Date.now(),
       })
@@ -283,6 +312,7 @@ const handleQuerySubmit = (question: string) => {
       messageHistory.value.push({ role: 'assistant', content: data.explanation || '已生成 SQL 候选语句。' })
     } else if (data.type === 'clarification') {
       clarification.value = data.message
+      hermesSteps.value = appendHermesClarification(hermesSteps.value, data.message) as HermesStep[]
       message.info('AI 需要您进一步澄清问题')
       
       // 存入历史
@@ -306,6 +336,7 @@ const handleQuerySubmit = (question: string) => {
         message.error(data.message)
         hermesSteps.value.push({
           phase: 'failed',
+          actor: 'hermes',
           message: data.message,
           timestamp: Date.now(),
         })
@@ -398,6 +429,7 @@ const handleExecuteSql = async () => {
         :steps="hermesSteps"
         :loading="loading"
         :history-count="messageHistory.length"
+        :active-clarification="formatClarification(clarification)"
         @reset="handleResetContext"
       />
 

@@ -122,7 +122,7 @@ const getColumnLabel = (col: string) => {
   background: #ffffff;
   border: 1px solid #efeff5;
   border-radius: 8px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .restore-warning {

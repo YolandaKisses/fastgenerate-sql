@@ -5,6 +5,7 @@ export interface HermesStep {
   phase: string;
   message: string;
   detail?: string;
+  actor?: "user" | "system" | "hermes";
   timestamp: number;
 }
 
@@ -12,6 +13,7 @@ const props = defineProps<{
   steps: HermesStep[];
   loading: boolean;
   historyCount: number;
+  activeClarification?: string;
 }>();
 
 defineEmits(["reset"]);
@@ -45,15 +47,64 @@ onUnmounted(() => stopTimer());
 
 const phaseIcon = (phase: string) => {
   const map: Record<string, string> = {
+    user_question: "👤",
     started: "🚀",
     searching_notes: "🔍",
     note_hit: "📄",
+    note_used: "📚",
+    clarification: "💬",
     calling_hermes: "🤖",
-    generating_sql: "⏳",
     completed: "✅",
     failed: "❌",
   };
   return map[phase] || "•";
+};
+
+const stepActor = (step: HermesStep) => {
+  if (step.actor) return step.actor;
+  return step.phase === "user_question" ? "user" : "hermes";
+};
+
+const isUserStep = (step: HermesStep) => stepActor(step) === "user";
+
+const actorLabel = (step: HermesStep) => {
+  if (isUserStep(step)) return "我";
+  return stepActor(step) === "system" ? "系统" : "Hermes";
+};
+
+const actorClass = (step: HermesStep) => {
+  if (stepActor(step) === "system") return "actor-system";
+  return isUserStep(step) ? "actor-user" : "actor-hermes";
+};
+
+const dotActorClass = (step: HermesStep) => {
+  if (stepActor(step) === "system") return "dot-system";
+  return isUserStep(step) ? "dot-user" : "dot-hermes";
+};
+
+const shouldShowLine = (idx: number) => {
+  const step = props.steps[idx];
+  const nextStep = props.steps[idx + 1];
+  if (!step || isUserStep(step)) return false;
+  if (nextStep && isUserStep(nextStep)) return false;
+  return idx < props.steps.length - 1 || props.loading;
+};
+
+const detailLines = (detail: string) => {
+  return detail.split("\n").filter((line) => line.trim().length > 0);
+};
+
+const stepDetailLines = (step: HermesStep) => {
+  return step.detail ? detailLines(step.detail) : [];
+};
+
+const shouldShowDetail = (step: HermesStep, idx: number) => {
+  if (!step.detail) return false;
+  const isActiveClarification =
+    step.phase === "clarification" &&
+    idx === props.steps.length - 1 &&
+    step.detail === props.activeClarification;
+  return !isActiveClarification;
 };
 
 const phaseClass = (phase: string) => {
@@ -75,8 +126,12 @@ const isActive = computed(() => props.steps.length > 0);
   <div v-if="isActive" class="hermes-process">
     <div class="process-header">
       <div class="process-title">
-        <span class="title-icon">⚡</span>
-        <span>Hermes Process</span>
+        <div class="title-svg-icon">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span>我与 Hermes Process</span>
       </div>
       <div class="process-actions">
         <div v-if="historyCount > 0" class="context-pill">
@@ -101,26 +156,53 @@ const isActive = computed(() => props.steps.length > 0);
           class="timeline-step"
           :class="[
             phaseClass(step.phase),
+            { 'is-user-step': isUserStep(step) },
             { 'is-last': idx === steps.length - 1 && loading },
           ]"
         >
           <div class="step-connector">
-            <span class="step-dot" :class="phaseClass(step.phase)">
+            <span
+              class="step-dot"
+              :class="[phaseClass(step.phase), dotActorClass(step)]"
+            >
               {{ phaseIcon(step.phase) }}
             </span>
-            <div
-              v-if="idx < steps.length - 1 || loading"
-              class="step-line"
-            ></div>
+            <div v-if="shouldShowLine(idx)" class="step-line"></div>
           </div>
           <div
             class="step-content"
             :class="{ 'is-note-hit': step.phase === 'note_hit' }"
           >
-            <span class="step-message">{{ step.message }}</span>
-            <span v-if="step.detail" class="step-detail">{{
-              step.detail
-            }}</span>
+            <div class="step-main">
+              <span class="actor-badge" :class="actorClass(step)">
+                <span class="badge-icon">
+                  <svg v-if="isUserStep(step)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                  <svg v-else-if="stepActor(step) === 'system'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <path d="M20 20l-4-4"></path>
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+                    <circle cx="12" cy="5" r="2"></circle>
+                    <path d="M12 7v4"></path>
+                  </svg>
+                </span>
+                {{ actorLabel(step) }}
+              </span>
+              <span class="step-message">{{ step.message }}</span>
+            </div>
+            <span v-if="shouldShowDetail(step, idx)" class="step-detail">
+              <span
+                v-for="(line, lineIdx) in stepDetailLines(step)"
+                :key="lineIdx"
+                class="step-detail-line"
+              >
+                {{ line }}
+              </span>
+            </span>
           </div>
         </div>
       </TransitionGroup>
@@ -133,7 +215,19 @@ const isActive = computed(() => props.steps.length > 0);
           </span>
         </div>
         <div class="step-content">
-          <span class="step-message step-message-loading">处理中...</span>
+          <div class="step-main">
+            <span class="actor-badge actor-hermes">
+              <span class="badge-icon pulse-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+                  <circle cx="12" cy="5" r="2"></circle>
+                  <path d="M12 7v4"></path>
+                </svg>
+              </span>
+              Hermes
+            </span>
+            <span class="step-message step-message-loading">处理中...</span>
+          </div>
         </div>
       </div>
     </div>
@@ -160,14 +254,26 @@ const isActive = computed(() => props.steps.length > 0);
 .process-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 14px;
   font-weight: 600;
   color: #3b2e8a;
 }
 
-.title-icon {
-  font-size: 16px;
+.title-svg-icon {
+  width: 18px;
+  height: 18px;
+  color: #6b5fbf;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: svg-pulse 2s ease-in-out infinite;
+}
+
+@keyframes svg-pulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; filter: drop-shadow(0 0 4px rgba(107, 95, 191, 0.4)); }
+  100% { transform: scale(1); opacity: 0.8; }
 }
 
 .process-actions {
@@ -261,6 +367,40 @@ const isActive = computed(() => props.steps.length > 0);
   min-height: 32px;
 }
 
+.timeline-step.is-user-step {
+  justify-content: flex-end;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+.timeline-step.is-user-step .step-connector {
+  display: none;
+}
+
+.timeline-step.is-user-step .step-content {
+  align-items: flex-end;
+  padding: 4px 0;
+}
+
+.timeline-step.is-user-step .step-main {
+  flex-direction: row-reverse;
+  gap: 10px;
+}
+
+/* 统一样式：去掉背景、边框和阴影，仅保留纯净文字和 Badge */
+.timeline-step.is-user-step .step-main,
+.timeline-step .step-main {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.timeline-step.is-user-step .step-message {
+  text-align: right;
+  color: #174ea6; /* 用户文字用深蓝色区分，但保持无气泡 */
+}
+
 .step-connector {
   display: flex;
   flex-direction: column;
@@ -286,6 +426,24 @@ const isActive = computed(() => props.steps.length > 0);
 .step-dot.step-success {
   border-color: #22c55e;
   background: #f0fdf4;
+}
+
+.step-dot.dot-user {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.step-dot.dot-hermes {
+  border-color: #dcd8ff;
+}
+
+.step-dot.dot-system {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.actor-user + .step-message {
+  color: #174ea6;
 }
 
 .step-dot.step-error {
@@ -317,6 +475,58 @@ const isActive = computed(() => props.steps.length > 0);
   flex-wrap: wrap;
 }
 
+.step-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.actor-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 22px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.badge-icon {
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pulse-icon {
+  animation: svg-pulse 1.5s ease-in-out infinite;
+}
+
+.actor-user {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+
+.actor-hermes {
+  color: #5c53a3;
+  background: #f1efff;
+  border: 1px solid #dcd8ff;
+}
+
+.actor-system {
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+}
+
 .step-message {
   font-size: 13px;
   font-weight: 500;
@@ -330,9 +540,13 @@ const isActive = computed(() => props.steps.length > 0);
 }
 
 .step-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
   font-size: 12px;
   color: #8c8ab0;
   line-height: 16px;
+  margin-top: 5px;
 }
 
 .step-content.is-note-hit .step-detail {

@@ -116,14 +116,8 @@ def build_table_lookup(session: Session, datasource_id: int) -> dict[str, Schema
     return lookup
 
 
-def note_hit_payload(note_name: str, table_lookup: dict[str, SchemaTable]) -> dict:
-    table = table_lookup.get(note_name) or table_lookup.get(sanitize_path_segment(note_name))
-    if table:
-        return {
-            "note": table.name,
-            "comment": table.original_comment or table.supplementary_comment or "",
-        }
-    return {"note": note_name, "comment": ""}
+def note_used_payload(note_name: str) -> dict:
+    return {"note": normalize_note_name(note_name), "comment": ""}
 
 
 def detect_ambiguity(question: str, candidates: list[dict]) -> str | None:
@@ -147,6 +141,22 @@ def detect_ambiguity(question: str, candidates: list[dict]) -> str | None:
         return "当前问题可能命中多个表。请补充具体业务对象、时间范围或你想统计的指标。"
 
     return None
+
+
+def is_clarification_choice(question: str, history: list[dict] | None = None) -> bool:
+    normalized = question.strip().upper()
+    if not re.fullmatch(r"[A-D][\).、：:]?", normalized):
+        return False
+    if not history:
+        return False
+
+    for msg in reversed(history):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if re.search(r"(?:^|\n|\s)[A-D][\).、：:]", content, flags=re.I):
+            return True
+    return False
 
 
 def build_schema_context(candidates: list[dict]) -> str:
@@ -341,17 +351,6 @@ def ask_llm(session: Session, datasource_id: int, question: str, history: list[d
     if not knowledge_dir.exists():
         return {"type": "error", "message": "当前数据源还没有可用知识库，请先完成同步到知识库后再问答"}
 
-    candidates = retrieve_relevant_schema(session, datasource_id, question)
-    ambiguity_message = detect_ambiguity(question, candidates)
-    if ambiguity_message:
-        warning, log_id = _log_clarification(session, datasource_id, ds.name, question, ambiguity_message)
-        payload = {"type": "clarification", "message": ambiguity_message}
-        if warning:
-            payload["warning"] = warning
-        if log_id:
-            payload["audit_log_id"] = log_id
-        return payload
-
     try:
         system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
         prompt = _build_full_prompt(system_prompt, question, history)
@@ -381,10 +380,7 @@ def ask_llm_stream(
 ) -> Generator[str, None, None]:
     """流式问答：通过 SSE 逐步推送 Hermes 调用过程"""
 
-    # 1. 发送开始事件
-    yield _sse_event("status", {"phase": "started", "message": "任务已创建"})
-
-    # 2. 校验数据源
+    # 1. 校验数据源
     ds = session.get(DataSource, datasource_id)
     if not ds:
         yield _sse_event("error", {"message": "数据源不存在"})
@@ -405,41 +401,13 @@ def ask_llm_stream(
     if latest_task and ds.last_synced_at and latest_task.finished_at and ds.last_synced_at > latest_task.finished_at:
         yield _sse_event("status", {"phase": "warning", "message": "警告：数据源表结构已有更新，当前知识库可能已过期，建议重新同步"})
 
-    # 3. 检索相关 Schema
-    yield _sse_event("status", {"phase": "searching_notes", "message": "正在检索知识库..."})
-    candidates = retrieve_relevant_schema(session, datasource_id, question)
-    table_lookup = build_table_lookup(session, datasource_id)
     emitted_notes = set()
 
-    # 4. 推送命中的笔记（只显示有实际关键词匹配的，不显示兜底候选）
-    for candidate in candidates:
-        if not candidate.get("matched_terms"):
-            continue
-        table = candidate["table"]
-        emitted_notes.add(sanitize_path_segment(table.name))
-        yield _sse_event("note_hit", note_hit_payload(table.name, table_lookup))
-
-    # 5. 歧义检测
-    ambiguity_message = detect_ambiguity(question, candidates)
-    if ambiguity_message:
-        yield _sse_event("status", {"phase": "completed", "message": "需要澄清"})
-        warning, log_id = _log_clarification(session, datasource_id, ds.name, question, ambiguity_message)
-        result_payload = {"type": "clarification", "message": ambiguity_message}
-        if warning:
-            result_payload["warning"] = warning
-        if log_id:
-            result_payload["audit_log_id"] = log_id
-            
-        yield _sse_event("result", result_payload)
-        return
-
-    # 6. 调用 Hermes
+    # 2. 调用 Hermes。知识检索和澄清判断由 Hermes 面向 Obsidian 笔记完成。
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
     system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
     prompt = _build_full_prompt(system_prompt, question, history)
-
-    yield _sse_event("status", {"phase": "generating_sql", "message": "Hermes 正在生成 SQL..."})
 
     try:
         result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir), hermes_cli_path=hermes_cli_path))
@@ -452,22 +420,22 @@ def ask_llm_stream(
         yield _sse_event("error", {"message": str(e)})
         return
 
-    # 7. 补充推送 Hermes 最终使用的笔记，避免只展示粗筛命中的表
+    # 3. 推送 Hermes 最终使用的 Obsidian 笔记
     for note in result.get("used_notes", []) or []:
         note_name = normalize_note_name(note)
         if note_name in emitted_notes:
             continue
         emitted_notes.add(note_name)
-        yield _sse_event("note_hit", note_hit_payload(note_name, table_lookup))
+        yield _sse_event("note_used", note_used_payload(note_name))
 
-    # 8. 记录审计日志并注入 audit_log_id
+    # 4. 记录审计日志并注入 audit_log_id
     warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
     if warning:
         result["warning"] = warning
     if log_id:
         result["audit_log_id"] = log_id
 
-    # 9. 推送结果
+    # 5. 推送结果
     yield _sse_event("status", {"phase": "completed", "message": "已完成"})
     yield _sse_event("result", result)
 
