@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NTag, useMessage } from 'naive-ui'
 import { CheckmarkCircleOutline, CloseCircleOutline, BuildOutline, FolderOpenOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
+import { get, post } from '../../services/request'
 
 const message = useMessage()
 
@@ -18,15 +19,12 @@ const obsidianMessage = ref('')
 
 const fetchSettings = async () => {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/settings/')
-    if (res.ok) {
-      const data = await res.json()
-      hermesPath.value = data.hermes_cli_path.value || data.hermes_cli_path.default
-      hermesDefault.value = data.hermes_cli_path.default
-      
-      obsidianRoot.value = data.obsidian_vault_root.value || data.obsidian_vault_root.default
-      obsidianDefault.value = data.obsidian_vault_root.default
-    }
+    const data = await get('/settings/')
+    hermesPath.value = data.hermes_cli_path.value || data.hermes_cli_path.default
+    hermesDefault.value = data.hermes_cli_path.default
+    
+    obsidianRoot.value = data.obsidian_vault_root.value || data.obsidian_vault_root.default
+    obsidianDefault.value = data.obsidian_vault_root.default
   } catch (e) {
     message.error('获取设置失败')
   }
@@ -34,19 +32,10 @@ const fetchSettings = async () => {
 
 const saveSetting = async (key: string, value: string) => {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/settings/${key}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value })
-    })
-    if (res.ok) {
-      message.success('保存成功')
-    } else {
-      const err = await res.json()
-      message.error(err.detail || '保存失败')
-    }
-  } catch (e) {
-    message.error('保存请求失败')
+    await post(`/settings/${key}`, { value })
+    message.success('保存成功')
+  } catch (e: any) {
+    message.error(e.message || '保存请求失败')
   }
 }
 
@@ -54,8 +43,7 @@ const runHermesTest = async () => {
   hermesStatus.value = 'testing'
   hermesMessage.value = '正在测试 Hermes CLI...'
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/settings/test/hermes', { method: 'POST' })
-    const data = await res.json()
+    const data = await post('/settings/test/hermes')
     hermesStatus.value = data.status === 'success' ? 'success' : 'error'
     hermesMessage.value = data.message
   } catch (e: any) {
@@ -68,8 +56,7 @@ const runObsidianTest = async () => {
   obsidianStatus.value = 'testing'
   obsidianMessage.value = '正在检查知识库目录...'
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/settings/test/obsidian', { method: 'POST' })
-    const data = await res.json()
+    const data = await post('/settings/test/obsidian')
     obsidianStatus.value = data.status === 'success' ? 'success' : 'error'
     obsidianMessage.value = data.message
   } catch (e: any) {

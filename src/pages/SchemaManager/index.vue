@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { NSelect, useMessage } from 'naive-ui'
 import TableList from './components/TableList.vue'
 import SchemaEditor from './components/SchemaEditor.vue'
+import { createEventSource, get, post } from '../../services/request'
 
 const message = useMessage()
 const currentSource = ref<number | null>(null)
@@ -15,7 +16,6 @@ const knowledgeSyncing = ref(false)
 
 // 当前活跃的知识库同步 EventSource
 let activeKnowledgeSSE: EventSource | null = null
-let knowledgeStatusPoll: ReturnType<typeof setInterval> | null = null
 
 // 当前处理中的表名（用于实时展示）
 // 移除了独立的 currentSyncTable ref，改用 knowledgeTask.current_table
@@ -47,22 +47,19 @@ const formatKnowledgeBanner = (task: any | null) => {
 
 const fetchSources = async () => {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/datasources/')
-    if (res.ok) {
-      const data = await res.json()
-      sourceOptions.value = data.map((ds: any) => ({
-        label: `${ds.name} (${ds.db_type})`,
-        value: ds.id
-      }))
+    const data = await get('/datasources/')
+    sourceOptions.value = data.map((ds: any) => ({
+      label: `${ds.name} (${ds.db_type})`,
+      value: ds.id
+    }))
 
-      // 校验当前选中项是否依然有效
-      if (currentSource.value && !sourceOptions.value.find(opt => opt.value === currentSource.value)) {
-        currentSource.value = null
-      }
+    // 校验当前选中项是否依然有效
+    if (currentSource.value && !sourceOptions.value.find(opt => opt.value === currentSource.value)) {
+      currentSource.value = null
+    }
 
-      if (data.length > 0 && !currentSource.value) {
-        currentSource.value = data[0].id
-      }
+    if (data.length > 0 && !currentSource.value) {
+      currentSource.value = data[0].id
     }
   } catch (error) {
     message.error('无法加载数据源')
@@ -71,14 +68,11 @@ const fetchSources = async () => {
 
 const fetchTables = async (dsId: number) => {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/tables/${dsId}`)
-    if (res.ok) {
-      tables.value = await res.json()
-      if (tables.value.length > 0) {
-        selectedTable.value = tables.value[0]
-      } else {
-        selectedTable.value = null
-      }
+    tables.value = await get(`/schema/tables/${dsId}`)
+    if (tables.value.length > 0) {
+      selectedTable.value = tables.value[0]
+    } else {
+      selectedTable.value = null
     }
   } catch (error) {
     message.error('无法加载表结构')
@@ -87,40 +81,18 @@ const fetchTables = async (dsId: number) => {
 
 const fetchLatestKnowledgeTask = async (dsId: number) => {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/knowledge/status/${dsId}`)
-    if (res.ok) {
-      const data = await res.json()
-      knowledgeTask.value = data.task
-      actualTableCount.value = data.actual_table_count
+    const data = await get(`/schema/knowledge/status/${dsId}`)
+    knowledgeTask.value = data.task
+    actualTableCount.value = data.actual_table_count
 
-      if (data.task && (data.task.status === 'running' || data.task.status === 'pending')) {
-        knowledgeSyncing.value = true
-        if (!activeKnowledgeSSE) startKnowledgeStatusPolling(dsId)
-      } else {
-        knowledgeSyncing.value = false
-        stopKnowledgeStatusPolling()
-      }
+    if (data.task && (data.task.status === 'running' || data.task.status === 'pending')) {
+      knowledgeSyncing.value = true
+      subscribeKnowledgeTask(data.task.id)
+    } else {
+      knowledgeSyncing.value = false
     }
   } catch (error) {
     console.error('无法加载知识库任务状态', error)
-  }
-}
-
-const startKnowledgeStatusPolling = (dsId: number) => {
-  if (knowledgeStatusPoll) return
-  knowledgeStatusPoll = setInterval(() => {
-    if (!currentSource.value || currentSource.value !== dsId || activeKnowledgeSSE) {
-      stopKnowledgeStatusPolling()
-      return
-    }
-    fetchLatestKnowledgeTask(dsId)
-  }, 3000)
-}
-
-const stopKnowledgeStatusPolling = () => {
-  if (knowledgeStatusPoll) {
-    clearInterval(knowledgeStatusPoll)
-    knowledgeStatusPoll = null
   }
 }
 
@@ -135,7 +107,6 @@ const cleanupKnowledgeSSE = () => {
 watch(currentSource, (newVal) => {
   knowledgeTask.value = null
   knowledgeSyncing.value = false
-  stopKnowledgeStatusPolling()
   cleanupKnowledgeSSE()
   if (newVal) {
     fetchTables(newVal)
@@ -148,7 +119,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  stopKnowledgeStatusPolling()
   cleanupKnowledgeSSE()
 })
 
@@ -159,8 +129,7 @@ const handleSelectTable = (table: any) => {
 const handleSync = async () => {
   if (!currentSource.value) return
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/sync/${currentSource.value}`, { method: 'POST' })
-    const data = await res.json()
+    const data = await post(`/schema/sync/${currentSource.value}`)
     if (data.success) {
       message.success(data.message)
       fetchTables(currentSource.value)
@@ -174,78 +143,47 @@ const handleSync = async () => {
 }
 
 // ---------------------------------------------------------------------------
-// SSE 流式知识库同步（替代轮询）
+// SSE 知识库同步：后端任务后台跑，前端只订阅进度
 // ---------------------------------------------------------------------------
-const handleKnowledgeSync = () => {
-  if (!currentSource.value) return
-
-  // 清理之前的 SSE
+const subscribeKnowledgeTask = (taskId: number) => {
   cleanupKnowledgeSSE()
-  stopKnowledgeStatusPolling()
 
-  knowledgeSyncing.value = true
-
-  // 初始化 knowledgeTask 为"正在启动"状态
-  knowledgeTask.value = {
-    status: 'running',
-    completed_tables: 0,
-    total_tables: 0,
-  }
-
-  const url = `http://127.0.0.1:8000/api/v1/schema/knowledge/sync_stream/${currentSource.value}`
-  const source = new EventSource(url)
+  const source = createEventSource(`/schema/knowledge/tasks/${taskId}/events`)
   activeKnowledgeSSE = source
 
   source.addEventListener('status', (e: MessageEvent) => {
     const data = JSON.parse(e.data)
-
-    // 更新任务状态
+    const status = data.status || 'running'
+    
     knowledgeTask.value = {
       ...knowledgeTask.value,
-      status: data.status ? data.status 
-            : data.phase === 'completed' ? 'completed'
-            : data.phase === 'failed' ? 'failed'
-            : 'running',
-      completed_tables: data.completed_tables ?? knowledgeTask.value?.completed_tables ?? 0,
-      total_tables: data.total_tables ?? knowledgeTask.value?.total_tables ?? 0,
-      current_table: data.current_table ?? knowledgeTask.value?.current_table,
       id: data.task_id ?? knowledgeTask.value?.id,
+      status,
+      completed_tables: data.completed_tables ?? knowledgeTask.value?.completed_tables ?? 0,
+      failed_tables: data.failed_tables ?? knowledgeTask.value?.failed_tables ?? 0,
+      total_tables: data.total_tables ?? knowledgeTask.value?.total_tables ?? 0,
+      current_table: data.current_table ?? null,
+      error_message: data.error_message ?? knowledgeTask.value?.error_message,
     }
 
-    if (data.phase === 'completed') {
+    if (status === 'completed') {
       knowledgeSyncing.value = false
       message.success(data.message || '知识库同步完成')
       source.close()
       activeKnowledgeSSE = null
-      // 刷新最新状态
       if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
-    } else if (data.phase === 'failed') {
+    } else if (status === 'partial_success') {
       knowledgeSyncing.value = false
-      message.error(data.message || '知识库同步失败')
+      message.warning(data.message || '知识库部分同步成功')
       source.close()
       activeKnowledgeSSE = null
       if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
-    }
-  })
-
-  source.addEventListener('table_start', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
-    if (knowledgeTask.value) {
-      knowledgeTask.value = {
-        ...knowledgeTask.value,
-        current_table: data.table_name
-      }
-    }
-  })
-
-  source.addEventListener('table_done', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
-    if (knowledgeTask.value) {
-      knowledgeTask.value = {
-        ...knowledgeTask.value,
-        completed_tables: data.completed_tables,
-        current_table: ''
-      }
+    } else if (status === 'failed') {
+      knowledgeSyncing.value = false
+      message.error(data.error_message || data.message || '知识库同步失败')
+      source.close()
+      activeKnowledgeSSE = null
+      if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
     }
   })
 
@@ -261,11 +199,31 @@ const handleKnowledgeSync = () => {
       }
     }
     knowledgeSyncing.value = false
-    if (knowledgeTask.value) knowledgeTask.value.current_table = ''
     source.close()
     activeKnowledgeSSE = null
     if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
   })
+}
+
+const handleKnowledgeSync = async () => {
+  if (!currentSource.value) return
+
+  cleanupKnowledgeSSE()
+  knowledgeSyncing.value = true
+  knowledgeTask.value = {
+    status: 'pending',
+    completed_tables: 0,
+    total_tables: tables.value.length,
+  }
+
+  try {
+    const task = await post(`/schema/knowledge/sync/${currentSource.value}`)
+    knowledgeTask.value = task
+    subscribeKnowledgeTask(task.id)
+  } catch (error: any) {
+    knowledgeSyncing.value = false
+    message.error(error.message || '知识库同步启动失败')
+  }
 }
 </script>
 

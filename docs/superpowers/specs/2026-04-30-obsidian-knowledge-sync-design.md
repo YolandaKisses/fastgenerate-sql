@@ -8,7 +8,7 @@
 
 - 按数据源分类生成 Markdown wiki 文件
 - 通过 Hermes 为每张表补充知识总结增强内容
-- 将文件直接写入本地 Obsidian 知识库目录 `/Users/yolanda/Documents/obsidian知识库/FastGenerate SQL`
+- 将文件直接写入设置页配置的本地 Obsidian 知识库目录
 - 因为生成过程可能较长，前端需要能够看到任务进度
 
 ## 当前上下文
@@ -47,7 +47,7 @@
 5. 后端从 SQLite 读取该数据源下所有已同步的表、字段和备注
 6. 后端逐表调用 Hermes 生成增强说明
 7. 后端将 Markdown 文件写入配置好的 Obsidian 目录
-8. 前端轮询任务状态并展示进度
+8. 前端通过 SSE 订阅任务状态并展示进度
 9. 任务完成后，前端展示成功、失败以及输出目录等信息
 
 ## 推荐架构
@@ -65,7 +65,7 @@
 
 - 发起任务
 - 展示 `待处理 / 进行中 / 成功 / 失败` 状态
-- 轮询任务状态
+- 通过 SSE 订阅任务状态
 - 展示简洁进度信息，例如 `12 / 34 张表已生成`
 
 前端不负责：
@@ -163,14 +163,12 @@ SQLite 继续承担两类职责：
 
 ## Obsidian 输出目录结构
 
-知识库根目录：
-
-- `/Users/yolanda/Documents/obsidian知识库/FastGenerate SQL`
+知识库根目录来自本地运行设置 `obsidian_vault_root`；未配置时才回退到环境默认值。
 
 按数据源输出后的目录结构建议如下：
 
 ```text
-/Users/yolanda/Documents/obsidian知识库/FastGenerate SQL/
+<obsidian_vault_root>/
   <datasource_name>/
     index.md
     tables/
@@ -412,7 +410,7 @@ Prompt 约束建议：
 - SQLite 继续作为 Schema 和任务状态的事实来源
 - 不将生成出的 Markdown 正文存回 SQLite
 - 同时生成数据源总览页和单表详情页
-- 输出到 `/Users/yolanda/Documents/obsidian知识库/FastGenerate SQL`
+- 输出到设置页配置的 `obsidian_vault_root`
 - 按数据源进行目录分类
 - 重复生成时覆盖同一数据源已有输出
 

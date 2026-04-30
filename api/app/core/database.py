@@ -25,6 +25,12 @@ def ensure_compatible_schema():
         sync_task_column_names = {row[1] for row in sync_task_columns}
         if "failed_tables" not in sync_task_column_names:
             conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN failed_tables INTEGER DEFAULT 0"))
+        if "current_table" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN current_table VARCHAR"))
+        if "current_phase" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN current_phase VARCHAR"))
+        if "last_message" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN last_message VARCHAR"))
 
 def get_session():
     with Session(engine) as session:

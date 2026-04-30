@@ -10,6 +10,8 @@ const props = defineProps<{
   explanation?: string
   validationState?: 'idle' | 'validating' | 'valid' | 'invalid'
   validationReasons?: string[]
+  executed?: boolean
+  executionStatus?: string | null
 }>()
 
 const emit = defineEmits(['execute'])
@@ -23,7 +25,14 @@ const visibleSql = computed(() => {
 })
 
 const isExecuteDisabled = computed(() => {
-  return props.isRendering || props.validationState === 'validating' || props.validationState === 'invalid'
+  return props.executed || props.isRendering || props.validationState === 'validating' || props.validationState === 'invalid'
+})
+
+const executeButtonText = computed(() => {
+  if (!props.executed) return '确认并执行'
+  if (props.executionStatus === 'error') return '执行失败'
+  if (props.executionStatus === 'empty') return '已执行，无结果'
+  return '已执行'
 })
 </script>
 
@@ -39,9 +48,9 @@ const isExecuteDisabled = computed(() => {
       <n-space align="center" :size="16">
         <n-button type="primary" size="tiny" :disabled="isExecuteDisabled" @click="emit('execute')">
           <template #icon>
-            <n-icon :component="PlayOutline" />
+            <n-icon :component="executed ? CheckmarkCircleOutline : PlayOutline" />
           </template>
-          确认并执行
+          {{ executeButtonText }}
         </n-button>
       </n-space>
     </div>

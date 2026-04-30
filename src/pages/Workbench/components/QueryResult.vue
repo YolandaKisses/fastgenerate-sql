@@ -10,6 +10,8 @@ const props = defineProps<{
     row_count?: number
     duration_ms?: number
     message?: string
+    truncated_for_storage?: boolean
+    storage_row_count?: number
   }
 }>()
 
@@ -46,6 +48,9 @@ const getColumnLabel = (col: string) => {
       </div>
 
       <div class="table-wrapper">
+        <div v-if="result.truncated_for_storage" class="restore-warning">
+          刷新后已恢复前 {{ result.storage_row_count || result.rows?.length || 0 }} 行预览；完整结果请重新执行查询。
+        </div>
         <table class="data-table">
           <thead>
             <tr>
@@ -118,6 +123,14 @@ const getColumnLabel = (col: string) => {
   border: 1px solid #efeff5;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.restore-warning {
+  padding: 10px 12px;
+  background: #fff7ed;
+  border-bottom: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 12px;
 }
 
 .data-table {

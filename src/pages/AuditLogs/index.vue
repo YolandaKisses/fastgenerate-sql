@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { NText, NInput, NSelect, useMessage } from 'naive-ui'
 import AuditLogTable from './components/AuditLogTable.vue'
 import AuditLogDetail from './components/AuditLogDetail.vue'
+import { del, get } from '../../services/request'
 
 const message = useMessage()
 const logs = ref<any[]>([])
@@ -45,12 +46,9 @@ const filteredLogs = computed(() => {
 
 const fetchLogs = async () => {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/audit/logs')
-    if (res.ok) {
-      logs.value = await res.json()
-      if (logs.value.length > 0 && !selectedId.value) {
-        selectedId.value = logs.value[0].id
-      }
+    logs.value = await get('/audit/logs')
+    if (logs.value.length > 0 && !selectedId.value) {
+      selectedId.value = logs.value[0].id
     }
   } catch (error) {
     message.error('无法加载审计日志')
@@ -59,8 +57,7 @@ const fetchLogs = async () => {
 
 const handleDelete = async (id: number) => {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/audit/logs/${id}`, { method: 'DELETE' })
-    const data = await res.json()
+    const data = await del(`/audit/logs/${id}`)
     if (data.success) {
       message.success('已删除')
       if (selectedId.value === id) {

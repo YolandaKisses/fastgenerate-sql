@@ -11,7 +11,10 @@ export interface HermesStep {
 const props = defineProps<{
   steps: HermesStep[]
   loading: boolean
+  historyCount: number
 }>()
+
+defineEmits(['reset'])
 
 // 计时器
 const elapsed = ref(0)
@@ -70,9 +73,16 @@ const isActive = computed(() => props.steps.length > 0)
         <span class="title-icon">⚡</span>
         <span>Hermes 工作过程</span>
       </div>
-      <div class="process-timer">
-        <span v-if="loading" class="timer-pulse"></span>
-        <span class="timer-text">{{ formattedElapsed }}</span>
+      <div class="process-actions">
+        <div v-if="historyCount > 0" class="context-pill">
+          <span class="round-count">第 {{ Math.ceil(historyCount / 2) }} 轮对话</span>
+          <i class="pill-divider"></i>
+          <button class="clear-action" @click="$emit('reset')">清除历史</button>
+        </div>
+        <div class="process-timer">
+          <span v-if="loading" class="timer-pulse"></span>
+          <span class="timer-text">{{ formattedElapsed }}</span>
+        </div>
       </div>
     </div>
 
@@ -90,7 +100,7 @@ const isActive = computed(() => props.steps.length > 0)
             </span>
             <div v-if="idx < steps.length - 1 || loading" class="step-line"></div>
           </div>
-          <div class="step-content">
+          <div class="step-content" :class="{ 'is-note-hit': step.phase === 'note_hit' }">
             <span class="step-message">{{ step.message }}</span>
             <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
           </div>
@@ -124,7 +134,7 @@ const isActive = computed(() => props.steps.length > 0)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
+  padding: 12px 20px;
   background: linear-gradient(90deg, #f0ecff 0%, #e8f0ff 100%);
   border-bottom: 1px solid #e8e5f0;
 }
@@ -140,6 +150,53 @@ const isActive = computed(() => props.steps.length > 0)
 
 .title-icon {
   font-size: 16px;
+}
+
+.process-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.context-pill {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(107, 95, 191, 0.15);
+  border-radius: 20px;
+  padding: 4px 14px;
+  gap: 12px;
+  box-shadow: 0 2px 8px rgba(107, 95, 191, 0.04);
+}
+
+.round-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: #5c53a3;
+  white-space: nowrap;
+}
+
+.pill-divider {
+  width: 1px;
+  height: 12px;
+  background: rgba(107, 95, 191, 0.2);
+}
+
+.clear-action {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c8ab0;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.clear-action:hover {
+  color: #ef4444;
 }
 
 .process-timer {
@@ -225,6 +282,14 @@ const isActive = computed(() => props.steps.length > 0)
   justify-content: center;
   padding: 4px 0 12px;
   gap: 2px;
+  min-width: 0;
+}
+
+.step-content.is-note-hit {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .step-message {
@@ -243,6 +308,10 @@ const isActive = computed(() => props.steps.length > 0)
   font-size: 12px;
   color: #8c8ab0;
   line-height: 16px;
+}
+
+.step-content.is-note-hit .step-detail {
+  line-height: 20px;
 }
 
 .step-spinner {

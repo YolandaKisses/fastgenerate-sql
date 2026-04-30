@@ -6,6 +6,7 @@ import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'
 import HermesProcess from './components/HermesProcess.vue'
 import type { HermesStep } from './components/HermesProcess.vue'
+import { API_BASE_URL, get, post } from '../../services/request'
 
 const STORAGE_KEY = 'workbench_state'
 
@@ -20,6 +21,7 @@ const isRendering = ref(false)
 const sqlExplanation = ref('')
 const clarification = ref('')
 const queryResult = ref<any | null>(null)
+const hasExecutedSql = ref(false)
 const currentAuditLogId = ref<number | null>(null)
 const validationState = ref<'idle' | 'validating' | 'valid' | 'invalid'>('idle')
 const validationReasons = ref<string[]>([])
@@ -31,6 +33,14 @@ const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null)
 // 对话上下文历史 (用于多轮澄清)
 const messageHistory = ref<{role: 'user' | 'assistant', content: string}[]>([])
 
+const formatClarification = (text: string) => {
+  return text
+    .replace(/\s+([A-Z]\))/g, '\n$1')
+    .replace(/\s+(-\s+)/g, '\n$1')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+}
+
 // 清除上下文
 const handleResetContext = () => {
   messageHistory.value = []
@@ -38,6 +48,8 @@ const handleResetContext = () => {
   displayedSql.value = ''
   sqlExplanation.value = ''
   clarification.value = ''
+  queryResult.value = null
+  hasExecutedSql.value = false
   hermesSteps.value = []
   currentAuditLogId.value = null
   message.info('上下文已清除')
@@ -60,10 +72,25 @@ const restoreState = () => {
       sqlExplanation.value = state.explanation ?? ''
       clarification.value = state.clarification ?? ''
       queryResult.value = state.result ?? null
+      hasExecutedSql.value = Boolean(state.executed ?? state.result)
       messageHistory.value = state.history ?? []
       currentAuditLogId.value = state.auditLogId ?? null
+      hermesSteps.value = state.hermesSteps ?? []
     }
-  } catch {}
+  } catch (error) {
+    console.warn('恢复工作台状态失败', error)
+  }
+}
+
+const compactResultForStorage = (result: any | null) => {
+  if (!result) return null
+  const compact = { ...result }
+  if (Array.isArray(compact.rows) && compact.rows.length > 100) {
+    compact.rows = compact.rows.slice(0, 100)
+    compact.truncated_for_storage = true
+    compact.storage_row_count = compact.rows.length
+  }
+  return compact
 }
 
 // 保存工作状态到 sessionStorage
@@ -74,14 +101,18 @@ const saveState = () => {
       sql: generatedSql.value,
       explanation: sqlExplanation.value,
       clarification: clarification.value,
-      result: queryResult.value,
+      result: compactResultForStorage(queryResult.value),
+      executed: hasExecutedSql.value,
       history: messageHistory.value,
-      auditLogId: currentAuditLogId.value
+      auditLogId: currentAuditLogId.value,
+      hermesSteps: hermesSteps.value,
     }))
-  } catch {}
+  } catch (error) {
+    console.warn('保存工作台状态失败', error)
+  }
 }
 
-watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, messageHistory, currentAuditLogId], saveState, { deep: true })
+watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, hasExecutedSql, messageHistory, currentAuditLogId], saveState, { deep: true })
 
 watch(generatedSql, async (newSql) => {
   if (!newSql) {
@@ -93,12 +124,7 @@ watch(generatedSql, async (newSql) => {
   validationState.value = 'validating'
   validationReasons.value = []
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/workbench/validate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sql: newSql })
-    })
-    const data = await res.json()
+    const data = await post('/workbench/validate', { sql: newSql })
     validationState.value = data.status === 'valid' ? 'valid' : 'invalid'
     validationReasons.value = data.reasons || []
   } catch {
@@ -111,22 +137,19 @@ onMounted(async () => {
   restoreState()
   
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/datasources/')
-    if (res.ok) {
-      const data = await res.json()
-      datasourceOptions.value = data
-        .filter((ds: any) => ds.status === 'READY' || ds.status === 'ready' || ds.status === 'connection_ok')
-        .map((ds: any) => ({ label: `${ds.name} (${ds.db_type})`, value: ds.id }))
-      
-      // 校验恢复的状态是否依然有效
-      if (currentDatasource.value && !datasourceOptions.value.find(opt => opt.value === currentDatasource.value)) {
-        currentDatasource.value = null
-      }
+    const data = await get('/datasources/')
+    datasourceOptions.value = data
+      .filter((ds: any) => ds.status === 'READY' || ds.status === 'ready' || ds.status === 'connection_ok')
+      .map((ds: any) => ({ label: `${ds.name} (${ds.db_type})`, value: ds.id }))
+    
+    // 校验恢复的状态是否依然有效
+    if (currentDatasource.value && !datasourceOptions.value.find(opt => opt.value === currentDatasource.value)) {
+      currentDatasource.value = null
+    }
 
-      // 仅在没有有效选中项时，默认选第一个
-      if (datasourceOptions.value.length > 0 && !currentDatasource.value) {
-        currentDatasource.value = datasourceOptions.value[0].value
-      }
+    // 仅在没有有效选中项时，默认选第一个
+    if (datasourceOptions.value.length > 0 && !currentDatasource.value) {
+      currentDatasource.value = datasourceOptions.value[0].value
     }
   } catch (error) {
     message.error('无法加载数据源列表')
@@ -192,6 +215,7 @@ const handleQuerySubmit = (question: string) => {
   isRendering.value = false
   sqlExplanation.value = ''
   queryResult.value = null
+  hasExecutedSql.value = false
   hermesSteps.value = []
   currentAuditLogId.value = null
 
@@ -209,7 +233,7 @@ const handleQuerySubmit = (question: string) => {
   hermesProcessRef.value?.startTimer()
 
   // 构建 SSE URL
-  const url = new URL('http://127.0.0.1:8000/api/v1/workbench/ask_stream')
+  const url = new URL(`${API_BASE_URL}/workbench/ask_stream`)
   url.searchParams.set('datasource_id', String(currentDatasource.value))
   url.searchParams.set('question', question)
   
@@ -239,12 +263,24 @@ const handleQuerySubmit = (question: string) => {
 
   source.addEventListener('note_hit', (e: MessageEvent) => {
     const data = JSON.parse(e.data)
-    hermesSteps.value.push({
-      phase: 'note_hit',
-      message: `命中笔记: ${data.note}`,
-      detail: data.comment || undefined,
-      timestamp: Date.now(),
-    })
+    const lastStep = hermesSteps.value[hermesSteps.value.length - 1]
+    
+    if (lastStep && lastStep.phase === 'note_hit') {
+      // 合并逻辑：将新的表名和备注追加到现有步骤中
+      lastStep.message += `, ${data.note}`
+      if (data.comment) {
+        lastStep.detail = lastStep.detail 
+          ? `${lastStep.detail}; ${data.comment}` 
+          : data.comment
+      }
+    } else {
+      hermesSteps.value.push({
+        phase: 'note_hit',
+        message: `命中笔记: ${data.note}`,
+        detail: data.comment || undefined,
+        timestamp: Date.now(),
+      })
+    }
   })
 
   source.addEventListener('result', (e: MessageEvent) => {
@@ -312,20 +348,17 @@ const handleExecuteSql = async () => {
   if (!currentDatasource.value || !generatedSql.value || loading.value) return
   loading.value = true
   queryResult.value = null
+  hasExecutedSql.value = false
 
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/workbench/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        datasource_id: currentDatasource.value, 
-        sql: generatedSql.value,
-        audit_log_id: currentAuditLogId.value
-      })
+    const data = await post('/workbench/execute', { 
+      datasource_id: currentDatasource.value, 
+      sql: generatedSql.value,
+      audit_log_id: currentAuditLogId.value
     })
-    const data = await res.json()
     console.log('Execute result:', data)
     queryResult.value = data
+    hasExecutedSql.value = true
 
     if (data.status === 'success') {
       message.success(`查询完成，返回 ${data.row_count} 条记录 (${data.duration_ms}ms)`)
@@ -344,6 +377,7 @@ const handleExecuteSql = async () => {
       if (el) el.scrollIntoView({ behavior: 'smooth' })
     }, 100)
   } catch (error) {
+    hasExecutedSql.value = false
     message.error('执行请求失败')
   } finally {
     loading.value = false
@@ -360,12 +394,6 @@ const handleExecuteSql = async () => {
           <p class="page-subtitle">已支持连接测试通过的数据源直接问答。</p>
         </div>
         <div class="header-actions">
-          <div class="context-info" v-if="messageHistory.length > 0">
-            <span class="context-tag">对话中 ({{ Math.ceil(messageHistory.length / 2) }} 轮)</span>
-            <n-button quaternary size="tiny" type="warning" @click="handleResetContext">
-              清除上下文
-            </n-button>
-          </div>
           <div class="datasource-picker">
             <span class="picker-label">当前数据源</span>
             <n-select 
@@ -387,14 +415,16 @@ const handleExecuteSql = async () => {
         ref="hermesProcessRef"
         :steps="hermesSteps"
         :loading="loading"
+        :history-count="messageHistory.length"
+        @reset="handleResetContext"
       />
 
       <!-- 澄清提示 -->
       <div v-if="clarification" class="clarification-box">
         <span class="clarification-icon">💬</span>
-        <div>
-          <div style="font-weight: 600; margin-bottom: 4px; color: #181c22;">AI 需要澄清</div>
-          <div style="color: #414753;">{{ clarification }}</div>
+        <div class="clarification-content">
+          <div class="clarification-title">AI 需要澄清</div>
+          <div class="clarification-text">{{ formatClarification(clarification) }}</div>
         </div>
       </div>
 
@@ -409,6 +439,8 @@ const handleExecuteSql = async () => {
             :explanation="sqlExplanation"
             :validation-state="validationState"
             :validation-reasons="validationReasons"
+            :executed="hasExecutedSql"
+            :execution-status="queryResult?.status"
             @execute="handleExecuteSql"
           />
           <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
@@ -456,23 +488,6 @@ const handleExecuteSql = async () => {
   display: flex;
   align-items: center;
   gap: 20px;
-}
-
-.context-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: #fff8f0;
-  padding: 4px 12px;
-  border-radius: 20px;
-  border: 1px solid #ffd8a8;
-}
-
-.context-tag {
-  font-size: 11px;
-  font-weight: 600;
-  color: #e67e22;
-  text-transform: uppercase;
 }
 
 .datasource-picker {
@@ -526,7 +541,7 @@ const handleExecuteSql = async () => {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 12px 18px;
   background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
   border: 1px solid #fcd34d;
   border-radius: 10px;
@@ -536,5 +551,26 @@ const handleExecuteSql = async () => {
 .clarification-icon {
   font-size: 20px;
   flex-shrink: 0;
+}
+
+.clarification-content {
+  min-width: 0;
+  flex: 1;
+}
+
+.clarification-title {
+  margin-bottom: 6px;
+  color: #181c22;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.clarification-text {
+  color: #414753;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-line;
+  word-break: break-word;
 }
 </style>

@@ -102,6 +102,30 @@ def retrieve_relevant_schema(session: Session, datasource_id: int, question: str
     return ranked[:limit]
 
 
+def normalize_note_name(note: str) -> str:
+    name = Path(str(note)).stem
+    return sanitize_path_segment(name)
+
+
+def build_table_lookup(session: Session, datasource_id: int) -> dict[str, SchemaTable]:
+    tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)).all()
+    lookup = {}
+    for table in tables:
+        lookup[table.name] = table
+        lookup[sanitize_path_segment(table.name)] = table
+    return lookup
+
+
+def note_hit_payload(note_name: str, table_lookup: dict[str, SchemaTable]) -> dict:
+    table = table_lookup.get(note_name) or table_lookup.get(sanitize_path_segment(note_name))
+    if table:
+        return {
+            "note": table.name,
+            "comment": table.original_comment or table.supplementary_comment or "",
+        }
+    return {"note": note_name, "comment": ""}
+
+
 def detect_ambiguity(question: str, candidates: list[dict]) -> str | None:
     if len(candidates) < 2:
         return None
@@ -384,16 +408,16 @@ def ask_llm_stream(
     # 3. 检索相关 Schema
     yield _sse_event("status", {"phase": "searching_notes", "message": "正在检索知识库..."})
     candidates = retrieve_relevant_schema(session, datasource_id, question)
+    table_lookup = build_table_lookup(session, datasource_id)
+    emitted_notes = set()
 
     # 4. 推送命中的笔记（只显示有实际关键词匹配的，不显示兜底候选）
     for candidate in candidates:
         if not candidate.get("matched_terms"):
             continue
         table = candidate["table"]
-        yield _sse_event("note_hit", {
-            "note": table.name,
-            "comment": table.original_comment or table.supplementary_comment or "",
-        })
+        emitted_notes.add(sanitize_path_segment(table.name))
+        yield _sse_event("note_hit", note_hit_payload(table.name, table_lookup))
 
     # 5. 歧义检测
     ambiguity_message = detect_ambiguity(question, candidates)
@@ -428,14 +452,22 @@ def ask_llm_stream(
         yield _sse_event("error", {"message": str(e)})
         return
 
-    # 7. 记录审计日志并注入 audit_log_id
+    # 7. 补充推送 Hermes 最终使用的笔记，避免只展示粗筛命中的表
+    for note in result.get("used_notes", []) or []:
+        note_name = normalize_note_name(note)
+        if note_name in emitted_notes:
+            continue
+        emitted_notes.add(note_name)
+        yield _sse_event("note_hit", note_hit_payload(note_name, table_lookup))
+
+    # 8. 记录审计日志并注入 audit_log_id
     warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
     if warning:
         result["warning"] = warning
     if log_id:
         result["audit_log_id"] = log_id
 
-    # 8. 推送结果
+    # 9. 推送结果
     yield _sse_event("status", {"phase": "completed", "message": "已完成"})
     yield _sse_event("result", result)
 

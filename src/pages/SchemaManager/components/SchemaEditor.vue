@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { NButton, NInput, useMessage } from 'naive-ui'
+import { get, patch } from '../../../services/request'
 
 const props = defineProps<{
   table: any | null
@@ -16,10 +17,7 @@ const tableRemark = ref('')
 
 const fetchFields = async (tableId: number) => {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/fields/${tableId}`)
-    if (res.ok) {
-      fields.value = await res.json()
-    }
+    fields.value = await get(`/schema/fields/${tableId}`)
   } catch (error) {
     message.error('无法加载字段信息')
   }
@@ -40,14 +38,7 @@ const handleTableRemarkChange = (tableId: number, remark: string) => {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/tables/${tableId}/remark`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remark })
-      })
-      if (!res.ok) {
-        message.error('保存表级备注失败')
-      }
+      await patch(`/schema/tables/${tableId}/remark`, { remark })
     } catch {
       message.error('保存表级备注网络异常')
     }
@@ -58,14 +49,7 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/fields/${fieldId}/remark`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remark })
-      })
-      if (!res.ok) {
-        message.error('保存备注失败')
-      }
+      await patch(`/schema/fields/${fieldId}/remark`, { remark })
     } catch {
       message.error('保存备注网络异常')
     }

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { NCard, NText, NButton, NIcon, useDialog, useMessage } from 'naive-ui'
 import DataSourceList from './components/DataSourceList.vue'
 import DataSourceForm from './components/DataSourceForm.vue'
+import { del, get, patch, post } from '../../services/request'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -19,12 +20,9 @@ const selectedSource = ref<any | null>({
 
 const fetchSources = async () => {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/v1/datasources/')
-    if (res.ok) {
-      sources.value = await res.json()
-      if (sources.value.length > 0 && !selectedSource.value) {
-        selectedSource.value = { ...sources.value[0] }
-      }
+    sources.value = await get('/datasources/')
+    if (sources.value.length > 0 && !selectedSource.value) {
+      selectedSource.value = { ...sources.value[0] }
     }
   } catch (error) {
     message.error('无法连接到后端服务')
@@ -53,27 +51,16 @@ const handleCreateNew = () => {
 
 const handleSave = async (data: any) => {
   try {
-    const url = data.id ? `http://127.0.0.1:8000/api/v1/datasources/${data.id}` : 'http://127.0.0.1:8000/api/v1/datasources/'
-    const method = data.id ? 'PATCH' : 'POST'
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    })
-    
-    if (res.ok) {
-      message.success('保存成功')
-      await fetchSources()
-      if (!data.id) {
-        const newSource = await res.json()
-        selectedSource.value = newSource
-      }
-    } else {
-      const errorData = await res.json()
-      message.error(`保存失败: ${errorData.detail || '未知错误'}`)
+    const saved = data.id
+      ? await patch(`/datasources/${data.id}`, data)
+      : await post('/datasources/', data)
+    message.success('保存成功')
+    await fetchSources()
+    if (!data.id) {
+      selectedSource.value = saved
     }
-  } catch (error) {
-    message.error('请求失败')
+  } catch (error: any) {
+    message.error(`保存失败: ${error.message || '请求失败'}`)
   }
 }
 
@@ -83,8 +70,7 @@ const handleTest = async (id: number | null) => {
     return
   }
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/v1/datasources/${id}/test`, { method: 'POST' })
-    const data = await res.json()
+    const data = await post(`/datasources/${id}/test`)
     if (data.success) {
       message.success(data.message || '连接测试成功')
     } else {
@@ -105,8 +91,7 @@ const handleDelete = async (id: number | null) => {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/v1/datasources/${id}`, { method: 'DELETE' })
-        const data = await res.json()
+        const data = await del(`/datasources/${id}`)
         if (data.success) {
           message.success('数据源已删除')
           selectedSource.value = null

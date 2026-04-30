@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
+import time
 import re
 
 from sqlmodel import Session, select
@@ -29,6 +30,10 @@ def sanitize_path_segment(value: str) -> str:
 def create_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask:
     mark_stale_knowledge_sync_tasks(session, datasource_id=datasource_id)
 
+    active_task = get_active_knowledge_sync_task(session, datasource_id)
+    if active_task:
+        return active_task
+
     datasource = session.get(DataSource, datasource_id)
     if not datasource:
         raise ValueError("数据源不存在")
@@ -52,6 +57,22 @@ def create_knowledge_sync_task(session: Session, datasource_id: int) -> Knowledg
     session.commit()
     session.refresh(task)
     return task
+
+
+def get_active_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask | None:
+    statement = (
+        select(KnowledgeSyncTask)
+        .where(
+            KnowledgeSyncTask.datasource_id == datasource_id,
+            KnowledgeSyncTask.status.in_([
+                KnowledgeSyncTaskStatus.PENDING,
+                KnowledgeSyncTaskStatus.RUNNING,
+            ]),
+        )
+        .order_by(KnowledgeSyncTask.id.desc())
+        .limit(1)
+    )
+    return session.exec(statement).first()
 
 
 def get_latest_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask | None:
@@ -90,6 +111,8 @@ def mark_stale_knowledge_sync_tasks(
     for task in stale_tasks:
         task.status = KnowledgeSyncTaskStatus.FAILED
         task.error_message = "知识库同步任务已超时或连接中断，请重新同步"
+        task.current_phase = "failed"
+        task.last_message = task.error_message
         task.finished_at = now
         session.add(task)
 
@@ -99,17 +122,32 @@ def mark_stale_knowledge_sync_tasks(
     return len(stale_tasks)
 
 
-def fail_running_knowledge_task(
+def update_knowledge_task_progress(
     session: Session,
     task: KnowledgeSyncTask,
+    phase: str,
     message: str,
+    current_table: str | None = None,
 ) -> None:
-    if task.status in {KnowledgeSyncTaskStatus.PENDING, KnowledgeSyncTaskStatus.RUNNING}:
-        task.status = KnowledgeSyncTaskStatus.FAILED
-        task.error_message = message
-        task.finished_at = datetime.now()
-        session.add(task)
-        session.commit()
+    task.current_phase = phase
+    task.last_message = message
+    task.current_table = current_table
+    session.add(task)
+    session.commit()
+
+
+def knowledge_task_payload(task: KnowledgeSyncTask) -> dict:
+    return {
+        "task_id": task.id,
+        "status": task.status.value if isinstance(task.status, KnowledgeSyncTaskStatus) else task.status,
+        "phase": task.current_phase,
+        "message": task.last_message,
+        "completed_tables": task.completed_tables,
+        "failed_tables": task.failed_tables,
+        "total_tables": task.total_tables,
+        "current_table": task.current_table,
+        "error_message": task.error_message,
+    }
 
 
 def render_table_markdown(
@@ -264,28 +302,22 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-# ---------------------------------------------------------------------------
-# SSE 流式知识库同步
-# ---------------------------------------------------------------------------
-
-def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None]:
-    """流式知识库同步：通过 SSE 逐步推送每张表的处理进度"""
-    from typing import Generator as _G  # noqa: already imported at module level
-
+def run_knowledge_sync_task(engine, task_id: int) -> None:
+    """后台执行知识库同步。SSE 只订阅进度，不负责驱动任务。"""
     with Session(engine) as session:
         task = session.get(KnowledgeSyncTask, task_id)
         if not task:
-            yield _sse_event("error", {"message": "任务不存在"})
             return
 
         datasource = session.get(DataSource, task.datasource_id)
         if not datasource:
             task.status = KnowledgeSyncTaskStatus.FAILED
             task.error_message = "数据源不存在"
+            task.current_phase = "failed"
+            task.last_message = task.error_message
             task.finished_at = datetime.now()
             session.add(task)
             session.commit()
-            yield _sse_event("error", {"message": "数据源不存在"})
             return
 
         tables = session.exec(
@@ -295,16 +327,11 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
         task.status = KnowledgeSyncTaskStatus.RUNNING
         task.started_at = datetime.now()
         task.total_tables = len(tables)
+        task.current_phase = "started"
+        task.last_message = "知识库同步任务已启动"
+        task.current_table = None
         session.add(task)
         session.commit()
-
-        yield _sse_event("status", {
-            "phase": "started",
-            "message": "知识库同步任务已启动",
-            "task_id": task.id,
-            "total_tables": len(tables),
-            "completed_tables": 0,
-        })
 
         try:
             output_dir = Path(task.output_dir)
@@ -322,27 +349,26 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
                 raise RuntimeError(f"创建目录失败: {output_dir}") from exc
 
             for idx, table in enumerate(tables):
-                # 推送"正在处理"事件
-                yield _sse_event("table_start", {
-                    "table_name": table.name,
-                    "table_comment": table.original_comment or table.supplementary_comment or "",
-                    "index": idx + 1,
-                    "total": len(tables),
-                })
+                update_knowledge_task_progress(
+                    session,
+                    task,
+                    "table_start",
+                    f"开始处理 {table.name}",
+                    table.name,
+                )
 
                 try:
                     fields = session.exec(
                         select(SchemaField).where(SchemaField.table_id == table.id)
                     ).all()
 
-                    # 调用 Hermes 生成摘要
-                    yield _sse_event("status", {
-                        "phase": "generating_summary",
-                        "message": f"正在为 {table.name} 生成知识卡片...",
-                        "completed_tables": task.completed_tables,
-                        "total_tables": len(tables),
-                        "current_table": table.name,
-                    })
+                    update_knowledge_task_progress(
+                        session,
+                        task,
+                        "generating_summary",
+                        f"正在为 {table.name} 生成知识卡片...",
+                        table.name,
+                    )
 
                     summary = generate_table_summary(session, datasource, table, fields)
                     markdown = render_table_markdown(datasource, table, fields, summary)
@@ -352,25 +378,13 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
                     task.completed_tables += 1
                 except Exception as table_exc:
                     task.failed_tables += 1
-                    # 记录表级别错误但不中断整体流程
-                    yield _sse_event("status", {
-                        "phase": "warning",
-                        "message": f"表 {table.name} 生成失败: {str(table_exc)[:100]}",
-                        "completed_tables": task.completed_tables,
-                        "total_tables": len(tables),
-                        "current_table": table.name,
-                    })
+                    task.error_message = f"表 {table.name} 生成失败: {str(table_exc)[:100]}"
 
+                task.current_phase = "table_done"
+                task.last_message = f"{table.name} 处理完成"
+                task.current_table = None
                 session.add(task)
                 session.commit()
-
-                # 推送"完成一张表"事件
-                yield _sse_event("table_done", {
-                    "table_name": table.name,
-                    "index": idx + 1,
-                    "total": len(tables),
-                    "completed_tables": task.completed_tables,
-                })
 
             task.finished_at = datetime.now()
             index_markdown = render_datasource_index_markdown(datasource, task, tables)
@@ -379,41 +393,71 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
             if task.failed_tables > 0 and task.completed_tables == 0:
                 task.status = KnowledgeSyncTaskStatus.FAILED
                 task.error_message = "所有表均同步失败"
+                task.current_phase = "failed"
+                task.last_message = task.error_message
             elif task.failed_tables > 0:
                 task.status = KnowledgeSyncTaskStatus.PARTIAL_SUCCESS
                 task.error_message = f"部分完成：{task.failed_tables} 张表失败"
+                task.current_phase = "completed"
+                task.last_message = task.error_message
             else:
                 task.status = KnowledgeSyncTaskStatus.COMPLETED
+                task.error_message = None
+                task.current_phase = "completed"
+                task.last_message = f"知识库同步完成，共处理 {len(tables)} 张表"
+            task.current_table = None
             
             session.add(task)
             session.commit()
 
-            yield _sse_event("status", {
-                "phase": "completed",
-                "message": f"知识库同步结束。成功 {task.completed_tables} 张，失败 {task.failed_tables} 张" if task.failed_tables > 0 else f"知识库同步完成，共处理 {len(tables)} 张表",
-                "completed_tables": task.completed_tables,
-                "total_tables": len(tables),
-                "task_id": task.id,
-                "status": task.status,
-            })
-
-        except GeneratorExit:
-            fail_running_knowledge_task(session, task, "知识库同步 SSE 连接中断，请重新同步")
-            raise
         except Exception as exc:
             task.status = KnowledgeSyncTaskStatus.FAILED
             task.error_message = str(exc)
+            task.current_phase = "failed"
+            task.last_message = f"知识库同步失败: {str(exc)[:200]}"
+            task.current_table = None
             task.finished_at = datetime.now()
             session.add(task)
             session.commit()
 
-            yield _sse_event("status", {
-                "phase": "failed",
-                "message": f"知识库同步失败: {str(exc)[:200]}",
-                "completed_tables": task.completed_tables,
-                "total_tables": task.total_tables,
-            })
-            yield _sse_event("error", {"message": str(exc)[:500]})
+
+def stream_knowledge_task_events(engine, task_id: int) -> Generator[str, None, None]:
+    """订阅知识库同步任务进度；客户端断开不会影响后台任务。"""
+    last_signature = None
+    terminal_statuses = {"completed", "partial_success", "failed"}
+
+    while True:
+        with Session(engine) as session:
+            task = session.get(KnowledgeSyncTask, task_id)
+            if not task:
+                yield _sse_event("error", {"message": "任务不存在"})
+                return
+
+            payload = knowledge_task_payload(task)
+            signature = (
+                payload["status"],
+                payload["phase"],
+                payload["message"],
+                payload["completed_tables"],
+                payload["failed_tables"],
+                payload["total_tables"],
+                payload["current_table"],
+                payload["error_message"],
+            )
+
+            if signature != last_signature:
+                yield _sse_event("status", payload)
+                last_signature = signature
+
+            if payload["status"] in terminal_statuses:
+                return
+
+        time.sleep(1)
+
+
+def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None]:
+    """兼容旧端点：订阅已有任务进度，不再由 SSE 驱动同步执行。"""
+    yield from stream_knowledge_task_events(engine, task_id)
 
 
 def _build_summary_prompt(

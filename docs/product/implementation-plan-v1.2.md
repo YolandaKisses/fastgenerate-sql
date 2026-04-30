@@ -38,9 +38,9 @@
 
 ### 2.2 涉及文档
 
-- `docs/product/prd-v1.0.md`
-- `docs/product/spec-v1.0.md`
-- `docs/product/implementation-plan-v1.0.md`
+- `docs/product/prd-v1.2.md`
+- `docs/product/spec-v1.2.md`
+- `docs/product/implementation-plan-v1.2.md`
 
 ### 2.3 验证方式
 

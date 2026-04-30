@@ -22,6 +22,9 @@ class KnowledgeSyncTaskBase(SQLModel):
     failed_tables: int = 0
     output_root: str
     output_dir: str
+    current_table: Optional[str] = None
+    current_phase: Optional[str] = None
+    last_message: Optional[str] = None
     error_message: Optional[str] = None
 
 
