@@ -40,13 +40,13 @@ const getSyncStatusType = (status?: string) => {
 
 <template>
   <div v-if="sources.length === 0" class="empty-list-container">
-    <n-empty description="暂无数据源连接" size="large">
+    <n-empty :description="selectedSource ? '正在配置新连接' : '暂无数据源连接'" size="large">
       <template #icon>
         <n-icon>
           <ServerOutline />
         </n-icon>
       </template>
-      <template #extra>
+      <template #extra v-if="!selectedSource">
         <n-text depth="3" class="empty-tip">
           点击右上角“新建连接”开始配置
         </n-text>
