@@ -6,7 +6,15 @@ import DataSourceForm from './components/DataSourceForm.vue'
 
 const message = useMessage()
 const sources = ref<any[]>([])
-const selectedSource = ref<any | null>(null)
+const selectedSource = ref<any | null>({
+  name: 'New_Connection',
+  db_type: 'mysql',
+  host: '127.0.0.1',
+  port: 3306,
+  database: '',
+  username: 'root',
+  password: ''
+})
 
 const fetchSources = async () => {
   try {
@@ -87,6 +95,23 @@ const handleTest = async (id: number | null) => {
     message.error('请求失败')
   }
 }
+
+const handleDelete = async (id: number | null) => {
+  if (!id) return
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/v1/datasources/${id}`, { method: 'DELETE' })
+    const data = await res.json()
+    if (data.success) {
+      message.success('数据源已删除')
+      selectedSource.value = null
+      await fetchSources()
+    } else {
+      message.error(data.message || '删除失败')
+    }
+  } catch (error) {
+    message.error('删除失败')
+  }
+}
 </script>
 
 <template>
@@ -94,7 +119,7 @@ const handleTest = async (id: number | null) => {
     <div class="page-header" style="margin-bottom: 24px;">
       <div>
         <h1 class="page-title">数据源配置</h1>
-        <p class="page-subtitle">配置您的数据库连接。连接成功不等于可问答，只有同步成功后才允许进入工作台问答流程。</p>
+        <p class="page-subtitle">配置您的数据库连接。连接测试通过后即可进入工作台问答流程，同步 Schema 后会获得更稳定的 SQL 生成效果。</p>
       </div>
     </div>
 
@@ -120,7 +145,7 @@ const handleTest = async (id: number | null) => {
 
       <n-layout-content style="background: transparent;">
         <n-card class="form-card">
-          <DataSourceForm :source-data="selectedSource" @save="handleSave" @test="handleTest" />
+          <DataSourceForm :source-data="selectedSource" @save="handleSave" @test="handleTest" @delete="handleDelete" />
         </n-card>
       </n-layout-content>
     </n-layout>

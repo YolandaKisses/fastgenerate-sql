@@ -7,9 +7,38 @@ import AuditLogDetail from './components/AuditLogDetail.vue'
 const message = useMessage()
 const logs = ref<any[]>([])
 const selectedId = ref<number | null>(null)
+const keyword = ref('')
+const selectedStatus = ref<string | null>(null)
+const selectedDatasource = ref<string | null>(null)
+
+const statusOptions = [
+  { label: '全部状态', value: null },
+  { label: '未执行', value: 'pending' },
+  { label: '执行成功', value: 'success' },
+  { label: '无数据', value: 'empty' },
+  { label: '执行失败', value: 'error' }
+]
+
+const datasourceOptions = computed(() => {
+  const names = Array.from(new Set(logs.value.map(log => log.datasource_name).filter(Boolean)))
+  return [
+    { label: '全部数据源', value: null },
+    ...names.map(name => ({ label: name, value: name }))
+  ]
+})
 
 const selectedLog = computed(() => {
-  return logs.value.find(l => l.id === selectedId.value) || null
+  return filteredLogs.value.find(l => l.id === selectedId.value) || null
+})
+
+const filteredLogs = computed(() => {
+  return logs.value.filter((log) => {
+    const matchesKeyword = !keyword.value || `${log.question} ${log.sql || ''} ${log.error_summary || ''}`.toLowerCase().includes(keyword.value.toLowerCase())
+    const status = !log.executed ? 'pending' : log.execution_status
+    const matchesStatus = selectedStatus.value === null || status === selectedStatus.value
+    const matchesDatasource = selectedDatasource.value === null || log.datasource_name === selectedDatasource.value
+    return matchesKeyword && matchesStatus && matchesDatasource
+  })
 })
 
 const fetchLogs = async () => {
@@ -57,15 +86,35 @@ const handleSelect = (id: number) => {
       <div>
         <h1 class="page-title">审计日志</h1>
         <p class="page-subtitle">本地查看历史问答与执行记录，用于排查与复盘。</p>
+        <p class="page-note">仅本地查看，不支持导出。</p>
       </div>
     </div>
 
     <n-layout has-sider class="logs-layout" style="background: transparent;">
       <n-layout-content style="background: transparent; margin-right: 24px;">
-        <div style="margin-bottom: 12px;">
-          <n-text style="font-size: 16px; font-weight: 600; color: #181c22;">日志列表 ({{ logs.length }})</n-text>
+        <div class="filters">
+          <input
+            v-model="keyword"
+            aria-label="关键词搜索"
+            placeholder="按问题、SQL 或错误信息搜索"
+            class="filter-input"
+          />
+          <select v-model="selectedStatus" aria-label="执行状态筛选" class="filter-select">
+            <option :value="null">全部状态</option>
+            <option value="pending">未执行</option>
+            <option value="success">执行成功</option>
+            <option value="empty">无数据</option>
+            <option value="error">执行失败</option>
+          </select>
+          <select v-model="selectedDatasource" aria-label="数据源筛选" class="filter-select">
+            <option :value="null">全部数据源</option>
+            <option v-for="option in datasourceOptions.slice(1)" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
         </div>
-        <AuditLogTable :logs="logs" :selected-id="selectedId" @select="handleSelect" @delete="handleDelete" />
+        <div style="margin-bottom: 12px;">
+          <n-text style="font-size: 16px; font-weight: 600; color: #181c22;">日志列表 ({{ filteredLogs.length }})</n-text>
+        </div>
+        <AuditLogTable :logs="filteredLogs" :selected-id="selectedId" @select="handleSelect" @delete="handleDelete" />
       </n-layout-content>
 
       <n-layout-sider width="400" style="background: transparent;">
@@ -97,7 +146,38 @@ const handleSelect = (id: number) => {
   margin: 0 0 4px 0;
 }
 
+.page-note {
+  font-size: 13px;
+  color: #8c92a0;
+  margin: 0;
+}
+
 .logs-layout {
   flex: 1;
+}
+
+.filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.filter-input {
+  flex: 1;
+  height: 40px;
+  border: 1px solid #d9dce8;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+  color: #181c22;
+}
+
+.filter-select {
+  min-width: 160px;
+  height: 40px;
+  border: 1px solid #d9dce8;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
 }
 </style>

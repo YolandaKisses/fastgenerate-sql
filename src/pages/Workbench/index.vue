@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { NSelect, NSpace, useMessage } from 'naive-ui'
+import { NSpace, useMessage } from 'naive-ui'
 import AiAssistant from './components/AiAssistant.vue'
 import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'
@@ -158,36 +158,59 @@ const handleExecuteSql = async () => {
   <div class="workbench-page">
     <div class="main-content">
       <n-space justify="space-between" align="center" style="margin-bottom: 16px;">
-        <div style="font-size: 20px; font-weight: 600; color: #181c22;">工作台</div>
-        <n-select
-          v-model:value="currentDatasource"
-          :options="datasourceOptions"
-          placeholder="选择数据源"
-          style="width: 260px;"
-        />
+        <h1 style="font-size: 20px; font-weight: 600; color: #181c22; margin: 0;">工作台</h1>
+        <label class="datasource-picker">
+          <span class="picker-label">当前数据源</span>
+          <select v-model="currentDatasource" aria-label="当前数据源" class="picker-select">
+            <option :value="null">请选择数据源</option>
+            <option v-for="option in datasourceOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </label>
       </n-space>
-      
+
+      <p class="workbench-note">已支持连接测试通过的数据源直接问答。</p>
       <AiAssistant :disabled="loading || !currentDatasource" @submit="handleQuerySubmit" />
-      
-      <!-- 澄清区域 -->
-      <div v-if="clarification" class="clarification-box">
-        <div class="clarification-icon">💬</div>
-        <div>
-          <div style="font-weight: 600; margin-bottom: 4px;">AI 需要进一步信息</div>
-          <div style="color: #414753;">{{ clarification }}</div>
+
+      <section class="panel">
+        <h2>澄清问题</h2>
+        <div v-if="clarification" class="clarification-box">
+          <div class="clarification-icon">💬</div>
+          <div>
+            <div style="font-weight: 600; margin-bottom: 4px;">AI 需要进一步信息</div>
+            <div style="color: #414753;">{{ clarification }}</div>
+          </div>
         </div>
-      </div>
+        <p v-else class="panel-placeholder">如存在多表、多字段或统计口径歧义，系统会先发起澄清。</p>
+      </section>
 
-      <!-- SQL 编辑与确认 -->
-      <SqlEditor 
-        v-if="generatedSql" 
-        :sql="generatedSql" 
-        :explanation="sqlExplanation"
-        @execute="handleExecuteSql" 
-      />
+      <section class="panel">
+        <h2>SQL 候选</h2>
+        <SqlEditor
+          v-if="generatedSql"
+          :sql="generatedSql"
+          :explanation="sqlExplanation"
+          @execute="handleExecuteSql"
+        />
+        <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
+      </section>
 
-      <!-- 查询结果 -->
-      <QueryResult v-if="queryResult" :result="queryResult" />
+      <section class="panel split-panel">
+        <div>
+          <h2>SQL 校验</h2>
+          <p class="panel-placeholder">未执行</p>
+          <p class="subtle-copy">执行前会校验只读性、单语句约束和 500 行返回上限。</p>
+        </div>
+        <div>
+          <h2>执行确认</h2>
+          <button class="confirm-btn" :disabled="!generatedSql || loading" @click="handleExecuteSql">确认并执行</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>执行结果</h2>
+        <QueryResult v-if="queryResult" :result="queryResult" />
+        <div v-else class="panel-placeholder">执行完成后，这里会展示结果表格或错误信息。</div>
+      </section>
     </div>
   </div>
 </template>
@@ -204,6 +227,78 @@ const handleExecuteSql = async () => {
   gap: 24px;
   max-width: 1200px;
   margin: 0 auto;
+}
+
+.datasource-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.picker-label {
+  font-size: 12px;
+  color: #717785;
+}
+
+.picker-select {
+  min-width: 260px;
+  height: 40px;
+  border: 1px solid #d9dce8;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+}
+
+.workbench-note {
+  margin: -8px 0 0;
+  color: #717785;
+  font-size: 13px;
+}
+
+.panel {
+  border: 1px solid #efeff5;
+  border-radius: 12px;
+  background: #fff;
+  padding: 20px;
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  color: #181c22;
+}
+
+.panel-placeholder {
+  margin: 0;
+  color: #717785;
+  font-size: 14px;
+}
+
+.subtle-copy {
+  margin: 8px 0 0;
+  color: #8c92a0;
+  font-size: 13px;
+}
+
+.split-panel {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.confirm-btn {
+  height: 40px;
+  min-width: 140px;
+  border: none;
+  border-radius: 8px;
+  background: #2080f0;
+  color: #fff;
+  font-weight: 600;
+}
+
+.confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .clarification-box {

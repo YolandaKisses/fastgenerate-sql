@@ -22,6 +22,10 @@ def sync_schema(datasource_id: int, session: Session = Depends(get_session)):
 def read_tables(datasource_id: int, session: Session = Depends(get_session)):
     return schema_service.get_tables(session, datasource_id)
 
+@router.patch("/tables/{table_id}/remark", response_model=SchemaTable)
+def update_table_remark(table_id: int, remark_data: RemarkUpdate, session: Session = Depends(get_session)):
+    return schema_service.update_table_remark(session, table_id, remark_data.remark)
+
 @router.get("/fields/{table_id}", response_model=list[SchemaField])
 def read_fields(table_id: int, session: Session = Depends(get_session)):
     return schema_service.get_fields(session, table_id)

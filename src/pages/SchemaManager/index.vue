@@ -81,7 +81,7 @@ const handleSync = async () => {
       <n-space justify="space-between" align="start">
         <div>
           <h1 class="page-title">Schema 与备注管理</h1>
-          <p class="page-subtitle">管理同步回来的数据库元数据，并添加本地补充备注以提升 AI 问答的准确性。</p>
+          <p class="page-subtitle">管理同步回来的数据库元数据，支持表级和字段级的本地补充备注维护，以提升 AI 问答的准确性。</p>
         </div>
         <n-select :options="sourceOptions" v-model:value="currentSource" style="width: 280px;" placeholder="选择数据源" />
       </n-space>

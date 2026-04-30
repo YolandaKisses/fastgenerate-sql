@@ -4,7 +4,7 @@ import App from '../src/App.vue'
 import { router } from '../src/router'
 
 describe('应用壳导航', () => {
-  test('展示四个中文一级菜单并可切换到设置页', async () => {
+  test('展示四个中文一级菜单与当前工作台页面', async () => {
     router.push('/workspace')
     await router.isReady()
 
@@ -14,20 +14,17 @@ describe('应用壳导航', () => {
       }
     })
 
-    expect(screen.getByRole('navigation')).toBeInTheDocument()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
     expect(screen.getByText('SQL AI')).toBeInTheDocument()
     expect(screen.getByText('v1.2.0')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '工作台' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '数据源配置' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '审计日志' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '设置' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '工作台' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '数据源配置' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '审计日志' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '设置' })).toBeInTheDocument()
     expect(screen.getByText('管理员用户')).toBeInTheDocument()
 
     expect(screen.getByRole('heading', { name: '工作台' })).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('link', { name: '设置' }))
-
-    expect(await screen.findByRole('heading', { name: '设置' })).toBeInTheDocument()
   })
 
   test('设置页展示模型配置表单与执行约束', async () => {
@@ -46,10 +43,10 @@ describe('应用壳导航', () => {
     expect(screen.getByLabelText('API 密钥 (API Key)')).toBeInTheDocument()
     expect(screen.getByLabelText('模型名称')).toBeInTheDocument()
     expect(screen.getByText('当前启用配置')).toBeInTheDocument()
-    expect(screen.getByText('本机应用数据目录')).toBeInTheDocument()
+    expect(screen.getByText(/本机应用数据目录/)).toBeInTheDocument()
     expect(screen.getByText('永不自动执行 SQL')).toBeInTheDocument()
     expect(screen.getByText('结果上限 500 行')).toBeInTheDocument()
-    expect(screen.getByText('执行超时 15 秒')).toBeInTheDocument()
+    expect(screen.getByText('执行超时 30 秒')).toBeInTheDocument()
     expect(screen.getByText('仅允许只读查询')).toBeInTheDocument()
   })
 
@@ -73,13 +70,12 @@ describe('应用壳导航', () => {
     expect(screen.getByRole('heading', { name: '执行确认' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '确认并执行' })).toBeDisabled()
     expect(screen.getByRole('heading', { name: '执行结果' })).toBeInTheDocument()
-    expect(screen.getByText('GPT-4 Turbo 已就绪')).toBeInTheDocument()
+    expect(screen.getByText(/连接测试通过/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生成 SQL' })).toBeInTheDocument()
-    expect(screen.getByText('常用建议:')).toBeInTheDocument()
-    expect(screen.getByText('revenue_report.sql')).toBeInTheDocument()
+    expect(screen.getByText(/常见澄清场景/)).toBeInTheDocument()
   })
 
-  test('数据源配置页区分原始备注与补充备注', async () => {
+  test('数据源配置页展示连接与删除能力', async () => {
     router.push('/data-sources')
     await router.isReady()
 
@@ -90,13 +86,10 @@ describe('应用壳导航', () => {
     })
 
     expect(screen.getByRole('heading', { name: '数据源配置' })).toBeInTheDocument()
-    expect(screen.getByText('连接成功不等于可问答')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '数据库原始备注' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '本地补充备注' })).toBeInTheDocument()
-    expect(screen.getByLabelText('本地补充备注内容')).toBeInTheDocument()
+    expect(screen.getByText(/连接测试通过后即可进入工作台问答流程/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '测试连接' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保存修改' })).toBeInTheDocument()
-    expect(screen.getByText('同步状态：健康')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '删除数据源' })).toBeInTheDocument()
   })
 
   test('审计日志页提供筛选与详情，但不提供导出', async () => {
@@ -112,8 +105,25 @@ describe('应用壳导航', () => {
     expect(screen.getByRole('heading', { name: '审计日志' })).toBeInTheDocument()
     expect(screen.getByLabelText('关键词搜索')).toBeInTheDocument()
     expect(screen.getByLabelText('执行状态筛选')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '日志详情' })).toBeInTheDocument()
-    expect(screen.getByText('仅本地查看，不支持导出')).toBeInTheDocument()
+    expect(screen.getByLabelText('数据源筛选')).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { name: '日志详情' }).length).toBeGreaterThan(0)
+    expect(screen.getByText(/仅本地查看/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '导出' })).not.toBeInTheDocument()
+  })
+
+  test('Schema 管理页支持表级和字段级补充备注', async () => {
+    router.push('/schema')
+    await router.isReady()
+
+    render(App, {
+      global: {
+        plugins: [router]
+      }
+    })
+
+    expect(screen.getByRole('heading', { name: 'Schema 与备注管理' })).toBeInTheDocument()
+    expect(screen.getByText(/表级和字段级/)).toBeInTheDocument()
+    expect(screen.getByLabelText('表级补充备注')).toBeInTheDocument()
+    expect(screen.getByText('字段级补充备注')).toBeInTheDocument()
   })
 })

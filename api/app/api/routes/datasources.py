@@ -18,6 +18,10 @@ def read_datasources(session: Session = Depends(get_session)):
 def update_datasource(ds_id: int, ds_in: DataSourceUpdate, session: Session = Depends(get_session)):
     return datasource_service.update_datasource(session, ds_id, ds_in)
 
+@router.delete("/{ds_id}", response_model=dict)
+def delete_datasource(ds_id: int, session: Session = Depends(get_session)):
+    return datasource_service.delete_datasource(session, ds_id)
+
 @router.post("/{ds_id}/test", response_model=dict)
 def test_datasource(ds_id: int, session: Session = Depends(get_session)):
     ds = session.get(DataSource, ds_id)

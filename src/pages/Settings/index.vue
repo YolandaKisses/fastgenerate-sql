@@ -74,14 +74,14 @@ const handleTestConnection = async () => {
         </template>
         <n-form :model="modelConfig" label-placement="top" size="large">
           <n-form-item label="API 基础 URL" path="base_url">
-            <n-input v-model:value="modelConfig.base_url" placeholder="https://api.openai.com/v1" />
+            <n-input v-model:value="modelConfig.base_url" placeholder="https://api.openai.com/v1" :input-props="{ 'aria-label': 'API 基础 URL' }" />
           </n-form-item>
           <n-form-item label="API 密钥 (API Key)" path="api_key">
-            <n-input v-model:value="modelConfig.api_key" type="password" show-password-on="click" placeholder="sk-..." />
+            <n-input v-model:value="modelConfig.api_key" type="password" show-password-on="click" placeholder="sk-..." :input-props="{ 'aria-label': 'API 密钥 (API Key)' }" />
           </n-form-item>
           <n-space :size="24" item-style="width: calc(33% - 16px);">
             <n-form-item label="模型名称" path="model_name">
-              <n-input v-model:value="modelConfig.model_name" placeholder="gpt-4o" />
+              <n-input v-model:value="modelConfig.model_name" placeholder="gpt-4o" :input-props="{ 'aria-label': '模型名称' }" />
             </n-form-item>
             <n-form-item label="超时 (秒)" path="timeout">
               <n-input-number v-model:value="modelConfig.timeout" :min="5" :max="120" style="width: 100%;" />
@@ -95,6 +95,16 @@ const handleTestConnection = async () => {
             <n-button @click="handleTestConnection">测试连接</n-button>
           </n-space>
         </n-form>
+      </n-card>
+
+      <n-card class="custom-card" title="运行时约束" size="large" :bordered="true">
+        <n-space vertical :size="10">
+          <n-text>本机应用数据目录：`~/.fastgenerate_sql_data`</n-text>
+          <n-text>永不自动执行 SQL</n-text>
+          <n-text>结果上限 500 行</n-text>
+          <n-text>执行超时 30 秒</n-text>
+          <n-text>仅允许只读查询</n-text>
+        </n-space>
       </n-card>
     </n-space>
   </div>

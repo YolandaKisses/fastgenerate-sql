@@ -10,6 +10,7 @@ const emit = defineEmits(['sync'])
 const message = useMessage()
 
 const fields = ref<any[]>([])
+const tableRemark = ref('')
 
 const fetchFields = async (tableId: number) => {
   try {
@@ -24,13 +25,33 @@ const fetchFields = async (tableId: number) => {
 
 watch(() => props.table, (newTable) => {
   if (newTable && newTable.id) {
+    tableRemark.value = newTable.supplementary_comment || ''
     fetchFields(newTable.id)
   } else {
+    tableRemark.value = ''
     fields.value = []
   }
 }, { immediate: true })
 
 let saveTimeout: any = null
+const handleTableRemarkChange = (tableId: number, remark: string) => {
+  if (saveTimeout) clearTimeout(saveTimeout)
+  saveTimeout = setTimeout(async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/v1/schema/tables/${tableId}/remark`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remark })
+      })
+      if (!res.ok) {
+        message.error('保存表级备注失败')
+      }
+    } catch {
+      message.error('保存表级备注网络异常')
+    }
+  }, 500)
+}
+
 const handleRemarkChange = (fieldId: number, remark: string) => {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
@@ -65,7 +86,19 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
       </n-space>
     </template>
 
+    <div class="table-remark-panel">
+      <label class="remark-label" for="table-remark">表级补充备注</label>
+      <textarea
+        id="table-remark"
+        v-model="tableRemark"
+        class="remark-textarea"
+        placeholder="补充业务背景、关键口径或表的用途说明"
+        @input="handleTableRemarkChange(table.id, tableRemark)"
+      />
+    </div>
+
     <div class="table-wrapper">
+      <div class="field-remark-title">字段级补充备注</div>
       <table class="data-table">
         <thead>
           <tr>
@@ -95,6 +128,9 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
   </n-card>
   
   <n-card v-else class="editor-card empty-state" :bordered="true">
+    <label class="remark-label" for="empty-table-remark">表级补充备注</label>
+    <textarea id="empty-table-remark" aria-label="表级补充备注" class="remark-textarea" disabled placeholder="选择表后可编辑表级补充备注"></textarea>
+    <div class="field-remark-title">字段级补充备注</div>
     <n-text depth="3">请在左侧选择要管理的表，或点击同步数据源获取 Schema。</n-text>
     <n-button type="primary" style="margin-top: 16px;" @click="emit('sync')">立即同步</n-button>
   </n-card>
@@ -122,6 +158,38 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
   border-radius: 8px;
   overflow: auto;
   flex: 1;
+}
+
+.table-remark-panel {
+  margin-bottom: 16px;
+}
+
+.remark-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #414753;
+  margin-bottom: 8px;
+}
+
+.remark-textarea {
+  width: 100%;
+  min-height: 88px;
+  border: 1px solid #d9dce8;
+  border-radius: 8px;
+  padding: 12px;
+  resize: vertical;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.field-remark-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #414753;
+  padding: 12px;
+  border-bottom: 1px solid #efeff5;
+  background: #fbfcfd;
 }
 
 .data-table {

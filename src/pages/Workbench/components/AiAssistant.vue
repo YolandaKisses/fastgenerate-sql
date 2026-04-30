@@ -21,13 +21,17 @@ const handleGenerate = () => {
   <div class="ai-assistant">
     <div style="margin-bottom: 16px;">
       <n-text style="font-size: 20px; font-weight: 600; color: #181c22;">AI 查询助手</n-text>
+      <div class="assistant-hint">常见澄清场景将优先提示，不会直接猜测。</div>
     </div>
 
+    <label class="sr-only" for="natural-language-question">自然语言问题</label>
     <div class="input-wrapper">
       <div class="input-icon">
         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
       </div>
       <input 
+        id="natural-language-question"
+        aria-label="自然语言问题"
         v-model="query" 
         class="custom-input" 
         placeholder="描述您想查询的数据，例如：'按城市统计用户数量'" 
@@ -46,6 +50,12 @@ const handleGenerate = () => {
 .ai-assistant {
   display: flex;
   flex-direction: column;
+}
+
+.assistant-hint {
+  font-size: 13px;
+  color: #717785;
+  margin-top: 8px;
 }
 
 .input-wrapper {
@@ -110,5 +120,16 @@ const handleGenerate = () => {
 .generate-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
 }
 </style>

@@ -6,7 +6,7 @@ const props = defineProps<{
   sourceData: any | null
 }>()
 
-const emit = defineEmits(['save', 'test'])
+const emit = defineEmits(['save', 'test', 'delete'])
 
 const formModel = ref({
   id: null as number | null,
@@ -52,6 +52,7 @@ const typeOptions = [
         <n-text depth="3" style="font-size: 14px;">管理连接凭据、访问策略及基本同步设置。</n-text>
       </div>
       <n-space>
+        <n-button type="error" ghost :disabled="!formModel.id" @click="emit('delete', formModel.id)">删除数据源</n-button>
         <n-button @click="emit('test', formModel.id)">测试连接</n-button>
         <n-button type="primary" @click="emit('save', formModel)">保存修改</n-button>
       </n-space>

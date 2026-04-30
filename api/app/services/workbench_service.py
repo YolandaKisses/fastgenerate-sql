@@ -1,4 +1,5 @@
 import json
+import re
 import httpx
 from sqlmodel import Session, select
 from app.models.model_config import ModelConfig
@@ -7,6 +8,11 @@ from app.models.schema import SchemaTable, SchemaField
 from app.models.audit_log import AuditLog
 import sqlalchemy
 import time
+from app.services.datasource_service import build_database_url
+
+STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
+ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
+
 
 def get_or_create_config(session: Session) -> ModelConfig:
     config = session.exec(select(ModelConfig)).first()
@@ -27,14 +33,105 @@ def save_config(session: Session, data: dict) -> ModelConfig:
     session.refresh(config)
     return config
 
-def build_schema_context(session: Session, datasource_id: int) -> str:
-    """构建 Schema 上下文，供 LLM prompt 使用"""
+def tokenize_question(question: str) -> list[str]:
+    tokens = set()
+    parts = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", question.lower())
+    for part in parts:
+        if part not in STOP_WORDS:
+            tokens.add(part)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", part):
+            for size in range(2, min(5, len(part) + 1)):
+                for idx in range(0, len(part) - size + 1):
+                    token = part[idx:idx + size]
+                    if token not in STOP_WORDS:
+                        tokens.add(token)
+    return sorted(tokens, key=len, reverse=True)
+
+
+def collect_table_payload(session: Session, datasource_id: int) -> list[dict]:
     tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)).all()
+    payload = []
+    for table in tables:
+        fields = session.exec(select(SchemaField).where(SchemaField.table_id == table.id)).all()
+        payload.append({"table": table, "fields": fields})
+    return payload
+
+
+def retrieve_relevant_schema(session: Session, datasource_id: int, question: str, limit: int = 6) -> list[dict]:
+    tokens = tokenize_question(question)
+    payload = collect_table_payload(session, datasource_id)
+    if not payload:
+        return []
+
+    ranked = []
+    for item in payload:
+        table = item["table"]
+        fields = item["fields"]
+        haystacks = [
+            table.name.lower(),
+            (table.original_comment or "").lower(),
+            (table.supplementary_comment or "").lower(),
+        ]
+        for field in fields:
+            haystacks.extend(
+                [
+                    field.name.lower(),
+                    (field.original_comment or "").lower(),
+                    (field.supplementary_comment or "").lower(),
+                ]
+            )
+
+        score = 0
+        matched_terms = set()
+        for token in tokens:
+            for haystack in haystacks:
+                if token and token in haystack:
+                    score += 2 if haystack == table.name.lower() else 1
+                    matched_terms.add(token)
+                    break
+
+        if score > 0:
+            ranked.append({"score": score, "matched_terms": matched_terms, **item})
+
+    if not ranked:
+        return payload[: min(limit, len(payload))]
+
+    ranked.sort(key=lambda item: (item["score"], len(item["matched_terms"])), reverse=True)
+    return ranked[:limit]
+
+
+def detect_ambiguity(question: str, candidates: list[dict]) -> str | None:
+    if len(candidates) < 2:
+        return None
+
+    token_hits = {}
+    for candidate in candidates:
+        matched_terms = candidate.get("matched_terms", set())
+        for term in matched_terms:
+            token_hits[term] = token_hits.get(term, 0) + 1
+
+    ambiguous_terms = [term for term, count in token_hits.items() if count > 1]
+    if ambiguous_terms and len(question.strip()) <= 20:
+        term = sorted(ambiguous_terms, key=len, reverse=True)[0]
+        return f"你提到的“{term}”可能对应多个表或字段。请补充你要看的是哪类业务对象、时间范围或统计口径。"
+
+    top_score = candidates[0].get("score", 0)
+    second_score = candidates[1].get("score", 0)
+    if top_score == second_score and top_score > 0 and len(question.strip()) <= 12:
+        return "当前问题可能命中多个表。请补充具体业务对象、时间范围或你想统计的指标。"
+
+    return None
+
+
+def build_schema_context(candidates: list[dict]) -> str:
+    """构建 Schema 上下文，供 LLM prompt 使用"""
+    tables = candidates or []
     if not tables:
         return "（该数据源暂无同步的表结构）"
-    
+
     lines = []
-    for t in tables:
+    for item in tables:
+        t = item["table"]
         comment_parts = []
         if t.original_comment:
             comment_parts.append(t.original_comment)
@@ -42,9 +139,8 @@ def build_schema_context(session: Session, datasource_id: int) -> str:
             comment_parts.append(f"[补充: {t.supplementary_comment}]")
         comment = " ".join(comment_parts) if comment_parts else ""
         lines.append(f"\n### 表: {t.name}  {comment}")
-        
-        fields = session.exec(select(SchemaField).where(SchemaField.table_id == t.id)).all()
-        for f in fields:
+
+        for f in item["fields"]:
             f_comment_parts = []
             if f.original_comment:
                 f_comment_parts.append(f.original_comment)
@@ -52,24 +148,50 @@ def build_schema_context(session: Session, datasource_id: int) -> str:
                 f_comment_parts.append(f"[补充: {f.supplementary_comment}]")
             f_comment = " ".join(f_comment_parts) if f_comment_parts else ""
             lines.append(f"  - {f.name} ({f.type}) {f_comment}")
-    
+
     return "\n".join(lines)
+
+
+def validate_llm_result(result: dict) -> dict:
+    result_type = result.get("type")
+    if result_type not in ALLOWED_RESPONSE_TYPES:
+        raise ValueError("LLM 返回了不支持的结果类型")
+    if result_type == "clarification" and not result.get("message"):
+        raise ValueError("LLM 返回澄清结果但缺少 message")
+    if result_type == "sql_candidate" and not result.get("sql"):
+        raise ValueError("LLM 返回 SQL 候选但缺少 sql")
+    return result
 
 def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
     """核心问答：召回 Schema -> 构建 prompt -> 调 LLM -> 返回结果"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
         return {"type": "error", "message": "数据源不存在"}
-    
+
     if ds.status not in (DataSourceStatus.READY, DataSourceStatus.CONNECTION_OK):
-        return {"type": "error", "message": f"数据源状态为 {ds.status}，需要先同步成功后才能问答"}
-    
+        return {"type": "error", "message": f"数据源状态为 {ds.status}，请先完成连接测试"}
+
     config = get_or_create_config(session)
     if not config.api_key:
         return {"type": "error", "message": "请先在设置页面配置 API Key"}
-    
-    schema_context = build_schema_context(session, datasource_id)
-    
+
+    candidates = retrieve_relevant_schema(session, datasource_id, question)
+    ambiguity_message = detect_ambiguity(question, candidates)
+    if ambiguity_message:
+        log = AuditLog(
+            datasource_id=datasource_id,
+            datasource_name=ds.name,
+            question=question,
+            clarified=True,
+            clarification_content=ambiguity_message,
+            executed=False
+        )
+        session.add(log)
+        session.commit()
+        return {"type": "clarification", "message": ambiguity_message}
+
+    schema_context = build_schema_context(candidates)
+
     system_prompt = f"""你是一个企业级 SQL 生成助手。你的职责是根据用户的自然语言问题，生成对应的**只读 SQL 查询语句**。
 
 规则：
@@ -113,9 +235,9 @@ def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
                 if clean.endswith("```"):
                     clean = clean[:-3]
                 clean = clean.strip()
-            
-            result = json.loads(clean)
-            
+
+            result = validate_llm_result(json.loads(clean))
+
             # 记录审计日志
             log = AuditLog(
                 datasource_id=datasource_id,
@@ -128,57 +250,64 @@ def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
             )
             session.add(log)
             session.commit()
-            
+
             return result
     except httpx.HTTPStatusError as e:
         return {"type": "error", "message": f"LLM 请求失败 ({e.response.status_code}): {e.response.text[:200]}"}
     except json.JSONDecodeError:
         return {"type": "error", "message": f"LLM 返回了非 JSON 格式的内容: {content[:200]}"}
+    except ValueError as e:
+        return {"type": "error", "message": str(e)}
     except Exception as e:
         return {"type": "error", "message": str(e)}
+
+
+def apply_query_limits(conn, db_type: str, timeout_ms: int = 30000):
+    raw_connection = getattr(getattr(conn, "connection", None), "driver_connection", None)
+    if raw_connection is not None and hasattr(raw_connection, "call_timeout"):
+        raw_connection.call_timeout = timeout_ms
+
+    if db_type == "mysql":
+        conn.execute(sqlalchemy.text(f"SET SESSION MAX_EXECUTION_TIME={timeout_ms}"))
+    elif db_type == "postgresql":
+        conn.execute(sqlalchemy.text(f"SET statement_timeout = {timeout_ms}"))
 
 def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict:
     """校验并执行只读 SQL"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
         return {"status": "error", "message": "数据源不存在"}
-    
+
     # 只读校验
     sql_upper = sql.strip().upper()
     forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"]
     for keyword in forbidden:
         if sql_upper.startswith(keyword) or f" {keyword} " in sql_upper:
             return {"status": "error", "message": f"安全拦截：禁止执行包含 {keyword} 的语句"}
-    
+
     # 禁止多语句
     if ";" in sql.strip()[:-1]:
         return {"status": "error", "message": "安全拦截：禁止执行多条语句"}
-    
+
     try:
-        if ds.db_type == "postgresql":
-            url = f"postgresql://{ds.username}:{ds.password}@{ds.host}:{ds.port}/{ds.database}"
-        elif ds.db_type == "mysql":
-            url = f"mysql+pymysql://{ds.username}:{ds.password}@{ds.host}:{ds.port}/{ds.database}"
-        else:
-            return {"status": "error", "message": f"不支持的数据库类型: {ds.db_type}"}
-        
+        url = build_database_url(ds)
         engine = sqlalchemy.create_engine(url)
-        
+
         start_time = time.time()
         with engine.connect() as conn:
-            # 15秒超时
+            apply_query_limits(conn, ds.db_type, 30000)
             result = conn.execute(sqlalchemy.text(sql))
             columns = list(result.keys())
             rows = [dict(zip(columns, row)) for row in result.fetchmany(500)]
             duration_ms = int((time.time() - start_time) * 1000)
-        
+
         # 更新审计日志
         log = session.exec(
             select(AuditLog)
             .where(AuditLog.datasource_id == datasource_id, AuditLog.sql == sql)
             .order_by(AuditLog.created_at.desc())
         ).first()
-        
+
         if log:
             log.executed = True
             log.execution_status = "success" if rows else "empty"
@@ -186,7 +315,7 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
             log.row_count = len(rows)
             session.add(log)
             session.commit()
-        
+
         # 查找字段中文备注
         column_comments = {}
         tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)).all()
@@ -196,7 +325,7 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
                 # 优先使用补充备注，其次使用原始备注
                 comment = f.supplementary_comment or f.original_comment or f.name
                 column_comments[f.name] = comment
-        
+
         return {
             "status": "success" if rows else "empty",
             "columns": columns,
@@ -218,5 +347,5 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
             log.error_summary = str(e)[:500]
             session.add(log)
             session.commit()
-        
+
         return {"status": "error", "message": str(e)}
