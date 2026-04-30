@@ -10,6 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@vicons/ionicons5": "^0.13.0",
     "naive-ui": "^2.40.3",
     "pinia": "^3.0.3",
     "vue": "^3.5.13",

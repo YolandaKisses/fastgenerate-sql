@@ -24,10 +24,6 @@ const menuOptions = [
   {
     label: '审计日志',
     key: '/audit-logs',
-  },
-  {
-    label: '设置',
-    key: '/settings',
   }
 ]
 

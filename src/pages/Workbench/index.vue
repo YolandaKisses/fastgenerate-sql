@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { NSpace, useMessage } from 'naive-ui'
+import { NSelect, useMessage } from 'naive-ui'
 import AiAssistant from './components/AiAssistant.vue'
 import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'
@@ -16,6 +16,8 @@ const generatedSql = ref('')
 const sqlExplanation = ref('')
 const clarification = ref('')
 const queryResult = ref<any>(null)
+const validationState = ref<'idle' | 'validating' | 'valid' | 'invalid'>('idle')
+const validationReasons = ref<string[]>([])
 
 // 从 sessionStorage 恢复上次的工作状态
 const restoreState = () => {
@@ -47,6 +49,30 @@ const saveState = () => {
 
 watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult], saveState, { deep: true })
 
+watch(generatedSql, async (newSql) => {
+  if (!newSql) {
+    validationState.value = 'idle'
+    validationReasons.value = []
+    return
+  }
+
+  validationState.value = 'validating'
+  validationReasons.value = []
+  try {
+    const res = await fetch('http://127.0.0.1:8000/api/v1/workbench/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: newSql })
+    })
+    const data = await res.json()
+    validationState.value = data.status === 'valid' ? 'valid' : 'invalid'
+    validationReasons.value = data.reasons || []
+  } catch {
+    validationState.value = 'invalid'
+    validationReasons.value = ['SQL 校验请求失败']
+  }
+})
+
 onMounted(async () => {
   restoreState()
   
@@ -57,7 +83,13 @@ onMounted(async () => {
       datasourceOptions.value = data
         .filter((ds: any) => ds.status === 'READY' || ds.status === 'ready' || ds.status === 'connection_ok')
         .map((ds: any) => ({ label: `${ds.name} (${ds.db_type})`, value: ds.id }))
-      // 仅在没有恢复的选中项时，默认选第一个
+      
+      // 校验恢复的状态是否依然有效
+      if (currentDatasource.value && !datasourceOptions.value.find(opt => opt.value === currentDatasource.value)) {
+        currentDatasource.value = null
+      }
+
+      // 仅在没有有效选中项时，默认选第一个
       if (datasourceOptions.value.length > 0 && !currentDatasource.value) {
         currentDatasource.value = datasourceOptions.value[0].value
       }
@@ -104,9 +136,15 @@ const handleQuerySubmit = async (question: string) => {
       generatedSql.value = data.sql
       sqlExplanation.value = data.explanation || ''
       message.success('SQL 生成成功，请确认后执行')
+      if (data.warning) {
+        message.warning(data.warning)
+      }
     } else if (data.type === 'clarification') {
       clarification.value = data.message
       message.info('AI 需要您进一步澄清问题')
+      if (data.warning) {
+        message.warning(data.warning)
+      }
     } else if (data.type === 'error') {
       message.error(data.message || '未知错误')
     }
@@ -140,6 +178,9 @@ const handleExecuteSql = async () => {
     } else {
       message.error(data.message || '执行失败')
     }
+    if (data.warning) {
+      message.warning(data.warning)
+    }
     
     // 滚动到结果区域
     setTimeout(() => {
@@ -155,78 +196,78 @@ const handleExecuteSql = async () => {
 </script>
 
 <template>
-  <div class="workbench-page">
-    <div class="main-content">
-      <n-space justify="space-between" align="center" style="margin-bottom: 16px;">
-        <h1 style="font-size: 20px; font-weight: 600; color: #181c22; margin: 0;">工作台</h1>
-        <label class="datasource-picker">
-          <span class="picker-label">当前数据源</span>
-          <select v-model="currentDatasource" aria-label="当前数据源" class="picker-select">
-            <option :value="null">请选择数据源</option>
-            <option v-for="option in datasourceOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
-        </label>
-      </n-space>
-
-      <p class="workbench-note">已支持连接测试通过的数据源直接问答。</p>
-      <AiAssistant :disabled="loading || !currentDatasource" @submit="handleQuerySubmit" />
-
-      <section class="panel">
-        <h2>澄清问题</h2>
-        <div v-if="clarification" class="clarification-box">
-          <div class="clarification-icon">💬</div>
-          <div>
-            <div style="font-weight: 600; margin-bottom: 4px;">AI 需要进一步信息</div>
-            <div style="color: #414753;">{{ clarification }}</div>
+  <div class="page-shell">
+    <div class="page-header">
+      <div class="header-content">
+        <div>
+          <h1 class="page-title">工作台</h1>
+          <p class="page-subtitle">已支持连接测试通过的数据源直接问答。</p>
+        </div>
+        <div class="header-actions">
+          <div class="datasource-picker">
+            <span class="picker-label">当前数据源</span>
+            <n-select 
+              v-model:value="currentDatasource" 
+              :options="datasourceOptions" 
+              placeholder="请选择数据源" 
+              style="width: 300px;"
+            />
           </div>
         </div>
-        <p v-else class="panel-placeholder">如存在多表、多字段或统计口径歧义，系统会先发起澄清。</p>
-      </section>
+      </div>
+    </div>
 
-      <section class="panel">
-        <h2>SQL 候选</h2>
-        <SqlEditor
-          v-if="generatedSql"
-          :sql="generatedSql"
-          :explanation="sqlExplanation"
-          @execute="handleExecuteSql"
-        />
-        <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
-      </section>
+    <div class="page-content">
+      <AiAssistant :disabled="loading || !currentDatasource" @submit="handleQuerySubmit" />
 
-      <section class="panel split-panel">
-        <div>
-          <h2>SQL 校验</h2>
-          <p class="panel-placeholder">未执行</p>
-          <p class="subtle-copy">执行前会校验只读性、单语句约束和 500 行返回上限。</p>
-        </div>
-        <div>
-          <h2>执行确认</h2>
-          <button class="confirm-btn" :disabled="!generatedSql || loading" @click="handleExecuteSql">确认并执行</button>
-        </div>
-      </section>
+      <div class="workbench-sections">
+        <section class="panel">
+          <h2 class="panel-title">SQL 候选</h2>
+          <SqlEditor
+            v-if="generatedSql"
+            :sql="generatedSql"
+            :explanation="sqlExplanation"
+            @execute="handleExecuteSql"
+          />
+          <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
+        </section>
 
-      <section class="panel">
-        <h2>执行结果</h2>
-        <QueryResult v-if="queryResult" :result="queryResult" />
-        <div v-else class="panel-placeholder">执行完成后，这里会展示结果表格或错误信息。</div>
-      </section>
+        <section class="panel">
+          <h2 class="panel-title">执行结果</h2>
+          <QueryResult v-if="queryResult" :result="queryResult" />
+          <div v-else class="panel-placeholder">执行完成后，这里会展示结果表格或错误信息。</div>
+        </section>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.workbench-page {
-  position: relative;
-  height: 100%;
-}
-
-.main-content {
+.page-shell {
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  max-width: 1200px;
-  margin: 0 auto;
+}
+
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  margin: 0 0 8px 0;
+  color: #181c22;
+}
+
+.page-subtitle {
+  font-size: 14px;
+  line-height: 22px;
+  color: #717785;
+  margin: 0;
 }
 
 .datasource-picker {
@@ -236,35 +277,37 @@ const handleExecuteSql = async () => {
 }
 
 .picker-label {
-  font-size: 12px;
-  color: #717785;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8c92a0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.picker-select {
-  min-width: 260px;
-  height: 40px;
-  border: 1px solid #d9dce8;
-  border-radius: 8px;
-  padding: 0 12px;
-  background: #fff;
+.page-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 1200px;
 }
 
-.workbench-note {
-  margin: -8px 0 0;
-  color: #717785;
-  font-size: 13px;
+.workbench-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .panel {
   border: 1px solid #efeff5;
   border-radius: 12px;
   background: #fff;
-  padding: 20px;
+  padding: 24px;
 }
 
-.panel h2 {
-  margin: 0 0 12px;
-  font-size: 16px;
+.panel-title {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
   color: #181c22;
 }
 
@@ -274,40 +317,15 @@ const handleExecuteSql = async () => {
   font-size: 14px;
 }
 
-.subtle-copy {
-  margin: 8px 0 0;
-  color: #8c92a0;
-  font-size: 13px;
-}
 
-.split-panel {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-}
-
-.confirm-btn {
-  height: 40px;
-  min-width: 140px;
-  border: none;
-  border-radius: 8px;
-  background: #2080f0;
-  color: #fff;
-  font-weight: 600;
-}
-
-.confirm-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
 .clarification-box {
   display: flex;
   align-items: flex-start;
   gap: 12px;
   padding: 16px 20px;
-  background-color: #fffbeb;
-  border: 1px solid #fde68a;
+  background-color: #fbfcfd;
+  border: 1px solid #efeff5;
   border-radius: 8px;
   font-size: 14px;
 }

@@ -1,15 +1,21 @@
-from fastapi import APIRouter, Depends
-from sqlmodel import Session
-from app.core.database import get_session
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlmodel import Session, select
+from app.core.database import engine, get_session
 from app.models.datasource import DataSource
+from app.models.knowledge import KnowledgeSyncTask
 from app.models.schema import SchemaTable, SchemaField
-from app.services import schema_service
+from app.services import knowledge_service, schema_service
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/schema", tags=["schema"])
 
 class RemarkUpdate(BaseModel):
     remark: str
+
+class KnowledgeTaskStatusResponse(BaseModel):
+    task: Optional[KnowledgeSyncTask] = None
+    actual_table_count: int = 0
 
 @router.post("/sync/{datasource_id}")
 def sync_schema(datasource_id: int, session: Session = Depends(get_session)):
@@ -33,3 +39,49 @@ def read_fields(table_id: int, session: Session = Depends(get_session)):
 @router.patch("/fields/{field_id}/remark", response_model=SchemaField)
 def update_field_remark(field_id: int, remark_data: RemarkUpdate, session: Session = Depends(get_session)):
     return schema_service.update_field_remark(session, field_id, remark_data.remark)
+
+
+@router.post("/knowledge/sync/{datasource_id}")
+def sync_knowledge(
+    datasource_id: int,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session)
+):
+    try:
+        task = knowledge_service.create_knowledge_sync_task(session, datasource_id)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+    background_tasks.add_task(knowledge_service.run_knowledge_sync_task, engine, task.id)
+    return {
+        "success": True,
+        "id": task.id,
+        "status": task.status,
+        "datasource_id": task.datasource_id,
+        "datasource_name": task.datasource_name,
+        "total_tables": task.total_tables,
+        "completed_tables": task.completed_tables
+    }
+
+
+@router.get("/knowledge/tasks/{task_id}", response_model=KnowledgeSyncTask)
+def read_knowledge_task(task_id: int, session: Session = Depends(get_session)):
+    task = session.get(KnowledgeSyncTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@router.get("/knowledge/status/{datasource_id}", response_model=KnowledgeTaskStatusResponse)
+def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(get_session)):
+    task = knowledge_service.get_latest_knowledge_sync_task(session, datasource_id)
+    # 计算当前数据源下实际拥有的表数量
+    from sqlalchemy import func
+    actual_table_count = session.exec(
+        select(func.count(SchemaTable.id)).where(SchemaTable.datasource_id == datasource_id)
+    ).one()
+    
+    return {
+        "task": task,
+        "actual_table_count": actual_table_count
+    }

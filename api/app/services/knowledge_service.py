@@ -1,0 +1,415 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+import re
+
+from sqlmodel import Session, select
+
+from app.core.config import settings
+from app.models.datasource import DataSource
+from app.models.knowledge import KnowledgeSyncTask, KnowledgeSyncTaskStatus
+from app.models.schema import SchemaField, SchemaTable
+from app.services.hermes_service import run_hermes_json
+
+
+def get_obsidian_root_path() -> str:
+    return settings.OBSIDIAN_VAULT_ROOT
+
+
+def sanitize_path_segment(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
+    return cleaned or "untitled"
+
+
+def create_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask:
+    datasource = session.get(DataSource, datasource_id)
+    if not datasource:
+        raise ValueError("数据源不存在")
+
+    tables = session.exec(
+        select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)
+    ).all()
+    if not tables:
+        raise ValueError("未找到已同步表，无法同步到知识库")
+
+    output_root = get_obsidian_root_path()
+    output_dir = str(Path(output_root) / sanitize_path_segment(datasource.name))
+    task = KnowledgeSyncTask(
+        datasource_id=datasource.id,
+        datasource_name=datasource.name,
+        total_tables=len(tables),
+        output_root=output_root,
+        output_dir=output_dir,
+    )
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def get_latest_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask | None:
+    statement = (
+        select(KnowledgeSyncTask)
+        .where(KnowledgeSyncTask.datasource_id == datasource_id)
+        .order_by(KnowledgeSyncTask.id.desc())
+        .limit(1)
+    )
+    return session.exec(statement).first()
+
+
+def render_table_markdown(
+    datasource: DataSource,
+    table: SchemaTable,
+    fields: list[SchemaField],
+    summary: dict[str, str],
+    generated_at: datetime | None = None,
+) -> str:
+    generated_at = generated_at or datetime.now()
+    note_properties = build_note_properties(datasource, table, summary, generated_at)
+    frontmatter = render_frontmatter(note_properties)
+    related_links = note_properties.get("related") or []
+    graph_links = summary.get("graph_links") or []
+
+    lines = [
+        frontmatter,
+        "",
+        f"# {table.name}",
+        "",
+        "[[../index|返回数据源总览]]",
+        "",
+        "## 基础信息",
+        f"- 数据源: {datasource.name}",
+        f"- 原始备注: {table.original_comment or '无'}",
+        f"- 补充备注: {table.supplementary_comment or '无'}",
+        "",
+        "## 用途说明",
+        summary.get("purpose", "暂无"),
+        "",
+        "## 核心字段解读",
+    ]
+
+    lines.extend(format_bullet_section(summary.get("core_fields", "暂无")))
+    lines.extend(
+        [
+        "",
+        "## 关联笔记",
+        ]
+    )
+
+    if related_links:
+        for link in related_links:
+            lines.append(f"- {link}")
+    else:
+        lines.append("- 暂无")
+
+    lines.extend(
+        [
+        "",
+        "## 常见关联关系",
+        summary.get("relationships", "暂无"),
+        ]
+    )
+    if graph_links:
+        lines.append("")
+        for item in graph_links:
+            target = item.get("target_table", "未知表")
+            relation_type = item.get("relation_type", "可能关联")
+            join_hint = item.get("join_hint", "未提供")
+            confidence = item.get("confidence", "低")
+            reason = item.get("reason", "未提供")
+            lines.append(
+                f"- [[{target}]] · {relation_type} · `{join_hint}` · 置信度：{confidence} · 依据：{reason}"
+            )
+
+    lines.extend(
+        [
+            "",
+        "## 注意事项",
+        ]
+    )
+    lines.extend(format_bullet_section(summary.get("caveats", "暂无")))
+    lines.extend(
+        [
+        "",
+        "## 字段明细",
+        "| 字段名 | 类型 | 原始备注 | 补充备注 |",
+        "| --- | --- | --- | --- |",
+        ]
+    )
+
+    for field in fields:
+        lines.append(
+            f"| {field.name} | {field.type} | {field.original_comment or ''} | {field.supplementary_comment or ''} |"
+        )
+
+    return "\n".join(lines)
+
+
+def render_datasource_index_markdown(
+    datasource: DataSource,
+    task: KnowledgeSyncTask,
+    tables: list[SchemaTable],
+) -> str:
+    lines = [
+        f"# {datasource.name}",
+        "",
+        "## 数据源信息",
+        f"- 类型: {datasource.db_type}",
+        f"- 表数量: {len(tables)}",
+        f"- 生成时间: {(task.finished_at or datetime.now()).strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## 表目录",
+    ]
+    for table in tables:
+        lines.append(f"- [[tables/{sanitize_path_segment(table.name)}|{table.name}]]")
+
+    lines.extend(
+        [
+            "",
+            "## 说明",
+            "本知识库由 FastGenerate SQL 基于本地已同步 Schema、原始备注与补充备注自动生成。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def generate_table_summary(
+    session: Session,
+    datasource: DataSource,
+    table: SchemaTable,
+    fields: list[SchemaField],
+) -> dict[str, str]:
+    sibling_tables = session.exec(
+        select(SchemaTable).where(
+            SchemaTable.datasource_id == datasource.id,
+            SchemaTable.id != table.id
+        )
+    ).all()
+    prompt = _build_summary_prompt(datasource, table, fields, sibling_tables)
+    data = run_hermes_json(prompt)
+    return {
+        "purpose": data.get("purpose", "暂无"),
+        "core_fields": data.get("core_fields", "暂无"),
+        "relationships": data.get("relationships", "暂无"),
+        "graph_links": data.get("graph_links", []),
+        "note_properties": data.get("note_properties", {}),
+        "caveats": data.get("caveats", "暂无"),
+    }
+
+
+def run_knowledge_sync_task(engine, task_id: int) -> None:
+    with Session(engine) as session:
+        task = session.get(KnowledgeSyncTask, task_id)
+        if not task:
+            return
+
+        datasource = session.get(DataSource, task.datasource_id)
+        if not datasource:
+            task.status = KnowledgeSyncTaskStatus.FAILED
+            task.error_message = "数据源不存在"
+            task.finished_at = datetime.now()
+            session.add(task)
+            session.commit()
+            return
+
+        tables = session.exec(
+            select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
+        ).all()
+
+        task.status = KnowledgeSyncTaskStatus.RUNNING
+        task.started_at = datetime.now()
+        task.total_tables = len(tables)
+        session.add(task)
+        session.commit()
+
+        try:
+            output_dir = Path(task.output_dir)
+            tables_dir = output_dir / "tables"
+            tables_dir.mkdir(parents=True, exist_ok=True)
+
+            for table in tables:
+                fields = session.exec(
+                    select(SchemaField).where(SchemaField.table_id == table.id)
+                ).all()
+                summary = generate_table_summary(session, datasource, table, fields)
+                markdown = render_table_markdown(datasource, table, fields, summary)
+                table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
+                table_path.write_text(markdown, encoding="utf-8")
+                task.completed_tables += 1
+                session.add(task)
+                session.commit()
+
+            task.finished_at = datetime.now()
+            index_markdown = render_datasource_index_markdown(datasource, task, tables)
+            (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
+            task.status = KnowledgeSyncTaskStatus.COMPLETED
+            session.add(task)
+            session.commit()
+        except Exception as exc:
+            task.status = KnowledgeSyncTaskStatus.FAILED
+            task.error_message = str(exc)
+            task.finished_at = datetime.now()
+            session.add(task)
+            session.commit()
+
+
+def _build_summary_prompt(
+    datasource: DataSource,
+    table: SchemaTable,
+    fields: list[SchemaField],
+    sibling_tables: list[SchemaTable] | None = None,
+) -> str:
+    field_lines = []
+    for field in fields:
+        field_lines.append(
+            f"- {field.name} ({field.type}) 原始备注: {field.original_comment or '无'}；补充备注: {field.supplementary_comment or '无'}"
+        )
+    joined_fields = "\n".join(field_lines) if field_lines else "- 无字段"
+    sibling_lines = []
+    for sibling in sibling_tables or []:
+        sibling_lines.append(
+            f"- {sibling.name} 原始备注: {sibling.original_comment or '无'}；补充备注: {sibling.supplementary_comment or '无'}"
+        )
+    joined_siblings = "\n".join(sibling_lines) if sibling_lines else "- 无可参考其他表"
+    return f"""根据下面的数据库元数据，为 Obsidian 生成一张表的结构化知识卡片。
+
+只允许返回一个合法 JSON 对象：
+- 不要返回 markdown
+- 不要使用 ```json 代码块
+- 不要输出任何额外说明
+- 所有字符串尽量单行输出
+- 只基于输入信息保守总结，不要编造事实
+- 输出中文
+
+输入：
+
+数据源: {datasource.name}
+数据库类型: {datasource.db_type}
+表名: {table.name}
+表原始备注: {table.original_comment or '无'}
+表补充备注: {table.supplementary_comment or '无'}
+
+字段:
+{joined_fields}
+
+同数据源其他表:
+{joined_siblings}
+
+返回格式：
+
+{{
+  "purpose": "",
+  "core_fields": "",
+  "relationships": "",
+  "graph_links": [
+    {{
+      "target_table": "",
+      "relation_type": "",
+      "join_hint": "",
+      "confidence": "",
+      "reason": ""
+    }}
+  ],
+  "note_properties": {{
+    "type": "table-note",
+    "status": "active",
+    "tags": [],
+    "summary": "",
+    "related": [],
+    "domain": "",
+    "table_type": "",
+    "primary_entities": [],
+    "keywords": []
+  }},
+  "caveats": ""
+}}
+
+规则：
+1. purpose：1到2句话说明业务用途，以及适合回答什么问题；判断业务用途时要优先参考用户补充备注。
+2. core_fields：概括关键字段的业务含义、统计口径、时间口径、状态口径；有枚举值时尽量说明。
+3. relationships：用简短文字总结最重要的关联关系，包含关联对象、关联字段、置信度。
+4. graph_links：最多5条；只保留最有价值的关联；confidence 只能是“高”“中”“低”；没有明显关联就返回空数组。
+5. note_properties.summary：一句话摘要，适合做笔记属性。
+6. note_properties.related：尽量输出 wiki link，如 ["[[users]]"]。
+7. note_properties.table_type 只能是：事实表、维表、流水表、日志表、配置表、中间表、未知。
+8. tags、keywords、primary_entities 尽量简短，方便 Obsidian 检索。
+9. 只有在字段名、备注、表名明显支持时，关联置信度才能给“高”；如果只是推测，最多给“中”或“低”。
+10. 不确定时明确写“推测”或“需进一步确认”。"""
+
+
+def build_note_properties(
+    datasource: DataSource,
+    table: SchemaTable,
+    summary: dict[str, str],
+    generated_at: datetime,
+) -> dict[str, object]:
+    note_properties = dict(summary.get("note_properties") or {})
+    note_properties.setdefault("project", datasource.name)
+    note_properties.setdefault("type", "table-note")
+    note_properties.setdefault("status", "active")
+    note_properties.setdefault("created", generated_at.strftime("%Y/%m/%d"))
+    note_properties.setdefault("updated", generated_at.strftime("%Y/%m/%d"))
+    note_properties.setdefault("summary", summary.get("purpose", ""))
+    note_properties.setdefault("related", [])
+    note_properties.setdefault("tags", [])
+
+    tags = [sanitize_tag(tag) for tag in note_properties.get("tags", []) if tag]
+    if "db-table" not in tags:
+        tags.insert(0, "db-table")
+    note_properties["tags"] = tags
+
+    related = []
+    for item in note_properties.get("related", []):
+        if item:
+            related.append(item)
+    for graph_link in summary.get("graph_links", []) or []:
+        target_table = graph_link.get("target_table")
+        if target_table:
+            wiki_link = f"[[{target_table}]]"
+            if wiki_link not in related:
+                related.append(wiki_link)
+    note_properties["related"] = related
+    return note_properties
+
+
+def sanitize_tag(value: str) -> str:
+    return value.strip().replace(" ", "-")
+
+
+def render_frontmatter(properties: dict[str, object]) -> str:
+    lines = ["---"]
+    for key, value in properties.items():
+        if isinstance(value, list):
+            lines.append(f"{key}:")
+            for item in value:
+                if isinstance(item, str) and item.startswith("[["):
+                    lines.append(f'  - "{item}"')
+                else:
+                    lines.append(f"  - {item}")
+        else:
+            lines.append(f"{key}: {value}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def format_bullet_section(text: str) -> list[str]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return ["- 暂无"]
+
+    if "\n" in normalized:
+        items = [line.strip(" -") for line in normalized.splitlines() if line.strip()]
+        return [f"- {item}" for item in items] or ["- 暂无"]
+
+    numbered = re.split(r"\s*(?:\d+[\.、]\s*)", normalized)
+    numbered_items = [item.strip() for item in numbered if item.strip()]
+    if len(numbered_items) > 1:
+        return [f"- {item}" for item in numbered_items]
+
+    sentences = [item.strip() for item in re.split(r"(?<=。)", normalized) if item.strip()]
+    colon_heavy = normalized.count("：") >= 2 or normalized.count(":") >= 2
+    if colon_heavy and len(sentences) > 1:
+        return [f"- {item}" for item in sentences]
+
+    return [normalized]

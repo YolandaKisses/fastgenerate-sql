@@ -1,37 +1,26 @@
 import json
 import re
-import httpx
+from pathlib import Path
 from sqlmodel import Session, select
-from app.models.model_config import ModelConfig
 from app.models.datasource import DataSource, DataSourceStatus
 from app.models.schema import SchemaTable, SchemaField
 from app.models.audit_log import AuditLog
 import sqlalchemy
 import time
 from app.services.datasource_service import build_database_url
-
+from app.core.config import settings
+from app.services.hermes_service import run_hermes_json
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
 ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
 
 
-def get_or_create_config(session: Session) -> ModelConfig:
-    config = session.exec(select(ModelConfig)).first()
-    if not config:
-        config = ModelConfig()
-        session.add(config)
+def commit_with_warning(session: Session, warning_message: str) -> str | None:
+    try:
         session.commit()
-        session.refresh(config)
-    return config
-
-def save_config(session: Session, data: dict) -> ModelConfig:
-    config = get_or_create_config(session)
-    for key, value in data.items():
-        if hasattr(config, key) and value is not None:
-            setattr(config, key, value)
-    session.add(config)
-    session.commit()
-    session.refresh(config)
-    return config
+        return None
+    except Exception:
+        session.rollback()
+        return warning_message
 
 def tokenize_question(question: str) -> list[str]:
     tokens = set()
@@ -55,6 +44,15 @@ def collect_table_payload(session: Session, datasource_id: int) -> list[dict]:
         fields = session.exec(select(SchemaField).where(SchemaField.table_id == table.id)).all()
         payload.append({"table": table, "fields": fields})
     return payload
+
+
+def sanitize_path_segment(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
+    return cleaned or "untitled"
+
+
+def get_datasource_knowledge_dir(datasource_name: str) -> Path:
+    return Path(settings.OBSIDIAN_VAULT_ROOT) / sanitize_path_segment(datasource_name) / "tables"
 
 
 def retrieve_relevant_schema(session: Session, datasource_id: int, question: str, limit: int = 6) -> list[dict]:
@@ -162,8 +160,43 @@ def validate_llm_result(result: dict) -> dict:
         raise ValueError("LLM 返回 SQL 候选但缺少 sql")
     return result
 
+
+def normalize_sql(sql: str) -> str:
+    no_block_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
+    no_line_comments = re.sub(r"--.*?$", " ", no_block_comments, flags=re.M)
+    collapsed = re.sub(r"\s+", " ", no_line_comments).strip()
+    # 移除末尾的分号，方便后续判断是否为多条语句
+    return collapsed.rstrip(";")
+
+
+def validate_sql_candidate(sql: str) -> dict:
+    normalized_sql = normalize_sql(sql)
+    if not normalized_sql:
+        return {"status": "invalid", "normalized_sql": normalized_sql, "reasons": ["SQL 为空"]}
+
+    sql_upper = normalized_sql.upper()
+    reasons = []
+    # 如果剥离末尾分号后依然包含分号，说明存在多条语句
+    if ";" in normalized_sql:
+        reasons.append("禁止执行多条语句")
+
+    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "CALL", "EXEC"]
+    for keyword in forbidden:
+        if sql_upper.startswith(keyword) or f" {keyword} " in sql_upper:
+            reasons.append(f"禁止执行包含 {keyword} 的语句")
+            break
+
+    if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
+        reasons.append("仅允许 SELECT 或 WITH 开头的只读查询")
+
+    return {
+        "status": "invalid" if reasons else "valid",
+        "normalized_sql": normalized_sql,
+        "reasons": reasons,
+    }
+
 def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
-    """核心问答：召回 Schema -> 构建 prompt -> 调 LLM -> 返回结果"""
+    """核心问答：优先让 Hermes 检索 Obsidian 知识库 -> 返回澄清或 SQL"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
         return {"type": "error", "message": "数据源不存在"}
@@ -171,9 +204,9 @@ def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
     if ds.status not in (DataSourceStatus.READY, DataSourceStatus.CONNECTION_OK):
         return {"type": "error", "message": f"数据源状态为 {ds.status}，请先完成连接测试"}
 
-    config = get_or_create_config(session)
-    if not config.api_key:
-        return {"type": "error", "message": "请先在设置页面配置 API Key"}
+    knowledge_dir = get_datasource_knowledge_dir(ds.name)
+    if not knowledge_dir.exists():
+        return {"type": "error", "message": "当前数据源还没有可用知识库，请先完成同步到知识库后再问答"}
 
     candidates = retrieve_relevant_schema(session, datasource_id, question)
     ambiguity_message = detect_ambiguity(question, candidates)
@@ -187,75 +220,57 @@ def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
             executed=False
         )
         session.add(log)
-        session.commit()
-        return {"type": "clarification", "message": ambiguity_message}
+        warning = commit_with_warning(session, "问答已返回澄清，但审计日志写入失败")
+        payload = {"type": "clarification", "message": ambiguity_message}
+        if warning:
+            payload["warning"] = warning
+        return payload
 
-    schema_context = build_schema_context(candidates)
-
-    system_prompt = f"""你是一个企业级 SQL 生成助手。你的职责是根据用户的自然语言问题，生成对应的**只读 SQL 查询语句**。
+    system_prompt = f"""你是一个企业级 SQL 生成助手。你当前的任务是先去本地 Obsidian 知识库里检索当前数据源相关笔记，再根据检索结果生成只读 SQL 或提出澄清问题。
 
 规则：
 1. 只能生成 SELECT 语句，严禁生成 INSERT / UPDATE / DELETE / DROP / ALTER 等写操作。
-2. 如果用户的问题不够清晰，你应该先进行澄清，而不是猜测。
+2. 如果用户的问题不够清晰，先澄清，不要猜测。
 3. 数据库类型为 {ds.db_type}，请使用对应方言。
-4. 返回 JSON 格式，只允许以下两种：
+4. 你的主要知识来源是 Obsidian 知识库，不是直接使用内嵌 Schema。
+5. 请先在下面目录中查找与问题最相关的表笔记，再决定 SQL：
+   {knowledge_dir}
+6. 可以阅读命中的表笔记 frontmatter、用途说明、核心字段解读、关联笔记、字段明细。
+7. 如果需要，可继续顺着 related/wiki link 读取少量关联笔记，但不要无关泛读。
+8. 返回 JSON 格式，只允许以下两种：
    - 澄清：{{"type": "clarification", "message": "你的澄清问题"}}
    - SQL：{{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "这条 SQL 的含义"}}
-5. 不要返回任何其他格式。
-
-以下是该数据源的表结构：
-{schema_context}
+9. 不要返回任何其他格式。
 """
 
     try:
-        with httpx.Client(timeout=config.timeout) as client:
-            resp = client.post(
-                f"{config.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": config.model_name,
-                    "temperature": config.temperature,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": question}
-                    ]
-                }
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
-            
-            # 尝试解析 JSON
-            # 去掉可能的 markdown code block
-            clean = content.strip()
-            if clean.startswith("```"):
-                clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
-                if clean.endswith("```"):
-                    clean = clean[:-3]
-                clean = clean.strip()
+        prompt = f"""{system_prompt}
 
-            result = validate_llm_result(json.loads(clean))
+用户问题：{question}
 
-            # 记录审计日志
-            log = AuditLog(
-                datasource_id=datasource_id,
-                datasource_name=ds.name,
-                question=question,
-                clarified=result.get("type") == "clarification",
-                clarification_content=result.get("message") if result.get("type") == "clarification" else None,
-                sql=result.get("sql"),
-                executed=False
-            )
-            session.add(log)
-            session.commit()
+执行要求：
+1. 先检索并阅读当前数据源知识库中的相关笔记。
+2. 优先根据笔记属性、用途说明、核心字段解读、关联笔记和字段明细来判断要查询哪些表。
+3. 如果多个表都可能相关，请先澄清，而不是盲目生成 SQL。
+4. 如果知识库中找不到足够信息，也请先澄清，不要编造字段。
+5. 请严格只返回 JSON。"""
+        result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir)))
 
-            return result
-    except httpx.HTTPStatusError as e:
-        return {"type": "error", "message": f"LLM 请求失败 ({e.response.status_code}): {e.response.text[:200]}"}
-    except json.JSONDecodeError:
-        return {"type": "error", "message": f"LLM 返回了非 JSON 格式的内容: {content[:200]}"}
+        # 记录审计日志
+        log = AuditLog(
+            datasource_id=datasource_id,
+            datasource_name=ds.name,
+            question=question,
+            clarified=result.get("type") == "clarification",
+            clarification_content=result.get("message") if result.get("type") == "clarification" else None,
+            sql=result.get("sql"),
+            executed=False
+        )
+        session.add(log)
+        warning = commit_with_warning(session, "问答成功，但审计日志写入失败")
+        if warning:
+            result["warning"] = warning
+        return result
     except ValueError as e:
         return {"type": "error", "message": str(e)}
     except Exception as e:
@@ -279,15 +294,10 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
         return {"status": "error", "message": "数据源不存在"}
 
     # 只读校验
-    sql_upper = sql.strip().upper()
-    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"]
-    for keyword in forbidden:
-        if sql_upper.startswith(keyword) or f" {keyword} " in sql_upper:
-            return {"status": "error", "message": f"安全拦截：禁止执行包含 {keyword} 的语句"}
-
-    # 禁止多语句
-    if ";" in sql.strip()[:-1]:
-        return {"status": "error", "message": "安全拦截：禁止执行多条语句"}
+    normalized_sql = normalize_sql(sql)
+    validation = validate_sql_candidate(sql)
+    if validation["status"] == "invalid":
+        return {"status": "error", "message": "；".join(validation["reasons"])}
 
     try:
         url = build_database_url(ds)
@@ -314,7 +324,9 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
             log.duration_ms = duration_ms
             log.row_count = len(rows)
             session.add(log)
-            session.commit()
+            warning = commit_with_warning(session, "查询成功，但审计日志写入失败")
+        else:
+            warning = None
 
         # 查找字段中文备注
         column_comments = {}
@@ -326,7 +338,7 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
                 comment = f.supplementary_comment or f.original_comment or f.name
                 column_comments[f.name] = comment
 
-        return {
+        result_payload = {
             "status": "success" if rows else "empty",
             "columns": columns,
             "column_comments": column_comments,
@@ -334,6 +346,9 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
             "row_count": len(rows),
             "duration_ms": duration_ms
         }
+        if warning:
+            result_payload["warning"] = warning
+        return result_payload
     except Exception as e:
         # 更新审计日志
         log = session.exec(
@@ -346,6 +361,11 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
             log.execution_status = "error"
             log.error_summary = str(e)[:500]
             session.add(log)
-            session.commit()
+            warning = commit_with_warning(session, "SQL 执行失败，同时审计日志写入失败")
+        else:
+            warning = None
 
-        return {"status": "error", "message": str(e)}
+        payload = {"status": "error", "message": str(e)}
+        if warning:
+            payload["warning"] = warning
+        return payload

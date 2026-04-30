@@ -1,9 +1,4 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
-import AuditLogsPage from './pages/AuditLogs/index.vue'
-import DataSourcesPage from './pages/DataSources/index.vue'
-import SchemaManagerPage from './pages/SchemaManager/index.vue'
-import SettingsPage from './pages/Settings/index.vue'
-import WorkbenchPage from './pages/Workbench/index.vue'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -12,23 +7,19 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/workspace',
-    component: WorkbenchPage
+    component: () => import('./pages/Workbench/index.vue')
   },
   {
     path: '/data-sources',
-    component: DataSourcesPage
+    component: () => import('./pages/DataSources/index.vue')
   },
   {
     path: '/schema',
-    component: SchemaManagerPage
+    component: () => import('./pages/SchemaManager/index.vue')
   },
   {
     path: '/audit-logs',
-    component: AuditLogsPage
-  },
-  {
-    path: '/settings',
-    component: SettingsPage
+    component: () => import('./pages/AuditLogs/index.vue')
   }
 ]
 

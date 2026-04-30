@@ -1,13 +1,13 @@
-# 企业内部 SQL 问答桌面应用 Implementation Plan
+# 企业内部 SQL 问答 Web 应用 Implementation Plan
 
 **版本**：Implementation Plan v1.0  
 **状态**：已确认发布版
 
-**Goal:** 从 0 到 1 交付一个企业内部可用的桌面 SQL 问答 MVP，支持 `MySQL / PostgreSQL / Oracle`，采用本地 SQLite 存储、关键词/规则 Schema 召回、OpenAI 兼容模型、澄清优先、永不自动执行 SQL。
+**Goal:** 从 0 到 1 交付一个企业内部可用的 Web SQL 问答 MVP，支持 `MySQL / PostgreSQL / Oracle`，采用本地 SQLite 存储、关键词/规则 Schema 召回、OpenAI 兼容模型、澄清优先、永不自动执行 SQL。
 
-**Architecture:** 桌面端使用 `Tauri` 承载前端 `Vue + Naive UI` 应用与本地 `FastAPI` 服务。前端负责页面、状态与交互，后端负责数据源连接、Schema 同步、召回、LLM 编排、SQL 校验、执行与日志，本地 `SQLite` 作为唯一主存储。
+**Architecture:** 前端使用 `Vue + Naive UI` 构建 Web 应用，后端使用本地 `FastAPI` 服务承载数据源连接、Schema 同步、召回、LLM 编排、SQL 校验、执行与日志，本地 `SQLite` 作为唯一主存储。
 
-**Tech Stack:** `Tauri 2`, `Vue 3`, `TypeScript`, `Naive UI`, `Vite`, `Pinia`, `Vue Router`, `FastAPI`, `SQLAlchemy/SQLModel`, `SQLite`
+**Tech Stack:** `Vue 3`, `TypeScript`, `Naive UI`, `Vite`, `Pinia`, `Vue Router`, `FastAPI`, `SQLAlchemy/SQLModel`, `SQLite`
 
 ---
 
@@ -15,12 +15,12 @@
 
 - 前端：`Vue`
 - 组件库：`Naive UI`
-- 技术栈：`Tauri 2 + Vue 3 + TypeScript + Naive UI + FastAPI + SQLite`
+- 技术栈：`Vue 3 + TypeScript + Naive UI + FastAPI + SQLite`
 - SQL 确认方式：`内联确认区`
 - 不复用任何现有 Stitch 项目
 - SQL 结果行数上限：`500`
-- SQL 执行超时：`15 秒`
-- 同步失败后默认禁止问答
+- SQL 执行超时：`30 秒`
+- 只要通过连接测试即可问答
 - 首版不开放 SQL 手工编辑执行
 
 ## 2. 阶段 0：文档收口与交付基线
@@ -40,7 +40,7 @@
 ### 2.3 验证方式
 
 - 三份文档中不出现互相矛盾的口径
-- 明确包含“不使用 embedding、永不自动执行 SQL、同步失败默认禁止问答、结果上限 500 行、执行超时 15 秒”
+- 明确包含“不使用 embedding、永不自动执行 SQL、连接测试通过即可问答、结果上限 500 行、执行超时 30 秒”
 
 ## 3. 阶段 1：设计准备与视觉方向
 
@@ -90,7 +90,6 @@
 
 ### 4.2 涉及模块 / 文件
 
-- `apps/desktop/`
 - `apps/web/`
 - `apps/api/`
 - `docs/architecture/monorepo-structure.md`
@@ -156,7 +155,7 @@
 
 - 能读取表、字段、字段类型、数据库原始备注
 - 同步成功后数据源进入 `ready`
-- 同步失败后默认禁止问答
+- 通过连接测试的数据源即可问答，同步结果用于增强召回质量
 - 再同步不会覆盖补充备注
 - 补充备注可参与后续召回
 
@@ -229,7 +228,7 @@
 - 不限制多表查询结构，只限制：
   - 只读性
   - 最大返回 500 行
-  - 最大执行 15 秒
+  - 最大执行 30 秒
   - 禁止多语句
 - 未确认前绝不执行 SQL
 - 正常区分成功有数据、成功无数据、执行失败
@@ -254,7 +253,7 @@
 
 - 日志至少覆盖：时间、数据源名称快照、问题、是否澄清、澄清内容、SQL、是否执行、执行状态、耗时、错误摘要
 - 主流程成功但日志失败时有单独提示
-- 支持按时间、数据源、状态、关键词筛选
+- 支持按数据源、状态、关键词筛选
 - 删除数据源后历史日志快照仍可读
 
 ## 11. 阶段 9：联调、验收与交付准备
@@ -275,7 +274,7 @@
 
 - 覆盖 MySQL / PostgreSQL / Oracle
 - 覆盖连接成功/失败、同步成功/失败、澄清成功/失败、生成 SQL 成功/失败、校验失败、执行成功/空结果/失败
-- 验证改数据源后必须重新同步、改补充备注会影响召回、模型配置无效时问答被拦截、同步失败后禁止问答、未确认前不执行 SQL
+- 验证改数据源后建议重新同步、改补充备注会影响召回、模型配置无效时问答被拦截、未确认前不执行 SQL
 
 ## 12. 设计稿生成链路
 

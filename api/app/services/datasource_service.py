@@ -3,17 +3,20 @@ from app.models.datasource import DataSource, DataSourceCreate, DataSourceUpdate
 from app.models.schema import SchemaTable, SchemaField
 from fastapi import HTTPException
 import sqlalchemy
+from urllib.parse import quote_plus
 
 CONNECTION_FIELDS = {"db_type", "host", "port", "database", "username", "password"}
 
 
 def build_database_url(ds: DataSource) -> str:
+    username = quote_plus(ds.username)
+    password = quote_plus(ds.password)
     if ds.db_type == "postgresql":
-        return f"postgresql://{ds.username}:{ds.password}@{ds.host}:{ds.port}/{ds.database}"
+        return f"postgresql://{username}:{password}@{ds.host}:{ds.port}/{ds.database}"
     if ds.db_type == "mysql":
-        return f"mysql+pymysql://{ds.username}:{ds.password}@{ds.host}:{ds.port}/{ds.database}"
+        return f"mysql+pymysql://{username}:{password}@{ds.host}:{ds.port}/{ds.database}"
     if ds.db_type == "oracle":
-        return f"oracle+oracledb://{ds.username}:{ds.password}@{ds.host}:{ds.port}/?service_name={ds.database}"
+        return f"oracle+oracledb://{username}:{password}@{ds.host}:{ds.port}/?service_name={ds.database}"
     raise ValueError(f"Unsupported db_type: {ds.db_type}")
 
 
@@ -58,15 +61,32 @@ def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate) -> 
 def test_connection(ds: DataSource) -> dict:
     try:
         if not ds.database:
-            return {"success": False, "message": "测试连接失败：必须填写数据库名 (Database/Schema)"}
+            return {"success": False, "reason": "database_required", "message": "测试连接失败：必须填写数据库名 (Database/Schema)"}
 
         url = build_database_url(ds)
         engine = sqlalchemy.create_engine(url, connect_args=build_connect_args(ds, 5))
-        with engine.connect() as conn:
-            pass
+        try:
+            with engine.connect() as conn:
+                pass
+        finally:
+            engine.dispose()
         return {"success": True, "message": "Connection successful"}
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        return classify_connection_error(e)
+
+
+def classify_connection_error(error: Exception) -> dict:
+    message = str(error)
+    lowered = message.lower()
+    if "access denied" in lowered or "authentication failed" in lowered or "password authentication failed" in lowered:
+        return {"success": False, "reason": "auth_failed", "message": "测试连接失败：认证失败，请检查用户名和密码"}
+    if "unknown database" in lowered or "database does not exist" in lowered or "service_name" in lowered and "does not exist" in lowered:
+        return {"success": False, "reason": "database_not_found", "message": "测试连接失败：数据库不存在，请检查数据库名或服务名"}
+    if "timeout" in lowered or "could not connect" in lowered or "connection refused" in lowered or "name or service not known" in lowered:
+        return {"success": False, "reason": "host_unreachable", "message": "测试连接失败：主机不可达，请检查地址、端口和网络"}
+    if "permission denied" in lowered or "insufficient privilege" in lowered or "not authorized" in lowered:
+        return {"success": False, "reason": "metadata_permission_denied", "message": "测试连接失败：缺少访问元数据所需权限"}
+    return {"success": False, "reason": "unknown", "message": message}
 
 
 def delete_datasource(session: Session, ds_id: int) -> dict:

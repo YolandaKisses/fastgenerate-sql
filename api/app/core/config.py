@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "FastGenerate SQL API"
     # 默认本地 SQLite 数据目录，Tauri 环境下可被覆写
     DATA_DIR: str = os.path.expanduser("~/.fastgenerate_sql_data")
+    OBSIDIAN_VAULT_ROOT: str = os.path.expanduser("~/Documents/obsidian知识库/FastGenerate SQL")
+    HERMES_CLI_PATH: str = os.path.expanduser("~/.local/bin/hermes")
     
     @property
     def DATABASE_URL(self) -> str:

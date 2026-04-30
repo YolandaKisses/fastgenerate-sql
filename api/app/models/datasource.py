@@ -11,6 +11,14 @@ class DataSourceStatus(str, Enum):
     READY = "ready"
     STALE = "stale"
 
+
+class SyncStatus(str, Enum):
+    NEVER_SYNCED = "never_synced"
+    SYNCING = "syncing"
+    SYNC_SUCCESS = "sync_success"
+    SYNC_FAILED = "sync_failed"
+    SYNC_PARTIAL_SUCCESS = "sync_partial_success"
+
 class DataSourceBase(SQLModel):
     name: str = Field(index=True)
     db_type: str  # mysql, postgresql, oracle
@@ -19,10 +27,13 @@ class DataSourceBase(SQLModel):
     database: str
     username: str
     status: DataSourceStatus = Field(default=DataSourceStatus.DRAFT)
+    sync_status: SyncStatus = Field(default=SyncStatus.NEVER_SYNCED)
+    last_sync_message: Optional[str] = None
 
 class DataSource(DataSourceBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     password: str # 实际应加密存储
+    last_synced_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -31,6 +42,7 @@ class DataSourceCreate(DataSourceBase):
 
 class DataSourceRead(DataSourceBase):
     id: int
+    last_synced_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 

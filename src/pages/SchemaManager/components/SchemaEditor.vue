@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { NCard, NSpace, NText, NButton, NInput, useMessage } from 'naive-ui'
+import { NButton, NInput, useMessage } from 'naive-ui'
 
 const props = defineProps<{
   table: any | null
+  knowledgeTask?: any | null
+  knowledgeSyncing?: boolean
 }>()
 
-const emit = defineEmits(['sync'])
+const emit = defineEmits(['sync', 'sync-knowledge'])
 const message = useMessage()
 
 const fields = ref<any[]>([])
@@ -67,174 +69,213 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
     } catch {
       message.error('保存备注网络异常')
     }
-  }, 500) // 500ms debounce
+  }, 500)
 }
+
 </script>
 
 <template>
-  <n-card v-if="table" class="editor-card" :bordered="true">
-    <template #header>
-      <n-space align="center" :size="12">
-        <n-text style="font-size: 18px; font-weight: 600; font-family: 'JetBrains Mono', monospace;">{{ table.name }}</n-text>
-        <n-text depth="3">{{ table.original_comment }}</n-text>
-      </n-space>
-    </template>
-    
-    <template #header-extra>
-      <n-space>
-        <n-button type="primary" @click="emit('sync')">重新同步该数据源</n-button>
-      </n-space>
-    </template>
-
-    <div class="table-remark-panel">
-      <label class="remark-label" for="table-remark">表级补充备注</label>
-      <textarea
-        id="table-remark"
-        v-model="tableRemark"
-        class="remark-textarea"
-        placeholder="补充业务背景、关键口径或表的用途说明"
-        @input="handleTableRemarkChange(table.id, tableRemark)"
-      />
+  <div v-if="table" class="editor-container">
+    <div class="editor-header">
+      <div class="header-main">
+        <span class="table-name">{{ table.name }}</span>
+        <span class="table-comment">{{ table.original_comment }}</span>
+      </div>
+      <div class="header-actions">
+        <n-button secondary size="small" @click="emit('sync')">重新同步该数据源</n-button>
+        <n-button type="primary" size="small" :loading="knowledgeSyncing" @click="emit('sync-knowledge')">同步到知识库</n-button>
+      </div>
     </div>
 
-    <div class="table-wrapper">
-      <div class="field-remark-title">字段级补充备注</div>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>字段名</th>
-            <th>类型</th>
-            <th>原始备注</th>
-            <th style="width: 40%;">本地补充备注 (自动保存)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="field in fields" :key="field.id">
-            <td class="font-code field-name">{{ field.name }}</td>
-            <td class="font-code field-type">{{ field.type }}</td>
-            <td class="original-comment">{{ field.original_comment }}</td>
-            <td class="supplementary-comment">
-              <n-input 
-                v-model:value="field.supplementary_comment" 
-                placeholder="添加补充说明，例如枚举值含义..." 
-                size="small" 
-                @update:value="(val) => handleRemarkChange(field.id, val)"
-              />
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="editor-content">
+      <div class="panel section">
+        <label class="section-label">表级补充备注</label>
+        <n-input
+          v-model:value="tableRemark"
+          type="textarea"
+          placeholder="补充业务背景、关键口径或表的用途说明..."
+          :autosize="{ minRows: 3, maxRows: 6 }"
+          @update:value="handleTableRemarkChange(table.id, tableRemark)"
+        />
+      </div>
+
+      <div class="panel table-section">
+        <div class="section-label" style="padding: 12px 16px;">字段级补充备注</div>
+        <div class="table-scroll-area">
+          <table class="native-table">
+            <thead>
+              <tr>
+                <th style="width: 15%;">字段名</th>
+                <th style="width: 25%;">类型</th>
+                <th style="width: 25%;">原始备注</th>
+                <th style="width: 35%;">本地补充备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="field in fields" :key="field.id">
+                <td class="code-font" :title="field.name">{{ field.name }}</td>
+                <td class="code-font type-text" :title="field.type">{{ field.type }}</td>
+                <td class="comment-text" :title="field.original_comment">{{ field.original_comment }}</td>
+                <td>
+                  <n-input 
+                    v-model:value="field.supplementary_comment" 
+                    placeholder="添加说明..."
+                    size="small"
+                    @update:value="(val) => handleRemarkChange(field.id, val)"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
-  </n-card>
+  </div>
   
-  <n-card v-else class="editor-card empty-state" :bordered="true">
-    <label class="remark-label" for="empty-table-remark">表级补充备注</label>
-    <textarea id="empty-table-remark" aria-label="表级补充备注" class="remark-textarea" disabled placeholder="选择表后可编辑表级补充备注"></textarea>
-    <div class="field-remark-title">字段级补充备注</div>
-    <n-text depth="3">请在左侧选择要管理的表，或点击同步数据源获取 Schema。</n-text>
-    <n-button type="primary" style="margin-top: 16px;" @click="emit('sync')">立即同步</n-button>
-  </n-card>
+  <div v-else class="empty-container">
+    <div class="empty-content">
+      <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#d9dce8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+      <p>请在左侧选择要管理的表</p>
+      <n-button type="primary" size="large" style="margin-top: 16px;" @click="emit('sync')">同步数据源</n-button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.editor-card {
-  border-radius: 8px;
-  border-color: #efeff5;
-  box-shadow: none;
-  height: 100%;
+.editor-container, .empty-container {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  background: #fff;
+  border: 1px solid #efeff5;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
-.empty-state {
-  display: flex;
+.empty-container {
   align-items: center;
   justify-content: center;
-  flex-direction: column;
 }
 
-.table-wrapper {
-  border: 1px solid #efeff5;
-  border-radius: 8px;
-  overflow: auto;
+.empty-content {
+  text-align: center;
+  color: #717785;
+}
+
+.editor-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #efeff5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fbfcfd;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.header-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.table-name {
+  font-size: 18px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  color: #181c22;
+}
+
+.table-comment {
+  font-size: 14px;
+  color: #717785;
+}
+
+.editor-content {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 20px;
+  min-height: 0;
 }
 
-.table-remark-panel {
-  margin-bottom: 16px;
-}
 
-.remark-label {
-  display: block;
+.section-label {
   font-size: 13px;
   font-weight: 600;
   color: #414753;
   margin-bottom: 8px;
+  display: block;
 }
 
-.remark-textarea {
-  width: 100%;
-  min-height: 88px;
-  border: 1px solid #d9dce8;
+.panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.table-section {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #efeff5;
   border-radius: 8px;
-  padding: 12px;
-  resize: vertical;
-  box-sizing: border-box;
-  font: inherit;
+  overflow: hidden;
 }
 
-.field-remark-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #414753;
-  padding: 12px;
-  border-bottom: 1px solid #efeff5;
-  background: #fbfcfd;
+.table-scroll-area {
+  flex: 1;
+  overflow: auto;
 }
 
-.data-table {
+.native-table {
   width: 100%;
   border-collapse: collapse;
-  text-align: left;
   font-size: 13px;
 }
 
-.data-table th {
-  background-color: #f7f7fa;
+.native-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed; /* Fix layout jumping */
+}
+
+.native-table th {
+  background: #f7f7fa;
+  text-align: left;
   padding: 12px;
   font-weight: 600;
   color: #414753;
   border-bottom: 1px solid #efeff5;
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 10; /* Ensure header stays above content */
 }
 
-.data-table td {
+.native-table td {
   padding: 10px 12px;
   border-bottom: 1px solid #efeff5;
-  color: #181c22;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.font-code {
+.code-font {
   font-family: 'JetBrains Mono', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.field-name {
-  font-weight: 500;
-}
-
-.field-type {
+.type-text {
   color: #8250df;
   font-size: 12px;
 }
 
-.original-comment {
-  color: #414753;
-}
-
-.data-table tbody tr:hover {
-  background-color: #fbfcfd;
+.comment-text {
+  color: #717785;
 }
 </style>
