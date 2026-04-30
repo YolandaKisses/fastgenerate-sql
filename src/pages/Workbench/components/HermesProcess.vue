@@ -14,6 +14,7 @@ const props = defineProps<{
   loading: boolean;
   historyCount: number;
   activeClarification?: string;
+  hermesSessionId?: string | null;
 }>();
 
 defineEmits(["reset"]);
@@ -120,6 +121,16 @@ const formattedElapsed = computed(() => {
 });
 
 const isActive = computed(() => props.steps.length > 0);
+
+const roundCount = computed(() => Math.ceil(props.historyCount / 2));
+
+const shortSessionId = computed(() => {
+  if (!props.hermesSessionId) return "未建立";
+  return props.hermesSessionId.length > 16
+    ? `${props.hermesSessionId.slice(0, 8)}…${props.hermesSessionId.slice(-6)}`
+    : props.hermesSessionId;
+});
+
 </script>
 
 <template>
@@ -127,19 +138,35 @@ const isActive = computed(() => props.steps.length > 0);
     <div class="process-header">
       <div class="process-title">
         <div class="title-svg-icon">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M13 2L3 14H12L11 22L21 10H12L13 2Z"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
         </div>
-        <span>我与 Hermes Process</span>
+        <span>Hermes Process</span>
       </div>
       <div class="process-actions">
         <div v-if="historyCount > 0" class="context-pill">
-          <span class="round-count"
-            >第 {{ Math.ceil(historyCount / 2) }} 轮对话</span
-          >
+          <span class="round-count">第 {{ roundCount }} 轮对话</span>
           <i class="pill-divider"></i>
           <button class="clear-action" @click="$emit('reset')">清除历史</button>
+        </div>
+        <div class="session-meta">
+          <span
+            class="meta-item"
+            :title="hermesSessionId || 'Hermes session 尚未建立'"
+          >
+            Session {{ shortSessionId }}
+          </span>
         </div>
         <div class="process-timer">
           <span v-if="loading" class="timer-pulse"></span>
@@ -176,15 +203,39 @@ const isActive = computed(() => props.steps.length > 0);
             <div class="step-main">
               <span class="actor-badge" :class="actorClass(step)">
                 <span class="badge-icon">
-                  <svg v-if="isUserStep(step)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <svg
+                    v-if="isUserStep(step)"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                     <circle cx="12" cy="7" r="4"></circle>
                   </svg>
-                  <svg v-else-if="stepActor(step) === 'system'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <svg
+                    v-else-if="stepActor(step) === 'system'"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <circle cx="11" cy="11" r="7"></circle>
                     <path d="M20 20l-4-4"></path>
                   </svg>
-                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <svg
+                    v-else
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <rect x="3" y="11" width="18" height="10" rx="2"></rect>
                     <circle cx="12" cy="5" r="2"></circle>
                     <path d="M12 7v4"></path>
@@ -218,7 +269,14 @@ const isActive = computed(() => props.steps.length > 0);
           <div class="step-main">
             <span class="actor-badge actor-hermes">
               <span class="badge-icon pulse-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
                   <rect x="3" y="11" width="18" height="10" rx="2"></rect>
                   <circle cx="12" cy="5" r="2"></circle>
                   <path d="M12 7v4"></path>
@@ -271,15 +329,27 @@ const isActive = computed(() => props.steps.length > 0);
 }
 
 @keyframes svg-pulse {
-  0% { transform: scale(1); opacity: 0.8; }
-  50% { transform: scale(1.15); opacity: 1; filter: drop-shadow(0 0 4px rgba(107, 95, 191, 0.4)); }
-  100% { transform: scale(1); opacity: 0.8; }
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+    filter: drop-shadow(0 0 4px rgba(107, 95, 191, 0.4));
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
 }
 
 .process-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .context-pill {
@@ -321,6 +391,29 @@ const isActive = computed(() => props.steps.length > 0);
 
 .clear-action:hover {
   color: #ef4444;
+}
+
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid rgba(107, 95, 191, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.36);
+  color: #6b5fbf;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .process-timer {

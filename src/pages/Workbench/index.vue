@@ -6,7 +6,14 @@ import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'
 import HermesProcess from './components/HermesProcess.vue'
 import type { HermesStep } from './components/HermesProcess.vue'
-import { appendHermesClarification, compactResultForStorage, formatClarification, startNextProcessRound } from './workbenchState'
+import {
+  appendHermesClarification,
+  compactMessageHistoryForStorage,
+  compactResultForStorage,
+  formatClarification,
+  startNextProcessRound,
+} from './workbenchState'
+import type { MessageHistoryEntry } from './workbenchState'
 import { API_BASE_URL, get, post } from '../../services/request'
 
 const STORAGE_KEY = 'workbench_state'
@@ -24,6 +31,7 @@ const clarification = ref('')
 const queryResult = ref<any | null>(null)
 const hasExecutedSql = ref(false)
 const currentAuditLogId = ref<number | null>(null)
+const hermesSessionId = ref<string | null>(null)
 const validationState = ref<'idle' | 'validating' | 'valid' | 'invalid'>('idle')
 const validationReasons = ref<string[]>([])
 
@@ -32,7 +40,7 @@ const hermesSteps = ref<HermesStep[]>([])
 const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null)
 
 // 对话上下文历史 (用于多轮澄清)
-const messageHistory = ref<{role: 'user' | 'assistant', content: string}[]>([])
+const messageHistory = ref<MessageHistoryEntry[]>([])
 
 // 清除上下文
 const handleResetContext = () => {
@@ -45,6 +53,7 @@ const handleResetContext = () => {
   hasExecutedSql.value = false
   hermesSteps.value = []
   currentAuditLogId.value = null
+  hermesSessionId.value = null
   message.info('上下文已清除')
 }
 
@@ -66,8 +75,9 @@ const restoreState = () => {
       clarification.value = state.clarification ?? ''
       queryResult.value = state.result ?? null
       hasExecutedSql.value = Boolean(state.executed ?? state.result)
-      messageHistory.value = state.history ?? []
+      messageHistory.value = compactMessageHistoryForStorage(state.history ?? [])
       currentAuditLogId.value = state.auditLogId ?? null
+      hermesSessionId.value = state.hermesSessionId ?? null
       hermesSteps.value = state.hermesSteps ?? []
     }
   } catch (error) {
@@ -85,8 +95,10 @@ const saveState = () => {
       clarification: clarification.value,
       result: compactResultForStorage(queryResult.value),
       executed: hasExecutedSql.value,
-      history: messageHistory.value,
+      // Hermes session 持有模型上下文；这里保留最近记录只用于 UI 展示和浏览器存储容量保护。
+      history: compactMessageHistoryForStorage(messageHistory.value),
       auditLogId: currentAuditLogId.value,
+      hermesSessionId: hermesSessionId.value,
       hermesSteps: hermesSteps.value,
     }))
   } catch (error) {
@@ -94,7 +106,7 @@ const saveState = () => {
   }
 }
 
-watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, hasExecutedSql, messageHistory, currentAuditLogId, hermesSteps], saveState, { deep: true })
+watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, hasExecutedSql, messageHistory, currentAuditLogId, hermesSessionId, hermesSteps], saveState, { deep: true })
 
 watch(generatedSql, async (newSql) => {
   if (!newSql) {
@@ -206,11 +218,9 @@ const handleQuerySubmit = (question: string) => {
   hermesSteps.value = startNextProcessRound(hermesSteps.value, question) as HermesStep[]
   currentAuditLogId.value = null
 
-  // 将当前问题存入历史记录 (只保留最近 10 条以防 Prompt 太长)
+  // 将当前问题存入本地历史记录（用于 UI 展示和审计；Hermes 上下文由 session 持有）
   messageHistory.value.push({ role: 'user', content: question })
-  if (messageHistory.value.length > 10) {
-    messageHistory.value.shift()
-  }
+  messageHistory.value = compactMessageHistoryForStorage(messageHistory.value)
 
   // 取消之前的 EventSource / 渲染
   if (activeEventSource) { activeEventSource.close(); activeEventSource = null }
@@ -223,12 +233,8 @@ const handleQuerySubmit = (question: string) => {
   const url = new URL(`${API_BASE_URL}/workbench/ask_stream`)
   url.searchParams.set('datasource_id', String(currentDatasource.value))
   url.searchParams.set('question', question)
-  
-  // 传入历史对话上下文
-  if (messageHistory.value.length > 1) {
-    // 传除最后一条（即当前问题）以外的历史
-    const context = messageHistory.value.slice(0, -1)
-    url.searchParams.set('history', JSON.stringify(context))
+  if (hermesSessionId.value) {
+    url.searchParams.set('hermes_session_id', hermesSessionId.value)
   }
 
   const source = new EventSource(url.toString())
@@ -301,6 +307,9 @@ const handleQuerySubmit = (question: string) => {
     if (data.audit_log_id) {
       currentAuditLogId.value = data.audit_log_id
     }
+    if (data.hermes_session_id) {
+      hermesSessionId.value = data.hermes_session_id
+    }
 
     if (data.type === 'sql_candidate') {
       // 启动渐进渲染
@@ -310,6 +319,7 @@ const handleQuerySubmit = (question: string) => {
       
       // 存入历史
       messageHistory.value.push({ role: 'assistant', content: data.explanation || '已生成 SQL 候选语句。' })
+      messageHistory.value = compactMessageHistoryForStorage(messageHistory.value)
     } else if (data.type === 'clarification') {
       clarification.value = data.message
       hermesSteps.value = appendHermesClarification(hermesSteps.value, data.message) as HermesStep[]
@@ -317,6 +327,7 @@ const handleQuerySubmit = (question: string) => {
       
       // 存入历史
       messageHistory.value.push({ role: 'assistant', content: data.message })
+      messageHistory.value = compactMessageHistoryForStorage(messageHistory.value)
     }
     if (data.warning) {
       message.warning(data.warning)
@@ -430,6 +441,7 @@ const handleExecuteSql = async () => {
         :loading="loading"
         :history-count="messageHistory.length"
         :active-clarification="formatClarification(clarification)"
+        :hermes-session-id="hermesSessionId"
         @reset="handleResetContext"
       />
 

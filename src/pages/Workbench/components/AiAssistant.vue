@@ -10,14 +10,16 @@ const props = defineProps<{
 const emit = defineEmits(["submit"]);
 const query = ref("");
 
-const handleGenerate = (e?: KeyboardEvent) => {
-  // 检查是否在输入法合成过程中
-  if (e?.isComposing) return;
-
+const submitQuery = () => {
   if (query.value.trim() && !props.disabled) {
     emit("submit", query.value);
     query.value = "";
   }
+};
+
+const handleEnter = (e: KeyboardEvent) => {
+  if (e.isComposing) return;
+  submitQuery();
 };
 </script>
 
@@ -36,7 +38,7 @@ const handleGenerate = (e?: KeyboardEvent) => {
         size="large"
         placeholder="描述您想查询的数据，例如：'按城市统计用户数量'"
         :disabled="disabled"
-        @keydown.enter="handleGenerate"
+        @keydown.enter="handleEnter"
         class="custom-n-input"
       >
         <template #prefix>
@@ -46,7 +48,7 @@ const handleGenerate = (e?: KeyboardEvent) => {
           <n-button
             type="primary"
             :disabled="disabled || !query.trim()"
-            @click="handleGenerate"
+            @click="submitQuery"
             size="medium"
           >
             生成 SQL

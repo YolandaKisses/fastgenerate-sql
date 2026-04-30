@@ -11,7 +11,7 @@ import sqlalchemy
 import time
 from app.services.datasource_service import build_database_url
 from app.core.config import settings
-from app.services.hermes_service import run_hermes_json
+from app.services.hermes_service import run_hermes_session_json
 from app.services import setting_service
 
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
@@ -259,17 +259,9 @@ def _build_system_prompt(db_type: str, knowledge_dir: Path) -> str:
 """
 
 
-def _build_full_prompt(system_prompt: str, question: str, history: list[dict] | None = None) -> str:
-    """构建完整 prompt，支持注入上下文"""
+def _build_full_prompt(system_prompt: str, question: str) -> str:
+    """构建当前轮 prompt。多轮上下文交给 Hermes session 持有。"""
     prompt_lines = [system_prompt, ""]
-    
-    if history:
-        prompt_lines.append("### 对话历史 (用于理解当前问题背景):")
-        for msg in history:
-            role_name = "用户" if msg.get("role") == "user" else "助手"
-            content = msg.get("content", "")
-            prompt_lines.append(f"{role_name}: {content}")
-        prompt_lines.append("")
 
     prompt_lines.extend([
         f"### 用户当前问题：{question}",
@@ -335,7 +327,13 @@ def _sse_event(event: str, data: dict) -> str:
 # ask_llm — 原有同步端点（保留向后兼容）
 # ---------------------------------------------------------------------------
 
-def ask_llm(session: Session, datasource_id: int, question: str, history: list[dict] | None = None) -> dict:
+def ask_llm(
+    session: Session,
+    datasource_id: int,
+    question: str,
+    history: list[dict] | None = None,
+    hermes_session_id: str | None = None,
+) -> dict:
     """核心问答：优先让 Hermes 检索 Obsidian 知识库 -> 返回澄清或 SQL"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
@@ -353,8 +351,16 @@ def ask_llm(session: Session, datasource_id: int, question: str, history: list[d
 
     try:
         system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
-        prompt = _build_full_prompt(system_prompt, question, history)
-        result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir), hermes_cli_path=hermes_cli_path))
+        prompt = _build_full_prompt(system_prompt, question)
+        raw_result, next_hermes_session_id = run_hermes_session_json(
+            prompt,
+            cwd=str(knowledge_dir),
+            hermes_cli_path=hermes_cli_path,
+            session_id=hermes_session_id,
+        )
+        result = validate_llm_result(raw_result)
+        if next_hermes_session_id:
+            result["hermes_session_id"] = next_hermes_session_id
 
         warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
         if warning:
@@ -376,7 +382,8 @@ def ask_llm_stream(
     session: Session, 
     datasource_id: int, 
     question: str, 
-    history: list[dict] | None = None
+    history: list[dict] | None = None,
+    hermes_session_id: str | None = None,
 ) -> Generator[str, None, None]:
     """流式问答：通过 SSE 逐步推送 Hermes 调用过程"""
 
@@ -407,10 +414,16 @@ def ask_llm_stream(
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
     system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
-    prompt = _build_full_prompt(system_prompt, question, history)
+    prompt = _build_full_prompt(system_prompt, question)
 
     try:
-        result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir), hermes_cli_path=hermes_cli_path))
+        raw_result, next_hermes_session_id = run_hermes_session_json(
+            prompt,
+            cwd=str(knowledge_dir),
+            hermes_cli_path=hermes_cli_path,
+            session_id=hermes_session_id,
+        )
+        result = validate_llm_result(raw_result)
     except (ValueError, RuntimeError) as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
         yield _sse_event("error", {"message": str(e)})
@@ -434,6 +447,8 @@ def ask_llm_stream(
         result["warning"] = warning
     if log_id:
         result["audit_log_id"] = log_id
+    if next_hermes_session_id:
+        result["hermes_session_id"] = next_hermes_session_id
 
     # 5. 推送结果
     yield _sse_event("status", {"phase": "completed", "message": "已完成"})

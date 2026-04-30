@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 from app.core.database import get_session
@@ -8,12 +8,25 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/workbench", tags=["workbench"])
 
 import json
+import re
 from typing import List, Optional
+
+HERMES_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+def is_valid_hermes_session_id(session_id: str) -> bool:
+    return bool(HERMES_SESSION_ID_RE.fullmatch(session_id))
+
+
+def validate_optional_hermes_session_id(session_id: Optional[str]) -> None:
+    if session_id is not None and not is_valid_hermes_session_id(session_id):
+        raise HTTPException(status_code=400, detail="无效的 session_id 格式")
 
 class AskRequest(BaseModel):
     datasource_id: int
     question: str
     history: Optional[List[dict]] = None
+    hermes_session_id: Optional[str] = None
 
 class ExecuteRequest(BaseModel):
     datasource_id: int
@@ -25,7 +38,14 @@ class ValidateRequest(BaseModel):
 
 @router.post("/ask")
 def ask(req: AskRequest, session: Session = Depends(get_session)):
-    return workbench_service.ask_llm(session, req.datasource_id, req.question, req.history)
+    validate_optional_hermes_session_id(req.hermes_session_id)
+    return workbench_service.ask_llm(
+        session,
+        req.datasource_id,
+        req.question,
+        req.history,
+        req.hermes_session_id,
+    )
 
 
 @router.get("/ask_stream")
@@ -33,9 +53,12 @@ def ask_stream(
     datasource_id: int = Query(...),
     question: str = Query(...),
     history: Optional[str] = Query(None),
+    hermes_session_id: Optional[str] = Query(None),
     session: Session = Depends(get_session),
 ):
     """SSE 流式问答：实时推送 Hermes 调用过程"""
+    validate_optional_hermes_session_id(hermes_session_id)
+
     # 解析 history JSON 字符串
     parsed_history = None
     if history:
@@ -45,7 +68,13 @@ def ask_stream(
             pass
 
     return StreamingResponse(
-        workbench_service.ask_llm_stream(session, datasource_id, question, parsed_history),
+        workbench_service.ask_llm_stream(
+            session,
+            datasource_id,
+            question,
+            parsed_history,
+            hermes_session_id,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

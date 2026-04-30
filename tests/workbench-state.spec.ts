@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendHermesClarification, compactResultForStorage, formatClarification, startNextProcessRound } from '../src/pages/Workbench/workbenchState'
+import { appendHermesClarification, compactMessageHistoryForStorage, compactResultForStorage, formatClarification, startNextProcessRound } from '../src/pages/Workbench/workbenchState'
 
 describe('workbench state helpers', () => {
   it('formats A/B/C/D clarification options as compact lines', () => {
@@ -104,5 +104,18 @@ describe('workbench state helpers', () => {
       'C) 查看 user_profiles 表的数据',
       'D) 查看 user_login_logs 表的数据',
     ].join('\n'))
+  })
+
+  it('keeps only recent message history entries for browser storage', () => {
+    const history = Array.from({ length: 55 }, (_, idx) => ({
+      role: idx % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `message-${idx + 1}`,
+    }))
+
+    const compacted = compactMessageHistoryForStorage(history)
+
+    expect(compacted).toHaveLength(50)
+    expect(compacted[0].content).toBe('message-6')
+    expect(compacted[49].content).toBe('message-55')
   })
 })

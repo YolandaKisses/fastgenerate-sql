@@ -18,6 +18,13 @@ export type HermesProcessStepState = {
   timestamp: number
 }
 
+export type MessageHistoryEntry = {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export const MESSAGE_HISTORY_STORAGE_LIMIT = 50
+
 export const formatClarification = (text: string) => {
   return text
     .replace(/\s+([A-Z]\))/g, '\n$1')
@@ -67,6 +74,14 @@ export const appendHermesClarification = (
   }
 
   return [...existingSteps, clarificationStep]
+}
+
+export const compactMessageHistoryForStorage = (
+  history: MessageHistoryEntry[],
+  limit = MESSAGE_HISTORY_STORAGE_LIMIT,
+): MessageHistoryEntry[] => {
+  if (history.length <= limit) return history
+  return history.slice(-limit)
 }
 
 export const compactResultForStorage = (result: QueryResultState | null): QueryResultState | null => {
