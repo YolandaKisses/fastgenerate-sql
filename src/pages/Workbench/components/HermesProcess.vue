@@ -1,69 +1,74 @@
 <script setup lang="ts">
-import { computed, ref, onUnmounted } from 'vue'
+import { computed, ref, onUnmounted } from "vue";
 
 export interface HermesStep {
-  phase: string
-  message: string
-  detail?: string
-  timestamp: number
+  phase: string;
+  message: string;
+  detail?: string;
+  timestamp: number;
 }
 
 const props = defineProps<{
-  steps: HermesStep[]
-  loading: boolean
-  historyCount: number
-}>()
+  steps: HermesStep[];
+  loading: boolean;
+  historyCount: number;
+}>();
 
-defineEmits(['reset'])
+defineEmits(["reset"]);
 
 // 计时器
-const elapsed = ref(0)
-let timer: ReturnType<typeof setInterval> | null = null
+const elapsed = ref(0);
+let timer: ReturnType<typeof setInterval> | null = null;
 
 const startTimer = () => {
-  elapsed.value = 0
-  timer = setInterval(() => { elapsed.value++ }, 1000)
-}
+  elapsed.value = 0;
+  timer = setInterval(() => {
+    elapsed.value++;
+  }, 1000);
+};
 
 const stopTimer = () => {
-  if (timer) { clearInterval(timer); timer = null }
-}
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+};
 
 // 根据 loading 状态自动启停计时器
 const startWatching = () => {
-  if (props.loading && !timer) startTimer()
-}
+  if (props.loading && !timer) startTimer();
+};
 
-defineExpose({ startTimer, stopTimer })
+defineExpose({ startTimer, stopTimer });
 
-onUnmounted(() => stopTimer())
+onUnmounted(() => stopTimer());
 
 const phaseIcon = (phase: string) => {
   const map: Record<string, string> = {
-    started: '🚀',
-    searching_notes: '🔍',
-    note_hit: '📄',
-    calling_hermes: '🤖',
-    generating_sql: '⏳',
-    completed: '✅',
-    failed: '❌',
-  }
-  return map[phase] || '•'
-}
+    started: "🚀",
+    searching_notes: "🔍",
+    note_hit: "📄",
+    calling_hermes: "🤖",
+    generating_sql: "⏳",
+    completed: "✅",
+    failed: "❌",
+  };
+  return map[phase] || "•";
+};
 
 const phaseClass = (phase: string) => {
-  if (phase === 'completed') return 'step-success'
-  if (phase === 'failed') return 'step-error'
-  return ''
-}
+  if (phase === "completed") return "step-success";
+  if (phase === "failed") return "step-error";
+  return "";
+};
 
 const formattedElapsed = computed(() => {
-  const m = Math.floor(elapsed.value / 60)
-  const s = elapsed.value % 60
-  return m > 0 ? `${m}m ${s}s` : `${s}s`
-})
+  const m = Math.floor(elapsed.value / 60);
+  const s = elapsed.value % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+});
 
-const isActive = computed(() => props.steps.length > 0)
+const isActive = computed(() => props.steps.length > 0);
 </script>
 
 <template>
@@ -71,11 +76,13 @@ const isActive = computed(() => props.steps.length > 0)
     <div class="process-header">
       <div class="process-title">
         <span class="title-icon">⚡</span>
-        <span>Hermes 工作过程</span>
+        <span>Hermes Process</span>
       </div>
       <div class="process-actions">
         <div v-if="historyCount > 0" class="context-pill">
-          <span class="round-count">第 {{ Math.ceil(historyCount / 2) }} 轮对话</span>
+          <span class="round-count"
+            >第 {{ Math.ceil(historyCount / 2) }} 轮对话</span
+          >
           <i class="pill-divider"></i>
           <button class="clear-action" @click="$emit('reset')">清除历史</button>
         </div>
@@ -92,17 +99,28 @@ const isActive = computed(() => props.steps.length > 0)
           v-for="(step, idx) in steps"
           :key="idx"
           class="timeline-step"
-          :class="[phaseClass(step.phase), { 'is-last': idx === steps.length - 1 && loading }]"
+          :class="[
+            phaseClass(step.phase),
+            { 'is-last': idx === steps.length - 1 && loading },
+          ]"
         >
           <div class="step-connector">
             <span class="step-dot" :class="phaseClass(step.phase)">
               {{ phaseIcon(step.phase) }}
             </span>
-            <div v-if="idx < steps.length - 1 || loading" class="step-line"></div>
+            <div
+              v-if="idx < steps.length - 1 || loading"
+              class="step-line"
+            ></div>
           </div>
-          <div class="step-content" :class="{ 'is-note-hit': step.phase === 'note_hit' }">
+          <div
+            class="step-content"
+            :class="{ 'is-note-hit': step.phase === 'note_hit' }"
+          >
             <span class="step-message">{{ step.message }}</span>
-            <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
+            <span v-if="step.detail" class="step-detail">{{
+              step.detail
+            }}</span>
           </div>
         </div>
       </TransitionGroup>
@@ -217,12 +235,19 @@ const isActive = computed(() => props.steps.length > 0)
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
 }
 
 .timer-text {
-  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-family: "JetBrains Mono", "SF Mono", monospace;
   font-weight: 500;
 }
 
@@ -329,7 +354,9 @@ const isActive = computed(() => props.steps.length > 0)
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* TransitionGroup animations */

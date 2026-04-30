@@ -6,6 +6,7 @@ import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'
 import HermesProcess from './components/HermesProcess.vue'
 import type { HermesStep } from './components/HermesProcess.vue'
+import { compactResultForStorage, formatClarification } from './workbenchState'
 import { API_BASE_URL, get, post } from '../../services/request'
 
 const STORAGE_KEY = 'workbench_state'
@@ -32,14 +33,6 @@ const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null)
 
 // 对话上下文历史 (用于多轮澄清)
 const messageHistory = ref<{role: 'user' | 'assistant', content: string}[]>([])
-
-const formatClarification = (text: string) => {
-  return text
-    .replace(/\s+([A-Z]\))/g, '\n$1')
-    .replace(/\s+(-\s+)/g, '\n$1')
-    .replace(/\n{2,}/g, '\n')
-    .trim()
-}
 
 // 清除上下文
 const handleResetContext = () => {
@@ -80,17 +73,6 @@ const restoreState = () => {
   } catch (error) {
     console.warn('恢复工作台状态失败', error)
   }
-}
-
-const compactResultForStorage = (result: any | null) => {
-  if (!result) return null
-  const compact = { ...result }
-  if (Array.isArray(compact.rows) && compact.rows.length > 100) {
-    compact.rows = compact.rows.slice(0, 100)
-    compact.truncated_for_storage = true
-    compact.storage_row_count = compact.rows.length
-  }
-  return compact
 }
 
 // 保存工作状态到 sessionStorage
