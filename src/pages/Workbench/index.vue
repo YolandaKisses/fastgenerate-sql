@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, onUnmounted } from 'vue'
-import { NSelect, useMessage } from 'naive-ui'
+import { NSelect, NButton, useMessage } from 'naive-ui'
 import AiAssistant from './components/AiAssistant.vue'
 import SqlEditor from './components/SqlEditor.vue'
 import QueryResult from './components/QueryResult.vue'

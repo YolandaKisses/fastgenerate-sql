@@ -2,6 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import create_db_and_tables
 from app.api.routes import datasources, schema, workbench, audit, settings
+from app.core.database import engine
+from app.services.knowledge_service import mark_stale_knowledge_sync_tasks
+from sqlmodel import Session
 
 app = FastAPI(title="FastGenerate SQL API", version="1.0.0")
 
@@ -17,6 +20,8 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
+    with Session(engine) as session:
+        mark_stale_knowledge_sync_tasks(session)
 
 app.include_router(datasources.router, prefix="/api/v1")
 app.include_router(schema.router, prefix="/api/v1")

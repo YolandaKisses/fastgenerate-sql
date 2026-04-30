@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
 import re
@@ -14,6 +14,9 @@ from app.models.schema import SchemaField, SchemaTable
 from app.services.hermes_service import run_hermes_json
 from app.services import setting_service
 
+STALE_RUNNING_TASK_AFTER = timedelta(minutes=8)
+
+
 def get_obsidian_root_path(session: Session) -> str:
     return setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
 
@@ -24,6 +27,8 @@ def sanitize_path_segment(value: str) -> str:
 
 
 def create_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask:
+    mark_stale_knowledge_sync_tasks(session, datasource_id=datasource_id)
+
     datasource = session.get(DataSource, datasource_id)
     if not datasource:
         raise ValueError("数据源不存在")
@@ -50,6 +55,8 @@ def create_knowledge_sync_task(session: Session, datasource_id: int) -> Knowledg
 
 
 def get_latest_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask | None:
+    mark_stale_knowledge_sync_tasks(session, datasource_id=datasource_id)
+
     statement = (
         select(KnowledgeSyncTask)
         .where(KnowledgeSyncTask.datasource_id == datasource_id)
@@ -57,6 +64,52 @@ def get_latest_knowledge_sync_task(session: Session, datasource_id: int) -> Know
         .limit(1)
     )
     return session.exec(statement).first()
+
+
+def mark_stale_knowledge_sync_tasks(
+    session: Session,
+    datasource_id: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    now = now or datetime.now()
+    stale_before = now - STALE_RUNNING_TASK_AFTER
+    running_statuses = [
+        KnowledgeSyncTaskStatus.PENDING,
+        KnowledgeSyncTaskStatus.RUNNING,
+    ]
+    statement = select(KnowledgeSyncTask).where(KnowledgeSyncTask.status.in_(running_statuses))
+    if datasource_id is not None:
+        statement = statement.where(KnowledgeSyncTask.datasource_id == datasource_id)
+
+    stale_tasks = []
+    for task in session.exec(statement).all():
+        reference_time = task.started_at or task.created_at
+        if reference_time and reference_time < stale_before:
+            stale_tasks.append(task)
+
+    for task in stale_tasks:
+        task.status = KnowledgeSyncTaskStatus.FAILED
+        task.error_message = "知识库同步任务已超时或连接中断，请重新同步"
+        task.finished_at = now
+        session.add(task)
+
+    if stale_tasks:
+        session.commit()
+
+    return len(stale_tasks)
+
+
+def fail_running_knowledge_task(
+    session: Session,
+    task: KnowledgeSyncTask,
+    message: str,
+) -> None:
+    if task.status in {KnowledgeSyncTaskStatus.PENDING, KnowledgeSyncTaskStatus.RUNNING}:
+        task.status = KnowledgeSyncTaskStatus.FAILED
+        task.error_message = message
+        task.finished_at = datetime.now()
+        session.add(task)
+        session.commit()
 
 
 def render_table_markdown(
@@ -288,6 +341,7 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
                         "message": f"正在为 {table.name} 生成知识卡片...",
                         "completed_tables": task.completed_tables,
                         "total_tables": len(tables),
+                        "current_table": table.name,
                     })
 
                     summary = generate_table_summary(session, datasource, table, fields)
@@ -304,6 +358,7 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
                         "message": f"表 {table.name} 生成失败: {str(table_exc)[:100]}",
                         "completed_tables": task.completed_tables,
                         "total_tables": len(tables),
+                        "current_table": table.name,
                     })
 
                 session.add(task)
@@ -342,6 +397,9 @@ def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None
                 "status": task.status,
             })
 
+        except GeneratorExit:
+            fail_running_knowledge_task(session, task, "知识库同步 SSE 连接中断，请重新同步")
+            raise
         except Exception as exc:
             task.status = KnowledgeSyncTaskStatus.FAILED
             task.error_message = str(exc)

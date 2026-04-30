@@ -15,9 +15,10 @@ const knowledgeSyncing = ref(false)
 
 // 当前活跃的知识库同步 EventSource
 let activeKnowledgeSSE: EventSource | null = null
+let knowledgeStatusPoll: ReturnType<typeof setInterval> | null = null
 
 // 当前处理中的表名（用于实时展示）
-const currentSyncTable = ref('')
+// 移除了独立的 currentSyncTable ref，改用 knowledgeTask.current_table
 
 const formatKnowledgeBanner = (task: any | null) => {
   if (!task) return '尚未同步知识库'
@@ -38,8 +39,8 @@ const formatKnowledgeBanner = (task: any | null) => {
   }
 
   // running 状态下显示当前正在处理的表名
-  if (currentSyncTable.value) {
-    return `同步进行中 ${completed} / ${total} — 正在处理: ${currentSyncTable.value}`
+  if (task.current_table) {
+    return `同步进行中 ${completed} / ${total} — 正在处理: ${task.current_table}`
   }
   return `知识库同步进行中 ${completed} / ${total}`
 }
@@ -91,16 +92,35 @@ const fetchLatestKnowledgeTask = async (dsId: number) => {
       const data = await res.json()
       knowledgeTask.value = data.task
       actualTableCount.value = data.actual_table_count
-      
-      // 如果页面加载时任务正在运行，这里不再轮询
-      // 因为已经没有 SSE 连接了（是之前的 BackgroundTask 模式创建的）
-      // 用户需要等它完成后刷新，或重新触发 SSE 同步
+
       if (data.task && (data.task.status === 'running' || data.task.status === 'pending')) {
         knowledgeSyncing.value = true
+        if (!activeKnowledgeSSE) startKnowledgeStatusPolling(dsId)
+      } else {
+        knowledgeSyncing.value = false
+        stopKnowledgeStatusPolling()
       }
     }
   } catch (error) {
     console.error('无法加载知识库任务状态', error)
+  }
+}
+
+const startKnowledgeStatusPolling = (dsId: number) => {
+  if (knowledgeStatusPoll) return
+  knowledgeStatusPoll = setInterval(() => {
+    if (!currentSource.value || currentSource.value !== dsId || activeKnowledgeSSE) {
+      stopKnowledgeStatusPolling()
+      return
+    }
+    fetchLatestKnowledgeTask(dsId)
+  }, 3000)
+}
+
+const stopKnowledgeStatusPolling = () => {
+  if (knowledgeStatusPoll) {
+    clearInterval(knowledgeStatusPoll)
+    knowledgeStatusPoll = null
   }
 }
 
@@ -110,12 +130,12 @@ const cleanupKnowledgeSSE = () => {
     activeKnowledgeSSE.close()
     activeKnowledgeSSE = null
   }
-  currentSyncTable.value = ''
 }
 
 watch(currentSource, (newVal) => {
   knowledgeTask.value = null
   knowledgeSyncing.value = false
+  stopKnowledgeStatusPolling()
   cleanupKnowledgeSSE()
   if (newVal) {
     fetchTables(newVal)
@@ -128,6 +148,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopKnowledgeStatusPolling()
   cleanupKnowledgeSSE()
 })
 
@@ -160,9 +181,9 @@ const handleKnowledgeSync = () => {
 
   // 清理之前的 SSE
   cleanupKnowledgeSSE()
+  stopKnowledgeStatusPolling()
 
   knowledgeSyncing.value = true
-  currentSyncTable.value = ''
 
   // 初始化 knowledgeTask 为"正在启动"状态
   knowledgeTask.value = {
@@ -187,12 +208,12 @@ const handleKnowledgeSync = () => {
             : 'running',
       completed_tables: data.completed_tables ?? knowledgeTask.value?.completed_tables ?? 0,
       total_tables: data.total_tables ?? knowledgeTask.value?.total_tables ?? 0,
+      current_table: data.current_table ?? knowledgeTask.value?.current_table,
       id: data.task_id ?? knowledgeTask.value?.id,
     }
 
     if (data.phase === 'completed') {
       knowledgeSyncing.value = false
-      currentSyncTable.value = ''
       message.success(data.message || '知识库同步完成')
       source.close()
       activeKnowledgeSSE = null
@@ -200,16 +221,21 @@ const handleKnowledgeSync = () => {
       if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
     } else if (data.phase === 'failed') {
       knowledgeSyncing.value = false
-      currentSyncTable.value = ''
       message.error(data.message || '知识库同步失败')
       source.close()
       activeKnowledgeSSE = null
+      if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
     }
   })
 
   source.addEventListener('table_start', (e: MessageEvent) => {
     const data = JSON.parse(e.data)
-    currentSyncTable.value = data.table_name
+    if (knowledgeTask.value) {
+      knowledgeTask.value = {
+        ...knowledgeTask.value,
+        current_table: data.table_name
+      }
+    }
   })
 
   source.addEventListener('table_done', (e: MessageEvent) => {
@@ -218,6 +244,7 @@ const handleKnowledgeSync = () => {
       knowledgeTask.value = {
         ...knowledgeTask.value,
         completed_tables: data.completed_tables,
+        current_table: ''
       }
     }
   })
@@ -234,9 +261,10 @@ const handleKnowledgeSync = () => {
       }
     }
     knowledgeSyncing.value = false
-    currentSyncTable.value = ''
+    if (knowledgeTask.value) knowledgeTask.value.current_table = ''
     source.close()
     activeKnowledgeSSE = null
+    if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
   })
 }
 </script>

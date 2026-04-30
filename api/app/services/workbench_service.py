@@ -5,6 +5,7 @@ from typing import Generator
 from sqlmodel import Session, select
 from app.models.datasource import DataSource, DataSourceStatus
 from app.models.schema import SchemaTable, SchemaField
+from app.models.knowledge import KnowledgeSyncTask
 from app.models.audit_log import AuditLog
 import sqlalchemy
 import time

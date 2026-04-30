@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NList, NListItem, NTag, NSpace, NText, NEmpty } from 'naive-ui'
-import { DatabaseOutline } from '@vicons/ionicons5'
+import { ServerOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 
 const props = defineProps<{
@@ -43,7 +43,7 @@ const getSyncStatusType = (status?: string) => {
     <n-empty description="暂无数据源连接" size="large">
       <template #icon>
         <n-icon>
-          <DatabaseOutline />
+          <ServerOutline />
         </n-icon>
       </template>
       <template #extra>
