@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Generator
 import re
 
 from sqlmodel import Session, select
@@ -11,10 +12,10 @@ from app.models.datasource import DataSource
 from app.models.knowledge import KnowledgeSyncTask, KnowledgeSyncTaskStatus
 from app.models.schema import SchemaField, SchemaTable
 from app.services.hermes_service import run_hermes_json
+from app.services import setting_service
 
-
-def get_obsidian_root_path() -> str:
-    return settings.OBSIDIAN_VAULT_ROOT
+def get_obsidian_root_path(session: Session) -> str:
+    return setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
 
 
 def sanitize_path_segment(value: str) -> str:
@@ -33,7 +34,7 @@ def create_knowledge_sync_task(session: Session, datasource_id: int) -> Knowledg
     if not tables:
         raise ValueError("未找到已同步表，无法同步到知识库")
 
-    output_root = get_obsidian_root_path()
+    output_root = get_obsidian_root_path(session)
     output_dir = str(Path(output_root) / sanitize_path_segment(datasource.name))
     task = KnowledgeSyncTask(
         datasource_id=datasource.id,
@@ -187,7 +188,8 @@ def generate_table_summary(
         )
     ).all()
     prompt = _build_summary_prompt(datasource, table, fields, sibling_tables)
-    data = run_hermes_json(prompt)
+    hermes_cli_path = setting_service.get_setting(session, "hermes_cli_path", settings.HERMES_CLI_PATH)
+    data = run_hermes_json(prompt, hermes_cli_path=hermes_cli_path)
     return {
         "purpose": data.get("purpose", "暂无"),
         "core_fields": data.get("core_fields", "暂无"),
@@ -198,10 +200,29 @@ def generate_table_summary(
     }
 
 
-def run_knowledge_sync_task(engine, task_id: int) -> None:
+
+# ---------------------------------------------------------------------------
+# SSE 辅助
+# ---------------------------------------------------------------------------
+
+def _sse_event(event: str, data: dict) -> str:
+    """格式化一个 SSE 事件"""
+    import json
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# SSE 流式知识库同步
+# ---------------------------------------------------------------------------
+
+def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None]:
+    """流式知识库同步：通过 SSE 逐步推送每张表的处理进度"""
+    from typing import Generator as _G  # noqa: already imported at module level
+
     with Session(engine) as session:
         task = session.get(KnowledgeSyncTask, task_id)
         if not task:
+            yield _sse_event("error", {"message": "任务不存在"})
             return
 
         datasource = session.get(DataSource, task.datasource_id)
@@ -211,6 +232,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             task.finished_at = datetime.now()
             session.add(task)
             session.commit()
+            yield _sse_event("error", {"message": "数据源不存在"})
             return
 
         tables = session.exec(
@@ -223,35 +245,117 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
         session.add(task)
         session.commit()
 
+        yield _sse_event("status", {
+            "phase": "started",
+            "message": "知识库同步任务已启动",
+            "task_id": task.id,
+            "total_tables": len(tables),
+            "completed_tables": 0,
+        })
+
         try:
             output_dir = Path(task.output_dir)
             tables_dir = output_dir / "tables"
-            tables_dir.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                tables_dir.mkdir(parents=True, exist_ok=True)
+                # 测试写权限
+                test_file = tables_dir / ".write_test"
+                test_file.write_text("test")
+                test_file.unlink()
+            except PermissionError as exc:
+                raise RuntimeError(f"目录不可写，请检查权限: {output_dir}") from exc
+            except OSError as exc:
+                raise RuntimeError(f"创建目录失败: {output_dir}") from exc
 
-            for table in tables:
-                fields = session.exec(
-                    select(SchemaField).where(SchemaField.table_id == table.id)
-                ).all()
-                summary = generate_table_summary(session, datasource, table, fields)
-                markdown = render_table_markdown(datasource, table, fields, summary)
-                table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
-                table_path.write_text(markdown, encoding="utf-8")
-                task.completed_tables += 1
+            for idx, table in enumerate(tables):
+                # 推送"正在处理"事件
+                yield _sse_event("table_start", {
+                    "table_name": table.name,
+                    "table_comment": table.original_comment or table.supplementary_comment or "",
+                    "index": idx + 1,
+                    "total": len(tables),
+                })
+
+                try:
+                    fields = session.exec(
+                        select(SchemaField).where(SchemaField.table_id == table.id)
+                    ).all()
+
+                    # 调用 Hermes 生成摘要
+                    yield _sse_event("status", {
+                        "phase": "generating_summary",
+                        "message": f"正在为 {table.name} 生成知识卡片...",
+                        "completed_tables": task.completed_tables,
+                        "total_tables": len(tables),
+                    })
+
+                    summary = generate_table_summary(session, datasource, table, fields)
+                    markdown = render_table_markdown(datasource, table, fields, summary)
+                    table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
+                    table_path.write_text(markdown, encoding="utf-8")
+
+                    task.completed_tables += 1
+                except Exception as table_exc:
+                    task.failed_tables += 1
+                    # 记录表级别错误但不中断整体流程
+                    yield _sse_event("status", {
+                        "phase": "warning",
+                        "message": f"表 {table.name} 生成失败: {str(table_exc)[:100]}",
+                        "completed_tables": task.completed_tables,
+                        "total_tables": len(tables),
+                    })
+
                 session.add(task)
                 session.commit()
+
+                # 推送"完成一张表"事件
+                yield _sse_event("table_done", {
+                    "table_name": table.name,
+                    "index": idx + 1,
+                    "total": len(tables),
+                    "completed_tables": task.completed_tables,
+                })
 
             task.finished_at = datetime.now()
             index_markdown = render_datasource_index_markdown(datasource, task, tables)
             (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
-            task.status = KnowledgeSyncTaskStatus.COMPLETED
+            
+            if task.failed_tables > 0 and task.completed_tables == 0:
+                task.status = KnowledgeSyncTaskStatus.FAILED
+                task.error_message = "所有表均同步失败"
+            elif task.failed_tables > 0:
+                task.status = KnowledgeSyncTaskStatus.PARTIAL_SUCCESS
+                task.error_message = f"部分完成：{task.failed_tables} 张表失败"
+            else:
+                task.status = KnowledgeSyncTaskStatus.COMPLETED
+            
             session.add(task)
             session.commit()
+
+            yield _sse_event("status", {
+                "phase": "completed",
+                "message": f"知识库同步结束。成功 {task.completed_tables} 张，失败 {task.failed_tables} 张" if task.failed_tables > 0 else f"知识库同步完成，共处理 {len(tables)} 张表",
+                "completed_tables": task.completed_tables,
+                "total_tables": len(tables),
+                "task_id": task.id,
+                "status": task.status,
+            })
+
         except Exception as exc:
             task.status = KnowledgeSyncTaskStatus.FAILED
             task.error_message = str(exc)
             task.finished_at = datetime.now()
             session.add(task)
             session.commit()
+
+            yield _sse_event("status", {
+                "phase": "failed",
+                "message": f"知识库同步失败: {str(exc)[:200]}",
+                "completed_tables": task.completed_tables,
+                "total_tables": task.total_tables,
+            })
+            yield _sse_event("error", {"message": str(exc)[:500]})
 
 
 def _build_summary_prompt(

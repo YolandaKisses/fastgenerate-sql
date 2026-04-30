@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import create_db_and_tables
-from app.api.routes import datasources, schema, workbench, audit
+from app.api.routes import datasources, schema, workbench, audit, settings
 
 app = FastAPI(title="FastGenerate SQL API", version="1.0.0")
 
@@ -22,6 +22,7 @@ app.include_router(datasources.router, prefix="/api/v1")
 app.include_router(schema.router, prefix="/api/v1")
 app.include_router(workbench.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
+app.include_router(settings.router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 def health_check():

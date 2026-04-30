@@ -20,6 +20,10 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/audit-logs',
     component: () => import('./pages/AuditLogs/index.vue')
+  },
+  {
+    path: '/settings',
+    component: () => import('./pages/Settings/index.vue')
   }
 ]
 

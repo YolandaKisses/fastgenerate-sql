@@ -1,5 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 from app.core.database import engine, get_session
 from app.models.datasource import DataSource
@@ -41,27 +42,36 @@ def update_field_remark(field_id: int, remark_data: RemarkUpdate, session: Sessi
     return schema_service.update_field_remark(session, field_id, remark_data.remark)
 
 
-@router.post("/knowledge/sync/{datasource_id}")
-def sync_knowledge(
+
+
+@router.get("/knowledge/sync_stream/{datasource_id}")
+def sync_knowledge_stream(
     datasource_id: int,
-    background_tasks: BackgroundTasks,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
 ):
+    """SSE 流式知识库同步：实时推送每张表的处理进度"""
     try:
         task = knowledge_service.create_knowledge_sync_task(session, datasource_id)
     except ValueError as exc:
-        return {"success": False, "message": str(exc)}
+        # 无法创建任务时，仍返回 SSE 流以保持协议一致
+        import json
+        def _error_stream():
+            yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(
+            _error_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
-    background_tasks.add_task(knowledge_service.run_knowledge_sync_task, engine, task.id)
-    return {
-        "success": True,
-        "id": task.id,
-        "status": task.status,
-        "datasource_id": task.datasource_id,
-        "datasource_name": task.datasource_name,
-        "total_tables": task.total_tables,
-        "completed_tables": task.completed_tables
-    }
+    return StreamingResponse(
+        knowledge_service.run_knowledge_sync_stream(engine, task.id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/knowledge/tasks/{task_id}", response_model=KnowledgeSyncTask)

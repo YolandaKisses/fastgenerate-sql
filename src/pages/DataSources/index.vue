@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NCard, NText, NButton, useDialog, useMessage } from 'naive-ui'
+import { NCard, NText, NButton, NIcon, useDialog, useMessage } from 'naive-ui'
 import DataSourceList from './components/DataSourceList.vue'
 import DataSourceForm from './components/DataSourceForm.vue'
 
@@ -136,11 +136,13 @@ const handleDelete = async (id: number | null) => {
     <div class="ds-container">
       <div class="sider-panel">
         <div class="panel-header">
-          <span class="panel-tag">连接列表</span>
-          <button class="native-btn-text" @click="handleCreateNew">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <n-text depth="3" class="panel-tag">连接列表</n-text>
+          <n-button quaternary size="small" type="primary" @click="handleCreateNew">
+            <template #icon>
+              <n-icon><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/></svg></n-icon>
+            </template>
             新建连接
-          </button>
+          </n-button>
         </div>
         <div class="list-wrapper">
           <DataSourceList :sources="sources" :selected-source="selectedSource" @select="handleSelect" />
@@ -198,15 +200,16 @@ const handleDelete = async (id: number | null) => {
   border: 1px solid #efeff5;
   border-radius: 12px;
   overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
 }
 
 .panel-header {
-  padding: 16px 20px;
+  padding: 12px 16px;
   border-bottom: 1px solid #efeff5;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #fbfcfd;
+  background: #f9fafb;
 }
 
 .panel-tag {
@@ -215,17 +218,6 @@ const handleDelete = async (id: number | null) => {
   color: #8c92a0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-}
-
-.native-btn-text {
-  background: transparent;
-  border: none;
-  color: #2080f0;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
 }
 
 .list-wrapper {

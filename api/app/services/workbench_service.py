@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from typing import Generator
 from sqlmodel import Session, select
 from app.models.datasource import DataSource, DataSourceStatus
 from app.models.schema import SchemaTable, SchemaField
@@ -10,6 +11,8 @@ import time
 from app.services.datasource_service import build_database_url
 from app.core.config import settings
 from app.services.hermes_service import run_hermes_json
+from app.services import setting_service
+
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
 ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
 
@@ -51,8 +54,8 @@ def sanitize_path_segment(value: str) -> str:
     return cleaned or "untitled"
 
 
-def get_datasource_knowledge_dir(datasource_name: str) -> Path:
-    return Path(settings.OBSIDIAN_VAULT_ROOT) / sanitize_path_segment(datasource_name) / "tables"
+def get_datasource_knowledge_dir(vault_root: str, datasource_name: str) -> Path:
+    return Path(vault_root) / sanitize_path_segment(datasource_name) / "tables"
 
 
 def retrieve_relevant_schema(session: Session, datasource_id: int, question: str, limit: int = 6) -> list[dict]:
@@ -158,6 +161,9 @@ def validate_llm_result(result: dict) -> dict:
         raise ValueError("LLM 返回澄清结果但缺少 message")
     if result_type == "sql_candidate" and not result.get("sql"):
         raise ValueError("LLM 返回 SQL 候选但缺少 sql")
+    used_notes = result.get("used_notes")
+    if used_notes is not None and not isinstance(used_notes, list):
+        raise ValueError("LLM 返回的 used_notes 必须是数组")
     return result
 
 
@@ -195,7 +201,106 @@ def validate_sql_candidate(sql: str) -> dict:
         "reasons": reasons,
     }
 
-def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
+# ---------------------------------------------------------------------------
+# 公共 prompt / 日志辅助函数（ask_llm 和 ask_llm_stream 共用）
+# ---------------------------------------------------------------------------
+
+def _build_system_prompt(db_type: str, knowledge_dir: Path) -> str:
+    """构建系统 prompt"""
+    return f"""你是一个企业级 SQL 生成助手。你当前的任务是先去本地 Obsidian 知识库里检索相关笔记，再根据结果生成只读 SQL 或提出澄清。
+
+规则：
+1. 【禁止写操作】只能生成 SELECT 语句，严禁生成 INSERT / UPDATE / DELETE / DROP / ALTER 等任何修改数据的操作。
+2. 【严禁猜测】当用户输入模糊、有歧义、或缺少关键信息（如无法确定具体表名、缺少必要过滤字段等）时，必须进入澄清模式，严禁盲目生成 SQL。
+3. 【强制选项】在澄清模式下，你必须列出最多 4 个具体的候选项（标记为 A、B...）让用户点击或回复选择，而不是空泛地提问。
+4. 数据库类型为 {db_type}，请使用对应方言。
+5. 你的主要知识来源是 Obsidian 知识库。请先在下面目录中查找相关笔记：
+   {knowledge_dir}
+6. 只有在确定用户意图后，才能生成 SQL。
+7. 返回 JSON 格式，只允许以下两种：
+   - 澄清：{{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}}
+   - SQL：{{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}}
+8. 不要返回任何 JSON 以外的文字。
+"""
+
+
+def _build_full_prompt(system_prompt: str, question: str, history: list[dict] | None = None) -> str:
+    """构建完整 prompt，支持注入上下文"""
+    prompt_lines = [system_prompt, ""]
+    
+    if history:
+        prompt_lines.append("### 对话历史 (用于理解当前问题背景):")
+        for msg in history:
+            role_name = "用户" if msg.get("role") == "user" else "助手"
+            content = msg.get("content", "")
+            prompt_lines.append(f"{role_name}: {content}")
+        prompt_lines.append("")
+
+    prompt_lines.extend([
+        f"### 用户当前问题：{question}",
+        "",
+        "执行要求：",
+        "1. 如果用户的问题是对之前澄清的回应，请结合上下文生成 SQL。",
+        "2. 优先根据本地知识库检索结果来判断。",
+        "3. 严格返回 JSON 格式。",
+    ])
+    return "\n".join(prompt_lines)
+
+
+def _log_clarification(session: Session, datasource_id: int, ds_name: str,
+                       question: str, clarification_msg: str) -> tuple[str | None, int | None]:
+    """记录澄清审计日志，返回 (warning, log_id)"""
+    log = AuditLog(
+        datasource_id=datasource_id,
+        datasource_name=ds_name,
+        question=question,
+        clarified=True,
+        clarification_content=clarification_msg,
+        executed=False,
+    )
+    session.add(log)
+    warning = commit_with_warning(session, "问答已返回澄清，但审计日志写入失败")
+    if not warning:
+        session.refresh(log)
+        return None, log.id
+    return warning, None
+
+
+def _log_result(session: Session, datasource_id: int, ds_name: str,
+               question: str, result: dict) -> tuple[str | None, int | None]:
+    """记录结果审计日志，返回 (warning, log_id)"""
+    log = AuditLog(
+        datasource_id=datasource_id,
+        datasource_name=ds_name,
+        question=question,
+        clarified=result.get("type") == "clarification",
+        clarification_content=result.get("message") if result.get("type") == "clarification" else None,
+        sql=result.get("sql"),
+        used_notes=json.dumps(result.get("used_notes", []), ensure_ascii=False) if result.get("used_notes") is not None else None,
+        executed=False,
+    )
+    session.add(log)
+    warning = commit_with_warning(session, "问答成功，但审计日志写入失败")
+    if not warning:
+        session.refresh(log)
+        return None, log.id
+    return warning, None
+
+
+# ---------------------------------------------------------------------------
+# SSE 辅助
+# ---------------------------------------------------------------------------
+
+def _sse_event(event: str, data: dict) -> str:
+    """格式化一个 SSE 事件"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# ask_llm — 原有同步端点（保留向后兼容）
+# ---------------------------------------------------------------------------
+
+def ask_llm(session: Session, datasource_id: int, question: str, history: list[dict] | None = None) -> dict:
     """核心问答：优先让 Hermes 检索 Obsidian 知识库 -> 返回澄清或 SQL"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
@@ -204,77 +309,134 @@ def ask_llm(session: Session, datasource_id: int, question: str) -> dict:
     if ds.status not in (DataSourceStatus.READY, DataSourceStatus.CONNECTION_OK):
         return {"type": "error", "message": f"数据源状态为 {ds.status}，请先完成连接测试"}
 
-    knowledge_dir = get_datasource_knowledge_dir(ds.name)
+    vault_root = setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
+    hermes_cli_path = setting_service.get_setting(session, "hermes_cli_path", settings.HERMES_CLI_PATH)
+
+    knowledge_dir = get_datasource_knowledge_dir(vault_root, ds.name)
     if not knowledge_dir.exists():
         return {"type": "error", "message": "当前数据源还没有可用知识库，请先完成同步到知识库后再问答"}
 
     candidates = retrieve_relevant_schema(session, datasource_id, question)
     ambiguity_message = detect_ambiguity(question, candidates)
     if ambiguity_message:
-        log = AuditLog(
-            datasource_id=datasource_id,
-            datasource_name=ds.name,
-            question=question,
-            clarified=True,
-            clarification_content=ambiguity_message,
-            executed=False
-        )
-        session.add(log)
-        warning = commit_with_warning(session, "问答已返回澄清，但审计日志写入失败")
+        warning, log_id = _log_clarification(session, datasource_id, ds.name, question, ambiguity_message)
         payload = {"type": "clarification", "message": ambiguity_message}
         if warning:
             payload["warning"] = warning
+        if log_id:
+            payload["audit_log_id"] = log_id
         return payload
 
-    system_prompt = f"""你是一个企业级 SQL 生成助手。你当前的任务是先去本地 Obsidian 知识库里检索当前数据源相关笔记，再根据检索结果生成只读 SQL 或提出澄清问题。
-
-规则：
-1. 只能生成 SELECT 语句，严禁生成 INSERT / UPDATE / DELETE / DROP / ALTER 等写操作。
-2. 如果用户的问题不够清晰，先澄清，不要猜测。
-3. 数据库类型为 {ds.db_type}，请使用对应方言。
-4. 你的主要知识来源是 Obsidian 知识库，不是直接使用内嵌 Schema。
-5. 请先在下面目录中查找与问题最相关的表笔记，再决定 SQL：
-   {knowledge_dir}
-6. 可以阅读命中的表笔记 frontmatter、用途说明、核心字段解读、关联笔记、字段明细。
-7. 如果需要，可继续顺着 related/wiki link 读取少量关联笔记，但不要无关泛读。
-8. 返回 JSON 格式，只允许以下两种：
-   - 澄清：{{"type": "clarification", "message": "你的澄清问题"}}
-   - SQL：{{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "这条 SQL 的含义"}}
-9. 不要返回任何其他格式。
-"""
-
     try:
-        prompt = f"""{system_prompt}
+        system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
+        prompt = _build_full_prompt(system_prompt, question, history)
+        result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir), hermes_cli_path=hermes_cli_path))
 
-用户问题：{question}
-
-执行要求：
-1. 先检索并阅读当前数据源知识库中的相关笔记。
-2. 优先根据笔记属性、用途说明、核心字段解读、关联笔记和字段明细来判断要查询哪些表。
-3. 如果多个表都可能相关，请先澄清，而不是盲目生成 SQL。
-4. 如果知识库中找不到足够信息，也请先澄清，不要编造字段。
-5. 请严格只返回 JSON。"""
-        result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir)))
-
-        # 记录审计日志
-        log = AuditLog(
-            datasource_id=datasource_id,
-            datasource_name=ds.name,
-            question=question,
-            clarified=result.get("type") == "clarification",
-            clarification_content=result.get("message") if result.get("type") == "clarification" else None,
-            sql=result.get("sql"),
-            executed=False
-        )
-        session.add(log)
-        warning = commit_with_warning(session, "问答成功，但审计日志写入失败")
+        warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
         if warning:
             result["warning"] = warning
+        if log_id:
+            result["audit_log_id"] = log_id
         return result
     except ValueError as e:
         return {"type": "error", "message": str(e)}
     except Exception as e:
         return {"type": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# ask_llm_stream — SSE 流式端点（Phase 1）
+# ---------------------------------------------------------------------------
+
+def ask_llm_stream(
+    session: Session, 
+    datasource_id: int, 
+    question: str, 
+    history: list[dict] | None = None
+) -> Generator[str, None, None]:
+    """流式问答：通过 SSE 逐步推送 Hermes 调用过程"""
+
+    # 1. 发送开始事件
+    yield _sse_event("status", {"phase": "started", "message": "任务已创建"})
+
+    # 2. 校验数据源
+    ds = session.get(DataSource, datasource_id)
+    if not ds:
+        yield _sse_event("error", {"message": "数据源不存在"})
+        return
+    if ds.status not in (DataSourceStatus.READY, DataSourceStatus.CONNECTION_OK):
+        yield _sse_event("error", {"message": f"数据源状态为 {ds.status}，请先完成连接测试"})
+        return
+
+    vault_root = setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
+    hermes_cli_path = setting_service.get_setting(session, "hermes_cli_path", settings.HERMES_CLI_PATH)
+
+    knowledge_dir = get_datasource_knowledge_dir(vault_root, ds.name)
+    if not knowledge_dir.exists():
+        yield _sse_event("error", {"message": "当前数据源还没有可用知识库，请先完成同步到知识库后再问答"})
+        return
+        
+    latest_task = session.exec(select(KnowledgeSyncTask).where(KnowledgeSyncTask.datasource_id == datasource_id).order_by(KnowledgeSyncTask.id.desc())).first()
+    if latest_task and ds.last_synced_at and latest_task.finished_at and ds.last_synced_at > latest_task.finished_at:
+        yield _sse_event("status", {"phase": "warning", "message": "警告：数据源表结构已有更新，当前知识库可能已过期，建议重新同步"})
+
+    # 3. 检索相关 Schema
+    yield _sse_event("status", {"phase": "searching_notes", "message": "正在检索知识库..."})
+    candidates = retrieve_relevant_schema(session, datasource_id, question)
+
+    # 4. 推送命中的笔记（只显示有实际关键词匹配的，不显示兜底候选）
+    for candidate in candidates:
+        if not candidate.get("matched_terms"):
+            continue
+        table = candidate["table"]
+        yield _sse_event("note_hit", {
+            "note": table.name,
+            "comment": table.original_comment or table.supplementary_comment or "",
+        })
+
+    # 5. 歧义检测
+    ambiguity_message = detect_ambiguity(question, candidates)
+    if ambiguity_message:
+        yield _sse_event("status", {"phase": "completed", "message": "需要澄清"})
+        warning, log_id = _log_clarification(session, datasource_id, ds.name, question, ambiguity_message)
+        result_payload = {"type": "clarification", "message": ambiguity_message}
+        if warning:
+            result_payload["warning"] = warning
+        if log_id:
+            result_payload["audit_log_id"] = log_id
+            
+        yield _sse_event("result", result_payload)
+        return
+
+    # 6. 调用 Hermes
+    yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
+
+    system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
+    prompt = _build_full_prompt(system_prompt, question, history)
+
+    yield _sse_event("status", {"phase": "generating_sql", "message": "Hermes 正在生成 SQL..."})
+
+    try:
+        result = validate_llm_result(run_hermes_json(prompt, cwd=str(knowledge_dir), hermes_cli_path=hermes_cli_path))
+    except (ValueError, RuntimeError) as e:
+        yield _sse_event("status", {"phase": "failed", "message": str(e)})
+        yield _sse_event("error", {"message": str(e)})
+        return
+    except Exception as e:
+        yield _sse_event("status", {"phase": "failed", "message": str(e)})
+        yield _sse_event("error", {"message": str(e)})
+        return
+
+    # 7. 记录审计日志并注入 audit_log_id
+    warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
+    if warning:
+        result["warning"] = warning
+    if log_id:
+        result["audit_log_id"] = log_id
+
+    # 8. 推送结果
+    yield _sse_event("status", {"phase": "completed", "message": "已完成"})
+    yield _sse_event("result", result)
 
 
 def apply_query_limits(conn, db_type: str, timeout_ms: int = 30000):
@@ -287,8 +449,8 @@ def apply_query_limits(conn, db_type: str, timeout_ms: int = 30000):
     elif db_type == "postgresql":
         conn.execute(sqlalchemy.text(f"SET statement_timeout = {timeout_ms}"))
 
-def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict:
-    """校验并执行只读 SQL"""
+def execute_readonly_sql(session: Session, datasource_id: int, sql: str, audit_log_id: int | None = None) -> dict:
+    """校验并执行只读 SQL，如果提供 audit_log_id 则精确更新对应日志"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
         return {"status": "error", "message": "数据源不存在"}
@@ -312,11 +474,17 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
             duration_ms = int((time.time() - start_time) * 1000)
 
         # 更新审计日志
-        log = session.exec(
-            select(AuditLog)
-            .where(AuditLog.datasource_id == datasource_id, AuditLog.sql == sql)
-            .order_by(AuditLog.created_at.desc())
-        ).first()
+        log = None
+        if audit_log_id:
+            log = session.get(AuditLog, audit_log_id)
+            
+        if not log:
+            # 兼容：如果前端没有回传 ID，按原逻辑回退查找
+            log = session.exec(
+                select(AuditLog)
+                .where(AuditLog.datasource_id == datasource_id, AuditLog.sql == sql)
+                .order_by(AuditLog.created_at.desc())
+            ).first()
 
         if log:
             log.executed = True
@@ -351,11 +519,16 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str) -> dict
         return result_payload
     except Exception as e:
         # 更新审计日志
-        log = session.exec(
-            select(AuditLog)
-            .where(AuditLog.datasource_id == datasource_id, AuditLog.sql == sql)
-            .order_by(AuditLog.created_at.desc())
-        ).first()
+        log = None
+        if audit_log_id:
+            log = session.get(AuditLog, audit_log_id)
+            
+        if not log:
+            log = session.exec(
+                select(AuditLog)
+                .where(AuditLog.datasource_id == datasource_id, AuditLog.sql == sql)
+                .order_by(AuditLog.created_at.desc())
+            ).first()
         if log:
             log.executed = True
             log.execution_status = "error"

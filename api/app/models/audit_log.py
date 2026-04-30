@@ -10,6 +10,7 @@ class AuditLog(SQLModel, table=True):
     clarified: bool = False
     clarification_content: Optional[str] = None
     sql: Optional[str] = None
+    used_notes: Optional[str] = None
     executed: bool = False
     execution_status: Optional[str] = None  # success / empty / error
     duration_ms: Optional[int] = None

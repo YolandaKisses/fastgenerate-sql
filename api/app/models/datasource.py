@@ -48,6 +48,7 @@ class DataSourceRead(DataSourceBase):
 
 class DataSourceUpdate(SQLModel):
     name: Optional[str] = None
+    db_type: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
     database: Optional[str] = None

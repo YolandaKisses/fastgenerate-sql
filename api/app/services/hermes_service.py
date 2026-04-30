@@ -6,9 +6,10 @@ import subprocess
 from app.core.config import settings
 
 
-def run_hermes_json(prompt: str, cwd: str | None = None) -> dict:
+def run_hermes_json(prompt: str, cwd: str | None = None, hermes_cli_path: str | None = None) -> dict:
+    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
     command = [
-        settings.HERMES_CLI_PATH,
+        cli_path,
         "-z",
         prompt,
         "--ignore-rules",
@@ -23,13 +24,14 @@ def run_hermes_json(prompt: str, cwd: str | None = None) -> dict:
             cwd=cwd,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Hermes CLI 不存在: {settings.HERMES_CLI_PATH}") from exc
+        raise RuntimeError(f"Hermes CLI 不存在: {cli_path}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Hermes CLI 执行超时，请检查服务可用性") from exc
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         stdout = (exc.stdout or "").strip()
         raise RuntimeError(stderr or stdout or "Hermes 调用失败") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Hermes 调用超时") from exc
+
 
     return parse_hermes_json_output(result.stdout)
 

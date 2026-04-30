@@ -23,6 +23,16 @@ const formatTime = (iso: string) => {
   if (!iso) return ''
   return new Date(iso).toLocaleString('zh-CN', { hour12: false })
 }
+
+const parseUsedNotes = (value: string | null | undefined) => {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
 </script>
 
 <template>
@@ -39,6 +49,12 @@ const formatTime = (iso: string) => {
 
         <n-descriptions-item label="用户问题">
           <n-text strong>{{ log.question }}</n-text>
+        </n-descriptions-item>
+
+        <n-descriptions-item v-if="parseUsedNotes(log.used_notes).length > 0" label="命中笔记">
+          <div class="note-list">
+            <div v-for="note in parseUsedNotes(log.used_notes)" :key="note" class="note-item">{{ note }}</div>
+          </div>
         </n-descriptions-item>
         
         <n-descriptions-item v-if="log.clarified" label="澄清内容">
@@ -112,5 +128,21 @@ const formatTime = (iso: string) => {
   align-items: center;
   justify-content: center;
   height: 200px;
+}
+
+.note-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.note-item {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #5b5f6d;
+  background: #f7f8fb;
+  border: 1px solid #eceef5;
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 </style>
