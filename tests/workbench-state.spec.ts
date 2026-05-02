@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendHermesClarification, compactMessageHistoryForStorage, compactResultForStorage, formatClarification, startNextProcessRound } from '../src/pages/Workbench/workbenchState'
+import { appendHermesClarification, compactMessageHistoryForStorage, compactResultForStorage, formatClarification, groupHermesProcessRounds, startNextProcessRound } from '../src/pages/Workbench/workbenchState'
 
 describe('workbench state helpers', () => {
   it('formats A/B/C/D clarification options as compact lines', () => {
@@ -58,6 +58,49 @@ describe('workbench state helpers', () => {
         timestamp: 3,
       },
     ])
+  })
+
+  it('groups process steps into user question rounds', () => {
+    const rounds = groupHermesProcessRounds([
+      {
+        phase: 'user_question',
+        actor: 'user',
+        message: '第一轮问题',
+        timestamp: 1,
+      },
+      {
+        phase: 'completed',
+        actor: 'hermes',
+        message: '已完成',
+        timestamp: 2,
+      },
+      {
+        phase: 'user_question',
+        actor: 'user',
+        message: '第二轮问题',
+        timestamp: 3,
+      },
+      {
+        phase: 'calling_hermes',
+        actor: 'hermes',
+        message: '正在调用 Hermes Agent...',
+        timestamp: 4,
+      },
+    ])
+
+    expect(rounds).toHaveLength(2)
+    expect(rounds[0]).toMatchObject({
+      key: '1-0',
+      index: 1,
+      question: '第一轮问题',
+    })
+    expect(rounds[0].steps).toHaveLength(2)
+    expect(rounds[1]).toMatchObject({
+      key: '3-1',
+      index: 2,
+      question: '第二轮问题',
+    })
+    expect(rounds[1].steps).toHaveLength(2)
   })
 
   it('keeps clarification details inside the process history', () => {

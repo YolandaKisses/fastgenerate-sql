@@ -93,7 +93,7 @@ describe('数据源配置页面', () => {
     vi.mocked(get).mockResolvedValue(mockSources)
     vi.mocked(post).mockResolvedValue({ success: true })
 
-    const { getByText, queryByDisplayValue } = renderPage()
+    const { container, getByText, queryByDisplayValue } = renderPage()
 
     await waitFor(() => {
       expect(getByText('DB_2')).toBeDefined()
@@ -118,7 +118,7 @@ describe('数据源配置页面', () => {
     ])
     vi.mocked(post).mockResolvedValue({ id: 100, name: 'New_Connection', success: true })
 
-    const { getByText, queryByDisplayValue } = renderPage()
+    const { container, getByText, queryByDisplayValue } = renderPage()
 
     await waitFor(() => {
       expect(getByText('新建连接')).toBeDefined()
@@ -128,18 +128,49 @@ describe('数据源配置页面', () => {
     getByText('新建连接').click()
 
     await waitFor(() => {
-      // 默认名称应为 New_Connection (根据 index.vue 中的 createDefaultSource)
       expect(queryByDisplayValue('New_Connection')).not.toBeNull()
     })
 
-    // 点击保存
+    // 填充基本信息（必填项）
+    const nameInput = container.querySelector('input[placeholder="例如: Production_DB"]') as HTMLInputElement
+    if (nameInput) {
+      nameInput.value = 'New_Connection_Updated'
+      nameInput.dispatchEvent(new Event('input'))
+    }
+    
     const saveButton = getByText('保存修改')
     saveButton.click()
 
     await waitFor(() => {
+      // 验证是否触发了保存请求
       expect(post).toHaveBeenCalledWith('/datasources/', expect.objectContaining({
         name: 'New_Connection'
       }))
+    })
+  })
+
+  it('切换到 SSH 通道模式时应改变输入项', async () => {
+    vi.mocked(get).mockResolvedValue([
+      { id: 1, name: 'SSH_DB', db_type: 'mysql', status: 'draft', host: '1.1.1.1', database: 'test', port: 3306 }
+    ])
+    vi.mocked(post).mockResolvedValue({ success: true })
+
+    const { getByText, queryByText, container } = renderPage()
+
+    await waitFor(() => {
+      expect(getByText('SSH_DB')).toBeDefined()
+    })
+
+    // 默认是用户名密码模式，应该能看到“用户名”
+    expect(container.textContent).toContain('用户名')
+
+    // 切换到 SSH 通道 (使用 n-radio-button)
+    const sshBtn = getByText('SSH 通道')
+    sshBtn.click()
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('SSH 主机')
+      expect(container.textContent).not.toContain('用户名')
     })
   })
 })

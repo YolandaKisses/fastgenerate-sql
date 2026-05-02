@@ -18,6 +18,13 @@ export type HermesProcessStepState = {
   timestamp: number
 }
 
+export type HermesProcessRoundState = {
+  key: string
+  index: number
+  question: string
+  steps: HermesProcessStepState[]
+}
+
 export type MessageHistoryEntry = {
   role: 'user' | 'assistant'
   content: string
@@ -47,6 +54,37 @@ export const startNextProcessRound = (
       timestamp,
     },
   ]
+}
+
+export const groupHermesProcessRounds = (
+  steps: HermesProcessStepState[],
+): HermesProcessRoundState[] => {
+  const rounds: HermesProcessRoundState[] = []
+  let currentSteps: HermesProcessStepState[] = []
+
+  const pushRound = () => {
+    if (currentSteps.length === 0) return
+    const firstStep = currentSteps[0]
+    const questionStep = currentSteps.find((step) => step.phase === 'user_question')
+
+    rounds.push({
+      key: `${firstStep.timestamp}-${rounds.length}`,
+      index: rounds.length + 1,
+      question: questionStep?.message || firstStep.message,
+      steps: currentSteps,
+    })
+  }
+
+  for (const step of steps) {
+    if (step.phase === 'user_question' && currentSteps.length > 0) {
+      pushRound()
+      currentSteps = []
+    }
+    currentSteps.push(step)
+  }
+
+  pushRound()
+  return rounds
 }
 
 export const appendHermesClarification = (

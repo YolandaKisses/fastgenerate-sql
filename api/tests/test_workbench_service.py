@@ -2,7 +2,7 @@ from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.setting import RuntimeSetting
 from app.services import workbench_service
 from app.api.routes.workbench import is_valid_hermes_session_id
-from app.services.hermes_service import parse_hermes_session_id, run_hermes_session_json
+from app.services.hermes_service import hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
     ask_llm_stream,
     can_ask_datasource,
@@ -81,6 +81,85 @@ def test_run_hermes_session_json_falls_back_to_new_session_from_list(monkeypatch
     assert chat_command[chat_command.index("-t") + 1] == "file"
 
 
+def test_iter_hermes_session_json_emits_trace_events_before_result(monkeypatch):
+    class FakeStdout:
+        def __iter__(self):
+            return iter([
+                "Hermes is reading notes\n",
+                '{"type":"clarification","message":"请选择","used_notes":[]}\n',
+                "session_id: 20260502_111111_stream\n",
+            ])
+
+        def close(self):
+            pass
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def wait(self, timeout=None):
+            return 0
+
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr("app.services.hermes_service.subprocess.Popen", fake_popen)
+
+    events = list(iter_hermes_session_json("prompt", hermes_cli_path="/bin/hermes", session_id="previous-session"))
+
+    assert events[0] == {"type": "trace", "message": "Hermes is reading notes"}
+    assert events[-1]["type"] == "result"
+    assert events[-1]["result"]["type"] == "clarification"
+    assert events[-1]["session_id"] == "20260502_111111_stream"
+    chat_command = popen_calls[0]
+    assert "-Q" not in chat_command
+    assert "-v" in chat_command
+
+
+def test_parse_hermes_json_output_uses_final_result_from_verbose_output():
+    output = """
+返回格式示例：
+{"type": "clarification", "message": "问题存在歧义", "used_notes": ["示例笔记"]}
+Initializing agent...
+run_agent - INFO - Verbose logging enabled
+{"type": "clarification", "message": "请澄清：A) 基本信息 B) 登录日志", "used_notes": ["demo_users"]}
+session_id: 20260502_113543_abcd
+"""
+
+    result = parse_hermes_json_output(output)
+
+    assert result == {
+        "type": "clarification",
+        "message": "请澄清：A) 基本信息 B) 登录日志",
+        "used_notes": ["demo_users"],
+    }
+
+
+def test_parse_hermes_json_output_does_not_use_prompt_example_sql():
+    output = """
+返回 JSON 格式，只允许以下两种：
+{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}
+{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}
+这是一个完全无法与 SQL 生成关联的问题。根据规则，我需要进入澄清模式，给出候选选项。
+Conversation completed after 3 OpenAI-compatible API call(s)
+"""
+
+    result = parse_hermes_json_output(output)
+
+    assert result["type"] == "clarification"
+    assert "SELECT ..." not in result.get("sql", "")
+    assert "不在当前数据库查询范围" in result["message"]
+
+
+def test_hermes_trace_message_filters_noisy_verbose_lines():
+    assert hermes_trace_message_from_line("Initializing agent...") is None
+    assert hermes_trace_message_from_line("11:35:43 - run_agent - INFO - Verbose logging enabled") is None
+    assert hermes_trace_message_from_line("### 用户当前问题：今天吃啥") is None
+    assert hermes_trace_message_from_line("Hermes is reading demo_users.md") == "Hermes is reading demo_users.md"
+
+
 def test_hermes_session_id_route_validation_rejects_unsafe_values():
     assert is_valid_hermes_session_id("hermes-session_1.2:3")
     assert not is_valid_hermes_session_id("")
@@ -156,18 +235,19 @@ def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
     knowledge_dir = knowledge_root / "demo" / "tables"
     knowledge_dir.mkdir(parents=True)
 
-    def fake_run_hermes_session_json(*args, **kwargs):
-        return (
-            {
+    def fake_iter_hermes_session_json(*args, **kwargs):
+        yield {
+            "type": "result",
+            "result": {
                 "type": "sql_candidate",
                 "sql": "SELECT 1",
                 "explanation": "测试 SQL",
                 "used_notes": [],
             },
-            "hermes-session-1",
-        )
+            "session_id": "hermes-session-1",
+        }
 
-    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+    monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
     monkeypatch.setattr(
         workbench_service,
         "retrieve_relevant_schema",
@@ -205,18 +285,19 @@ def test_stream_labels_hermes_used_notes_as_references_not_hits(tmp_path, monkey
     knowledge_dir = knowledge_root / "demo" / "tables"
     knowledge_dir.mkdir(parents=True)
 
-    def fake_run_hermes_session_json(*args, **kwargs):
-        return (
-            {
+    def fake_iter_hermes_session_json(*args, **kwargs):
+        yield {
+            "type": "result",
+            "result": {
                 "type": "sql_candidate",
                 "sql": "SELECT 1",
                 "explanation": "测试 SQL",
                 "used_notes": ["demo_users"],
             },
-            "hermes-session-1",
-        )
+            "session_id": "hermes-session-1",
+        }
 
-    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+    monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
 
     with Session(engine) as session:
         ds = DataSource(
@@ -241,6 +322,109 @@ def test_stream_labels_hermes_used_notes_as_references_not_hits(tmp_path, monkey
     assert "demo_users" in stream
 
 
+def test_stream_forwards_hermes_trace_events(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+
+    def fake_iter_hermes_session_json(*args, **kwargs):
+        yield {"type": "trace", "message": "Hermes is reading demo_users.md"}
+        yield {
+            "type": "result",
+            "result": {
+                "type": "sql_candidate",
+                "sql": "SELECT 1",
+                "explanation": "测试 SQL",
+                "used_notes": ["demo_users"],
+            },
+            "session_id": "hermes-session-1",
+        }
+
+    monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+        session.refresh(ds)
+
+        stream = "".join(ask_llm_stream(session, ds.id, "查一下测试数据"))
+
+    assert "event: hermes_trace" in stream
+    assert "Hermes is reading demo_users.md" in stream
+    assert "SELECT 1" in stream
+
+
+def test_stream_converts_guessed_food_delivery_like_sql_to_clarification(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+    (knowledge_dir / "user_orders.md").write_text(
+        "\n".join([
+            "# user_orders",
+            "| 字段名 | 类型 | 原始备注 |",
+            "| --- | --- | --- |",
+            "| product_name | VARCHAR(128) | 商品名称 |",
+            "| created_at | DATETIME | 创建时间 |",
+        ]),
+        encoding="utf-8",
+    )
+
+    def fake_iter_hermes_session_json(*args, **kwargs):
+        yield {
+            "type": "result",
+            "result": {
+                "type": "sql_candidate",
+                "sql": "SELECT * FROM user_orders WHERE DATE(created_at)=CURDATE() AND product_name LIKE '%外卖%'",
+                "explanation": "用商品名称猜测餐饮/外卖订单",
+                "used_notes": ["user_orders.md"],
+            },
+            "session_id": "hermes-session-1",
+        }
+
+    monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+        session.refresh(ds)
+
+        stream = "".join(ask_llm_stream(session, ds.id, "A", None, "hermes-session-1"))
+
+    assert '"type": "clarification"' in stream
+    assert "是否允许用 product_name 关键词进行模糊匹配" in stream
+    assert "sql_candidate" not in stream
+
+
 def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path, monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
@@ -251,22 +435,23 @@ def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path,
 
     called = False
 
-    def fake_run_hermes_session_json(prompt, *args, **kwargs):
+    def fake_iter_hermes_session_json(prompt, *args, **kwargs):
         nonlocal called
         called = True
         assert "### 对话历史" not in prompt
         assert kwargs.get("session_id") == "hermes-session-1"
-        return (
-            {
+        yield {
+            "type": "result",
+            "result": {
                 "type": "sql_candidate",
                 "sql": "SELECT * FROM demo_accounts",
                 "explanation": "按 A 选项生成 SQL",
                 "used_notes": ["demo_accounts"],
             },
-            "hermes-session-1",
-        )
+            "session_id": "hermes-session-1",
+        }
 
-    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+    monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
     monkeypatch.setattr(
         workbench_service,
         "retrieve_relevant_schema",

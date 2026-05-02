@@ -26,6 +26,7 @@ class DataSourceBase(SQLModel):
     port: int
     database: str
     username: str
+    auth_type: str = Field(default="password")
     status: DataSourceStatus = Field(default=DataSourceStatus.DRAFT)
     sync_status: SyncStatus = Field(default=SyncStatus.NEVER_SYNCED)
     last_sync_message: Optional[str] = None
@@ -54,4 +55,5 @@ class DataSourceUpdate(SQLModel):
     database: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    auth_type: Optional[str] = None
     status: Optional[DataSourceStatus] = None

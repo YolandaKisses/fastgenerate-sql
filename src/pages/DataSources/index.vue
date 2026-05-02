@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { NCard, NText, NButton, NIcon, useDialog, useMessage } from 'naive-ui'
+import { AddOutline } from '@vicons/ionicons5'
 import DataSourceList from './components/DataSourceList.vue'
 import DataSourceForm from './components/DataSourceForm.vue'
 import { del, get, patch, post } from '../../services/request'
@@ -131,7 +132,7 @@ const handleDelete = async (id: number | null) => {
           <n-text depth="3" class="panel-tag">连接列表</n-text>
           <n-button quaternary size="small" type="primary" @click="handleCreateNew">
             <template #icon>
-              <n-icon><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/></svg></n-icon>
+              <n-icon><AddOutline /></n-icon>
             </template>
             新建连接
           </n-button>

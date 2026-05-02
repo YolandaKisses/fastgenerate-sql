@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NTag, useMessage } from 'naive-ui'
-import { CheckmarkCircleOutline, CloseCircleOutline, BuildOutline, FolderOpenOutline } from '@vicons/ionicons5'
+import { CheckmarkCircleOutline, CloseCircleOutline, BuildOutline, FolderOpenOutline, RefreshOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { get, post } from '../../services/request'
 
@@ -125,7 +125,10 @@ onMounted(async () => {
               <template #icon><n-icon><BuildOutline /></n-icon></template>
               测试并保存
             </n-button>
-            <n-button @click="resetHermes">恢复默认值</n-button>
+            <n-button @click="resetHermes">
+              <template #icon><n-icon><RefreshOutline /></n-icon></template>
+              恢复默认值
+            </n-button>
           </n-space>
         </n-form>
       </n-card>
@@ -156,7 +159,10 @@ onMounted(async () => {
               <template #icon><n-icon><FolderOpenOutline /></n-icon></template>
               检查并保存
             </n-button>
-            <n-button @click="resetObsidian">恢复默认值</n-button>
+            <n-button @click="resetObsidian">
+              <template #icon><n-icon><RefreshOutline /></n-icon></template>
+              恢复默认值
+            </n-button>
           </n-space>
         </n-form>
       </n-card>

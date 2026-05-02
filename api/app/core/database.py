@@ -32,6 +32,11 @@ def ensure_compatible_schema():
         if "last_message" not in sync_task_column_names:
             conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN last_message VARCHAR"))
 
+        ds_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(datasource)")).fetchall()
+        ds_column_names = {row[1] for row in ds_columns}
+        if "auth_type" not in ds_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN auth_type VARCHAR DEFAULT 'password'"))
+
 def get_session():
     with Session(engine) as session:
         yield session

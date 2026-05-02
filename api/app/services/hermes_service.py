@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Generator
 
 from app.core.config import settings
 
@@ -80,6 +81,102 @@ def run_hermes_session_json(
     return parse_hermes_json_output(output), next_session_id
 
 
+def iter_hermes_session_json(
+    prompt: str,
+    cwd: str | None = None,
+    hermes_cli_path: str | None = None,
+    session_id: str | None = None,
+) -> Generator[dict, None, None]:
+    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
+    previous_session_ids = _list_hermes_session_ids(cli_path) if not session_id else set()
+    command = [
+        cli_path,
+        "chat",
+        "-q",
+        prompt,
+        "-t",
+        "file",
+        "-v",
+        "--source",
+        "fastgenerate-sql",
+        "--ignore-rules",
+    ]
+    if session_id:
+        command.extend(["--resume", session_id])
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Hermes CLI 不存在: {command[0]}") from exc
+
+    output_parts: list[str] = []
+    if process.stdout is not None:
+        try:
+            for raw_line in process.stdout:
+                output_parts.append(raw_line)
+                trace_message = hermes_trace_message_from_line(raw_line)
+                if trace_message:
+                    yield {"type": "trace", "message": trace_message}
+        finally:
+            process.stdout.close()
+
+    try:
+        return_code = process.wait(timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        raise RuntimeError("Hermes CLI 执行超时，请检查服务可用性") from exc
+    output = "".join(output_parts)
+    if return_code != 0:
+        raise RuntimeError(output.strip() or "Hermes 调用失败")
+
+    next_session_id = parse_hermes_session_id(output)
+    if not next_session_id:
+        next_session_id = session_id or _find_new_hermes_session_id(cli_path, previous_session_ids)
+
+    yield {
+        "type": "result",
+        "result": parse_hermes_json_output(output),
+        "session_id": next_session_id,
+    }
+
+
+def hermes_trace_message_from_line(line: str) -> str | None:
+    cleaned = line.strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        return None
+    if parse_hermes_session_id(cleaned):
+        return None
+
+    lowered = cleaned.lower()
+    blocked_terms = ("chain of thought", "reasoning trace", "hidden reasoning")
+    if any(term in lowered for term in blocked_terms):
+        return None
+
+    noisy_patterns = [
+        r"^initializing agent",
+        r"\b(?:debug|info|warning|error)\b",
+        r"\brun_agent\b",
+        r"\bopenai client\b",
+        r"^###\s*",
+        r"^执行要求[:：]",
+        r"^返回格式",
+        r"^-\s*sql[:：]",
+    ]
+    if any(re.search(pattern, cleaned, flags=re.I) for pattern in noisy_patterns):
+        return None
+
+    return cleaned[:300]
+
+
 def _find_new_hermes_session_id(cli_path: str, previous_session_ids: set[str]) -> str | None:
     current_session_ids = _list_hermes_session_ids(cli_path)
     for session_id in current_session_ids:
@@ -153,20 +250,75 @@ def parse_hermes_json_output(output: str) -> dict:
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
 
-    # Some Hermes responses are almost-JSON but contain raw newlines
-    # inside string values. Extract the object body and repair those
-    # newlines conservatively before parsing.
-    if "{" in cleaned and "}" in cleaned:
-        cleaned = cleaned[cleaned.find("{"):cleaned.rfind("}") + 1]
-
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         repaired = _escape_newlines_inside_strings(cleaned)
         try:
             return json.loads(repaired)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Hermes 返回了非 JSON 内容: {cleaned[:500]}") from exc
+        except json.JSONDecodeError:
+            candidate = _last_result_json_object(cleaned)
+            if candidate is not None:
+                return candidate
+            clarification = _clarification_from_text(cleaned)
+            if clarification is not None:
+                return clarification
+            raise RuntimeError(f"Hermes 返回了非 JSON 内容: {cleaned[:500]}")
+
+
+def _last_result_json_object(text: str) -> dict | None:
+    decoder = json.JSONDecoder()
+    candidates: list[dict] = []
+
+    for idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            repaired = _escape_newlines_inside_strings(text[idx:])
+            try:
+                value, _ = decoder.raw_decode(repaired)
+            except json.JSONDecodeError:
+                continue
+
+        if (
+            isinstance(value, dict)
+            and value.get("type") in {"clarification", "sql_candidate"}
+            and not _is_prompt_example_result(value)
+        ):
+            candidates.append(value)
+
+    return candidates[-1] if candidates else None
+
+
+def _is_prompt_example_result(value: dict) -> bool:
+    used_notes = value.get("used_notes")
+    if isinstance(used_notes, list) and "已读取的笔记文件名" in used_notes:
+        return True
+    if value.get("type") == "sql_candidate" and value.get("sql") == "SELECT ...":
+        return True
+    message = value.get("message")
+    if isinstance(message, str) and ("A) ..." in message or "B) ..." in message):
+        return True
+    return False
+
+
+def _clarification_from_text(text: str) -> dict | None:
+    if not re.search(r"澄清|无法与\s*SQL\s*生成关联|不在.*数据库.*范围|无关", text, flags=re.I):
+        return None
+
+    return {
+        "type": "clarification",
+        "message": "\n".join([
+            "这个问题似乎不在当前数据库查询范围内，请选择最符合您需求的选项：",
+            "A) 改为查询当前数据源中的业务数据",
+            "B) 补充要查询的表、字段或业务对象",
+            "C) 补充筛选条件、时间范围或统计口径",
+            "D) 取消本次 SQL 生成",
+        ]),
+        "used_notes": [],
+    }
 
 
 def _escape_newlines_inside_strings(text: str) -> str:

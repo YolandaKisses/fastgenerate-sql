@@ -11,7 +11,7 @@ import sqlalchemy
 import time
 from app.services.datasource_service import build_database_url
 from app.core.config import settings
-from app.services.hermes_service import run_hermes_session_json
+from app.services.hermes_service import iter_hermes_session_json, run_hermes_session_json
 from app.services import setting_service
 
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
@@ -213,6 +213,68 @@ def validate_llm_result(result: dict) -> dict:
     return result
 
 
+FOOD_DELIVERY_TERMS = ["餐饮", "外卖", "美食", "快餐", "餐厅", "食品"]
+CLASSIFICATION_FIELD_TERMS = [
+    "category",
+    "type",
+    "biz_type",
+    "product_type",
+    "order_type",
+    "merchant_category",
+    "merchant_type",
+    "分类",
+    "品类",
+    "类目",
+    "餐饮分类",
+    "商品分类",
+]
+
+
+def guard_sql_candidate_against_missing_semantics(result: dict, knowledge_dir: Path) -> dict:
+    if result.get("type") != "sql_candidate":
+        return result
+
+    sql = result.get("sql") or ""
+    if not _uses_food_delivery_name_guess(sql):
+        return result
+
+    notes_text = _read_used_notes_text(result.get("used_notes") or [], knowledge_dir)
+    if _has_classification_semantics(notes_text):
+        return result
+
+    return {
+        "type": "clarification",
+        "message": "\n".join([
+            "user_orders 表没有明确的餐饮/外卖分类字段。是否允许用 product_name 关键词进行模糊匹配？",
+            "A) 允许，用 product_name 关键词匹配餐饮/外卖",
+            "B) 不允许，请只查询今天全部订单",
+            "C) 我补充餐饮/外卖的判断规则",
+            "D) 取消本次 SQL 生成",
+        ]),
+        "used_notes": result.get("used_notes") or [],
+    }
+
+
+def _uses_food_delivery_name_guess(sql: str) -> bool:
+    normalized = sql.lower()
+    return "product_name" in normalized and " like " in normalized and any(term in sql for term in FOOD_DELIVERY_TERMS)
+
+
+def _read_used_notes_text(used_notes: list, knowledge_dir: Path) -> str:
+    parts = []
+    for note in used_notes:
+        note_name = normalize_note_name(str(note))
+        note_path = knowledge_dir / f"{note_name}.md"
+        if note_path.exists():
+            parts.append(note_path.read_text(encoding="utf-8", errors="ignore"))
+    return "\n".join(parts)
+
+
+def _has_classification_semantics(text: str) -> bool:
+    lowered = text.lower()
+    return any(term.lower() in lowered for term in CLASSIFICATION_FIELD_TERMS)
+
+
 def normalize_sql(sql: str) -> str:
     no_block_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
     no_line_comments = re.sub(r"--.*?$", " ", no_block_comments, flags=re.M)
@@ -263,10 +325,11 @@ def _build_system_prompt(db_type: str, knowledge_dir: Path) -> str:
 5. 你的主要知识来源是 Obsidian 知识库。请先在下面目录中查找相关笔记：
    {knowledge_dir}
 6. 只有在确定用户意图后，才能生成 SQL。
-7. 返回 JSON 格式，只允许以下两种：
+7. 如果用户选择了澄清选项，但该选项依赖表中不存在的字段、枚举或分类口径，必须再次进入澄清模式。禁止使用 LIKE 关键词、名称猜测、枚举猜测来替代缺失字段，除非用户明确允许模糊匹配。
+8. 返回 JSON 格式，只允许以下两种：
    - 澄清：{{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}}
    - SQL：{{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}}
-8. 不要返回任何 JSON 以外的文字。
+9. 不要返回任何 JSON 以外的文字。
 """
 
 
@@ -370,6 +433,7 @@ def ask_llm(
             session_id=hermes_session_id,
         )
         result = validate_llm_result(raw_result)
+        result = guard_sql_candidate_against_missing_semantics(result, knowledge_dir)
         if next_hermes_session_id:
             result["hermes_session_id"] = next_hermes_session_id
 
@@ -428,13 +492,22 @@ def ask_llm_stream(
     prompt = _build_full_prompt(system_prompt, question)
 
     try:
-        raw_result, next_hermes_session_id = run_hermes_session_json(
+        result = None
+        next_hermes_session_id = None
+        for event in iter_hermes_session_json(
             prompt,
             cwd=str(knowledge_dir),
             hermes_cli_path=hermes_cli_path,
             session_id=hermes_session_id,
-        )
-        result = validate_llm_result(raw_result)
+        ):
+            if event.get("type") == "trace":
+                yield _sse_event("hermes_trace", {"message": event.get("message", "")})
+            elif event.get("type") == "result":
+                result = validate_llm_result(event.get("result") or {})
+                result = guard_sql_candidate_against_missing_semantics(result, knowledge_dir)
+                next_hermes_session_id = event.get("session_id")
+        if result is None:
+            raise RuntimeError("Hermes 返回为空")
     except (ValueError, RuntimeError) as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
         yield _sse_event("error", {"message": str(e)})

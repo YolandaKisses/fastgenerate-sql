@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { NButton, NInput, useMessage } from 'naive-ui'
+import { NButton, NInput, NIcon, useMessage } from 'naive-ui'
+import { SyncOutline, BookOutline } from '@vicons/ionicons5'
 import { get, patch } from '../../../services/request'
 
 const props = defineProps<{
@@ -66,8 +67,18 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
         <span class="table-comment">{{ table.original_comment }}</span>
       </div>
       <div class="header-actions">
-        <n-button secondary size="small" @click="emit('sync')">重新同步该数据源</n-button>
-        <n-button type="primary" size="small" :loading="knowledgeSyncing" @click="emit('sync-knowledge')">同步到知识库</n-button>
+        <n-button secondary size="small" @click="emit('sync')">
+          <template #icon>
+            <n-icon><SyncOutline /></n-icon>
+          </template>
+          重新同步该数据源
+        </n-button>
+        <n-button type="primary" size="small" :loading="knowledgeSyncing" @click="emit('sync-knowledge')">
+          <template #icon>
+            <n-icon><BookOutline /></n-icon>
+          </template>
+          同步到知识库
+        </n-button>
       </div>
     </div>
 
@@ -120,7 +131,12 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
     <div class="empty-content">
       <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#d9dce8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
       <p>请在左侧选择要管理的表</p>
-      <n-button type="primary" size="large" style="margin-top: 16px;" @click="emit('sync')">同步数据源</n-button>
+      <n-button type="primary" size="large" style="margin-top: 16px;" @click="emit('sync')">
+        <template #icon>
+          <n-icon><SyncOutline /></n-icon>
+        </template>
+        同步数据源
+      </n-button>
     </div>
   </div>
 </template>

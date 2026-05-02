@@ -1,45 +1,61 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NLayoutSider, NMenu, NAvatar } from 'naive-ui'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, h, Component } from "vue";
+import { NLayoutSider, NMenu, NAvatar, NIcon } from "naive-ui";
+import { useRoute, useRouter } from "vue-router";
+import {
+  HomeOutline,
+  CloudOutline,
+  LayersOutline,
+  ListOutline,
+  SettingsOutline,
+} from "@vicons/ionicons5";
 
-const route = useRoute()
-const router = useRouter()
+const route = useRoute();
+const router = useRouter();
 
-const activeKey = computed(() => route.path)
+const activeKey = computed(() => route.path);
+
+function renderIcon(icon: Component) {
+  return () => h(NIcon, null, { default: () => h(icon) });
+}
 
 const menuOptions = [
   {
-    label: '工作台',
-    key: '/workspace',
+    label: "工作台",
+    key: "/workspace",
+    icon: renderIcon(HomeOutline),
   },
   {
-    label: '数据源配置',
-    key: '/data-sources',
+    label: "数据源配置",
+    key: "/data-sources",
+    icon: renderIcon(CloudOutline),
   },
   {
-    label: 'Schema 管理',
-    key: '/schema',
+    label: "Schema 管理",
+    key: "/schema",
+    icon: renderIcon(LayersOutline),
   },
   {
-    label: '审计日志',
-    key: '/audit-logs',
+    label: "审计日志",
+    key: "/audit-logs",
+    icon: renderIcon(ListOutline),
   },
   {
-    label: '本地设置',
-    key: '/settings',
-  }
-]
+    label: "本地设置",
+    key: "/settings",
+    icon: renderIcon(SettingsOutline),
+  },
+];
 
 const handleUpdateValue = (key: string) => {
-  router.push(key)
-}
+  router.push(key);
+};
 </script>
 
 <template>
   <n-layout-sider bordered :width="240" class="app-sider">
     <div class="brand">
-      <h1 class="brand-title">SQL AI</h1>
+      <h1 class="brand-title">FastGenerate SQL</h1>
       <span class="version">v1.2.0</span>
     </div>
     <n-menu
@@ -49,7 +65,11 @@ const handleUpdateValue = (key: string) => {
       class="nav-menu"
     />
     <div class="sidebar-footer">
-      <n-avatar round size="medium" style="background-color: #eef0fa; color: #2080f0; font-weight: bold;">
+      <n-avatar
+        round
+        size="medium"
+        style="background-color: #eef0fa; color: #2080f0; font-weight: bold"
+      >
         管
       </n-avatar>
       <div class="user-meta">

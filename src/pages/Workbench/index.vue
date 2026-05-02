@@ -1,416 +1,483 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, onUnmounted } from 'vue'
-import { NSelect, NButton, useMessage } from 'naive-ui'
-import AiAssistant from './components/AiAssistant.vue'
-import SqlEditor from './components/SqlEditor.vue'
-import QueryResult from './components/QueryResult.vue'
-import HermesProcess from './components/HermesProcess.vue'
-import type { HermesStep } from './components/HermesProcess.vue'
+import { ref, onMounted, watch, onUnmounted } from "vue";
+import { NSelect, NButton, useMessage } from "naive-ui";
+import AiAssistant from "./components/AiAssistant.vue";
+import SqlEditor from "./components/SqlEditor.vue";
+import QueryResult from "./components/QueryResult.vue";
+import HermesProcess from "./components/HermesProcess.vue";
+import type { HermesStep } from "./components/HermesProcess.vue";
 import {
   appendHermesClarification,
   compactMessageHistoryForStorage,
   compactResultForStorage,
   formatClarification,
   startNextProcessRound,
-} from './workbenchState'
-import type { MessageHistoryEntry } from './workbenchState'
-import { API_BASE_URL, get, post } from '../../services/request'
+} from "./workbenchState";
+import type { MessageHistoryEntry } from "./workbenchState";
+import { API_BASE_URL, get, post } from "../../services/request";
 
-const STORAGE_KEY = 'workbench_state'
+const STORAGE_KEY = "workbench_state";
 
-const message = useMessage()
-const loading = ref(false)
-const currentDatasource = ref<number | null>(null)
-const datasourceOptions = ref<{label: string, value: number}[]>([])
+const message = useMessage();
+const loading = ref(false);
+const currentDatasource = ref<number | null>(null);
+const datasourceOptions = ref<{ label: string; value: number }[]>([]);
 
-const generatedSql = ref('')
-const displayedSql = ref('')
-const isRendering = ref(false)
-const sqlExplanation = ref('')
-const clarification = ref('')
-const queryResult = ref<any | null>(null)
-const hasExecutedSql = ref(false)
-const currentAuditLogId = ref<number | null>(null)
-const hermesSessionId = ref<string | null>(null)
-const validationState = ref<'idle' | 'validating' | 'valid' | 'invalid'>('idle')
-const validationReasons = ref<string[]>([])
+const generatedSql = ref("");
+const displayedSql = ref("");
+const isRendering = ref(false);
+const sqlExplanation = ref("");
+const clarification = ref("");
+const queryResult = ref<any | null>(null);
+const hasExecutedSql = ref(false);
+const currentAuditLogId = ref<number | null>(null);
+const hermesSessionId = ref<string | null>(null);
+const validationState = ref<"idle" | "validating" | "valid" | "invalid">(
+  "idle",
+);
+const validationReasons = ref<string[]>([]);
 
 // Hermes 工作过程步骤
-const hermesSteps = ref<HermesStep[]>([])
-const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null)
+const hermesSteps = ref<HermesStep[]>([]);
+const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null);
 
 // 对话上下文历史 (用于多轮澄清)
-const messageHistory = ref<MessageHistoryEntry[]>([])
+const messageHistory = ref<MessageHistoryEntry[]>([]);
 
 const canAskDatasource = (ds: any) => {
-  return ds.status === 'connection_ok' && ds.sync_status === 'sync_success'
-}
+  return ds.status === "connection_ok" && ds.sync_status === "sync_success";
+};
 
 // 清除上下文
 const handleResetContext = () => {
-  messageHistory.value = []
-  generatedSql.value = ''
-  displayedSql.value = ''
-  sqlExplanation.value = ''
-  clarification.value = ''
-  queryResult.value = null
-  hasExecutedSql.value = false
-  hermesSteps.value = []
-  currentAuditLogId.value = null
-  hermesSessionId.value = null
-  message.info('上下文已清除')
-}
+  messageHistory.value = [];
+  generatedSql.value = "";
+  displayedSql.value = "";
+  sqlExplanation.value = "";
+  clarification.value = "";
+  queryResult.value = null;
+  hasExecutedSql.value = false;
+  hermesSteps.value = [];
+  currentAuditLogId.value = null;
+  hermesSessionId.value = null;
+  message.info("上下文已清除");
+};
 
 // 当前活跃的 EventSource 引用
-let activeEventSource: EventSource | null = null
+let activeEventSource: EventSource | null = null;
 
 // 渐进渲染的 requestAnimationFrame ID
-let renderRafId: number | null = null
+let renderRafId: number | null = null;
 
 // 从 sessionStorage 恢复上次的工作状态
 const restoreState = () => {
   try {
-    const saved = sessionStorage.getItem(STORAGE_KEY)
+    const saved = sessionStorage.getItem(STORAGE_KEY);
     if (saved) {
-      const state = JSON.parse(saved)
-      currentDatasource.value = state.datasourceId ?? null
-      generatedSql.value = state.sql ?? ''
-      sqlExplanation.value = state.explanation ?? ''
-      clarification.value = state.clarification ?? ''
-      queryResult.value = state.result ?? null
-      hasExecutedSql.value = Boolean(state.executed ?? state.result)
-      messageHistory.value = compactMessageHistoryForStorage(state.history ?? [])
-      currentAuditLogId.value = state.auditLogId ?? null
-      hermesSessionId.value = state.hermesSessionId ?? null
-      hermesSteps.value = state.hermesSteps ?? []
+      const state = JSON.parse(saved);
+      currentDatasource.value = state.datasourceId ?? null;
+      generatedSql.value = state.sql ?? "";
+      sqlExplanation.value = state.explanation ?? "";
+      clarification.value = state.clarification ?? "";
+      queryResult.value = state.result ?? null;
+      hasExecutedSql.value = Boolean(state.executed ?? state.result);
+      messageHistory.value = compactMessageHistoryForStorage(
+        state.history ?? [],
+      );
+      currentAuditLogId.value = state.auditLogId ?? null;
+      hermesSessionId.value = state.hermesSessionId ?? null;
+      hermesSteps.value = state.hermesSteps ?? [];
     }
   } catch (error) {
-    console.warn('恢复工作台状态失败', error)
+    console.warn("恢复工作台状态失败", error);
   }
-}
+};
 
 // 保存工作状态到 sessionStorage
 const saveState = () => {
   try {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
-      datasourceId: currentDatasource.value,
-      sql: generatedSql.value,
-      explanation: sqlExplanation.value,
-      clarification: clarification.value,
-      result: compactResultForStorage(queryResult.value),
-      executed: hasExecutedSql.value,
-      // Hermes session 持有模型上下文；这里保留最近记录只用于 UI 展示和浏览器存储容量保护。
-      history: compactMessageHistoryForStorage(messageHistory.value),
-      auditLogId: currentAuditLogId.value,
-      hermesSessionId: hermesSessionId.value,
-      hermesSteps: hermesSteps.value,
-    }))
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        datasourceId: currentDatasource.value,
+        sql: generatedSql.value,
+        explanation: sqlExplanation.value,
+        clarification: clarification.value,
+        result: compactResultForStorage(queryResult.value),
+        executed: hasExecutedSql.value,
+        // Hermes session 持有模型上下文；这里保留最近记录只用于 UI 展示和浏览器存储容量保护。
+        history: compactMessageHistoryForStorage(messageHistory.value),
+        auditLogId: currentAuditLogId.value,
+        hermesSessionId: hermesSessionId.value,
+        hermesSteps: hermesSteps.value,
+      }),
+    );
   } catch (error) {
-    console.warn('保存工作台状态失败', error)
+    console.warn("保存工作台状态失败", error);
   }
-}
+};
 
-watch([currentDatasource, generatedSql, sqlExplanation, clarification, queryResult, hasExecutedSql, messageHistory, currentAuditLogId, hermesSessionId, hermesSteps], saveState, { deep: true })
+watch(
+  [
+    currentDatasource,
+    generatedSql,
+    sqlExplanation,
+    clarification,
+    queryResult,
+    hasExecutedSql,
+    messageHistory,
+    currentAuditLogId,
+    hermesSessionId,
+    hermesSteps,
+  ],
+  saveState,
+  { deep: true },
+);
 
 watch(generatedSql, async (newSql) => {
   if (!newSql) {
-    validationState.value = 'idle'
-    validationReasons.value = []
-    return
+    validationState.value = "idle";
+    validationReasons.value = [];
+    return;
   }
 
-  validationState.value = 'validating'
-  validationReasons.value = []
+  validationState.value = "validating";
+  validationReasons.value = [];
   try {
-    const data = await post('/workbench/validate', { sql: newSql })
-    validationState.value = data.status === 'valid' ? 'valid' : 'invalid'
-    validationReasons.value = data.reasons || []
+    const data = await post("/workbench/validate", { sql: newSql });
+    validationState.value = data.status === "valid" ? "valid" : "invalid";
+    validationReasons.value = data.reasons || [];
   } catch {
-    validationState.value = 'invalid'
-    validationReasons.value = ['SQL 校验请求失败']
+    validationState.value = "invalid";
+    validationReasons.value = ["SQL 校验请求失败"];
   }
-})
+});
 
 onMounted(async () => {
-  restoreState()
-  
+  restoreState();
+
   try {
-    const data = await get('/datasources/')
+    const data = await get("/datasources/");
     datasourceOptions.value = data
       .filter(canAskDatasource)
-      .map((ds: any) => ({ label: `${ds.name} (${ds.db_type})`, value: ds.id }))
-    
+      .map((ds: any) => ({
+        label: `${ds.name} (${ds.db_type})`,
+        value: ds.id,
+      }));
+
     // 校验恢复的状态是否依然有效
-    if (currentDatasource.value && !datasourceOptions.value.find(opt => opt.value === currentDatasource.value)) {
-      currentDatasource.value = null
+    if (
+      currentDatasource.value &&
+      !datasourceOptions.value.find(
+        (opt) => opt.value === currentDatasource.value,
+      )
+    ) {
+      currentDatasource.value = null;
     }
 
     // 仅在没有有效选中项时，默认选第一个
     if (datasourceOptions.value.length > 0 && !currentDatasource.value) {
-      currentDatasource.value = datasourceOptions.value[0].value
+      currentDatasource.value = datasourceOptions.value[0].value;
     }
   } catch (error) {
-    message.error('无法加载数据源列表')
+    message.error("无法加载数据源列表");
   }
-})
+});
 
 onUnmounted(() => {
   // 清理活跃的 EventSource
   if (activeEventSource) {
-    activeEventSource.close()
-    activeEventSource = null
+    activeEventSource.close();
+    activeEventSource = null;
   }
   // 清理渐进渲染
   if (renderRafId !== null) {
-    cancelAnimationFrame(renderRafId)
-    renderRafId = null
+    cancelAnimationFrame(renderRafId);
+    renderRafId = null;
   }
-})
+});
 
 // ---------------------------------------------------------------------------
 // SQL 渐进渲染
 // ---------------------------------------------------------------------------
 const startProgressiveRender = (fullSql: string) => {
-  displayedSql.value = ''
-  isRendering.value = true
-  let index = 0
+  displayedSql.value = "";
+  isRendering.value = true;
+  let index = 0;
 
   // 根据 SQL 长度动态调整速度：短 SQL 快渲，长 SQL 慢渲
-  const totalLen = fullSql.length
-  const baseChunk = totalLen < 100 ? 4 : totalLen < 300 ? 3 : 2
+  const totalLen = fullSql.length;
+  const baseChunk = totalLen < 100 ? 4 : totalLen < 300 ? 3 : 2;
 
   const render = () => {
-    const chunkSize = Math.min(baseChunk, totalLen - index)
-    displayedSql.value += fullSql.slice(index, index + chunkSize)
-    index += chunkSize
+    const chunkSize = Math.min(baseChunk, totalLen - index);
+    displayedSql.value += fullSql.slice(index, index + chunkSize);
+    index += chunkSize;
 
     if (index < totalLen) {
-      renderRafId = requestAnimationFrame(render)
+      renderRafId = requestAnimationFrame(render);
     } else {
-      isRendering.value = false
-      generatedSql.value = fullSql
-      renderRafId = null
+      isRendering.value = false;
+      generatedSql.value = fullSql;
+      renderRafId = null;
     }
-  }
+  };
 
-  renderRafId = requestAnimationFrame(render)
-}
+  renderRafId = requestAnimationFrame(render);
+};
 
-const processActorForPhase = (phase: string): HermesStep['actor'] => {
-  if (phase === 'searching_notes' || phase === 'warning') return 'system'
-  return 'hermes'
-}
+const processActorForPhase = (phase: string): HermesStep["actor"] => {
+  if (phase === "searching_notes" || phase === "warning") return "system";
+  return "hermes";
+};
 
 // ---------------------------------------------------------------------------
 // SSE 流式问答
 // ---------------------------------------------------------------------------
 const handleQuerySubmit = (question: string) => {
   if (!currentDatasource.value) {
-    message.warning('请先选择一个数据源')
-    return
+    message.warning("请先选择一个数据源");
+    return;
   }
-  
+
   // 重置状态
-  loading.value = true
-  clarification.value = ''
-  generatedSql.value = ''
-  displayedSql.value = ''
-  isRendering.value = false
-  sqlExplanation.value = ''
-  queryResult.value = null
-  hasExecutedSql.value = false
-  hermesSteps.value = startNextProcessRound(hermesSteps.value, question) as HermesStep[]
-  currentAuditLogId.value = null
+  loading.value = true;
+  clarification.value = "";
+  generatedSql.value = "";
+  displayedSql.value = "";
+  isRendering.value = false;
+  sqlExplanation.value = "";
+  queryResult.value = null;
+  hasExecutedSql.value = false;
+  hermesSteps.value = startNextProcessRound(
+    hermesSteps.value,
+    question,
+  ) as HermesStep[];
+  currentAuditLogId.value = null;
 
   // 将当前问题存入本地历史记录（用于 UI 展示和审计；Hermes 上下文由 session 持有）
-  messageHistory.value.push({ role: 'user', content: question })
-  messageHistory.value = compactMessageHistoryForStorage(messageHistory.value)
+  messageHistory.value.push({ role: "user", content: question });
+  messageHistory.value = compactMessageHistoryForStorage(messageHistory.value);
 
   // 取消之前的 EventSource / 渲染
-  if (activeEventSource) { activeEventSource.close(); activeEventSource = null }
-  if (renderRafId !== null) { cancelAnimationFrame(renderRafId); renderRafId = null }
-
-  // 启动计时器
-  hermesProcessRef.value?.startTimer()
-
-  // 构建 SSE URL
-  const url = new URL(`${API_BASE_URL}/workbench/ask_stream`)
-  url.searchParams.set('datasource_id', String(currentDatasource.value))
-  url.searchParams.set('question', question)
-  if (hermesSessionId.value) {
-    url.searchParams.set('hermes_session_id', hermesSessionId.value)
+  if (activeEventSource) {
+    activeEventSource.close();
+    activeEventSource = null;
+  }
+  if (renderRafId !== null) {
+    cancelAnimationFrame(renderRafId);
+    renderRafId = null;
   }
 
-  const source = new EventSource(url.toString())
-  activeEventSource = source
+  // 启动计时器
+  hermesProcessRef.value?.startTimer();
 
-  source.addEventListener('status', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
+  // 构建 SSE URL
+  const url = new URL(`${API_BASE_URL}/workbench/ask_stream`);
+  url.searchParams.set("datasource_id", String(currentDatasource.value));
+  url.searchParams.set("question", question);
+  if (hermesSessionId.value) {
+    url.searchParams.set("hermes_session_id", hermesSessionId.value);
+  }
+
+  const source = new EventSource(url.toString());
+  activeEventSource = source;
+
+  source.addEventListener("status", (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+    if (
+      data.phase === "failed" &&
+      lastStep?.phase === "failed" &&
+      lastStep.message === data.message
+    ) {
+      return;
+    }
     hermesSteps.value.push({
       phase: data.phase,
       actor: processActorForPhase(data.phase),
       message: data.message,
       timestamp: Date.now(),
-    })
+    });
 
     // 当完成或失败时停止计时器
-    if (data.phase === 'completed' || data.phase === 'failed') {
-      hermesProcessRef.value?.stopTimer()
+    if (data.phase === "completed" || data.phase === "failed") {
+      hermesProcessRef.value?.stopTimer();
     }
-  })
+  });
 
-  source.addEventListener('note_hit', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
-    const lastStep = hermesSteps.value[hermesSteps.value.length - 1]
-    
-    if (lastStep && lastStep.phase === 'note_hit') {
+  source.addEventListener("note_hit", (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+
+    if (lastStep && lastStep.phase === "note_hit") {
       // 合并逻辑：将新的表名和备注追加到现有步骤中
-      lastStep.message += `, ${data.note}`
+      lastStep.message += `, ${data.note}`;
       if (data.comment) {
-        lastStep.detail = lastStep.detail 
-          ? `${lastStep.detail}; ${data.comment}` 
-          : data.comment
+        lastStep.detail = lastStep.detail
+          ? `${lastStep.detail}; ${data.comment}`
+          : data.comment;
       }
     } else {
       hermesSteps.value.push({
-        phase: 'note_hit',
-        actor: 'system',
+        phase: "note_hit",
+        actor: "system",
         message: `命中笔记: ${data.note}`,
         detail: data.comment || undefined,
         timestamp: Date.now(),
-      })
+      });
     }
-  })
+  });
 
-  source.addEventListener('note_used', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
-    const lastStep = hermesSteps.value[hermesSteps.value.length - 1]
-    
-    if (lastStep && lastStep.phase === 'note_used') {
-      lastStep.message += `, ${data.note}`
+  source.addEventListener("note_used", (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+
+    if (lastStep && lastStep.phase === "note_used") {
+      lastStep.message += `, ${data.note}`;
       if (data.comment) {
-        lastStep.detail = lastStep.detail 
-          ? `${lastStep.detail}; ${data.comment}` 
-          : data.comment
+        lastStep.detail = lastStep.detail
+          ? `${lastStep.detail}; ${data.comment}`
+          : data.comment;
       }
     } else {
       hermesSteps.value.push({
-        phase: 'note_used',
-        actor: 'hermes',
+        phase: "note_used",
+        actor: "hermes",
         message: `参考笔记: ${data.note}`,
         detail: data.comment || undefined,
         timestamp: Date.now(),
-      })
+      });
     }
-  })
+  });
 
-  source.addEventListener('result', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
-    console.log('SSE result:', data)
+  source.addEventListener("hermes_trace", (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    if (!data.message) return;
+  });
+
+  source.addEventListener("result", (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    console.log("SSE result:", data);
 
     if (data.audit_log_id) {
-      currentAuditLogId.value = data.audit_log_id
+      currentAuditLogId.value = data.audit_log_id;
     }
     if (data.hermes_session_id) {
-      hermesSessionId.value = data.hermes_session_id
+      hermesSessionId.value = data.hermes_session_id;
     }
 
-    if (data.type === 'sql_candidate') {
+    if (data.type === "sql_candidate") {
       // 启动渐进渲染
-      sqlExplanation.value = data.explanation || ''
-      startProgressiveRender(data.sql)
-      message.success('SQL 生成成功，请确认后执行')
-      
+      sqlExplanation.value = data.explanation || "";
+      startProgressiveRender(data.sql);
+      message.success("SQL 生成成功，请确认后执行");
+
       // 存入历史
-      messageHistory.value.push({ role: 'assistant', content: data.explanation || '已生成 SQL 候选语句。' })
-      messageHistory.value = compactMessageHistoryForStorage(messageHistory.value)
-    } else if (data.type === 'clarification') {
-      clarification.value = data.message
-      hermesSteps.value = appendHermesClarification(hermesSteps.value, data.message) as HermesStep[]
-      message.info('AI 需要您进一步澄清问题')
-      
+      messageHistory.value.push({
+        role: "assistant",
+        content: data.explanation || "已生成 SQL 候选语句。",
+      });
+      messageHistory.value = compactMessageHistoryForStorage(
+        messageHistory.value,
+      );
+    } else if (data.type === "clarification") {
+      clarification.value = data.message;
+      hermesSteps.value = appendHermesClarification(
+        hermesSteps.value,
+        data.message,
+      ) as HermesStep[];
+      message.info("AI 需要您进一步澄清问题");
+
       // 存入历史
-      messageHistory.value.push({ role: 'assistant', content: data.message })
-      messageHistory.value = compactMessageHistoryForStorage(messageHistory.value)
+      messageHistory.value.push({ role: "assistant", content: data.message });
+      messageHistory.value = compactMessageHistoryForStorage(
+        messageHistory.value,
+      );
     }
     if (data.warning) {
-      message.warning(data.warning)
+      message.warning(data.warning);
     }
 
-    source.close()
-    activeEventSource = null
-    loading.value = false
-  })
+    source.close();
+    activeEventSource = null;
+    loading.value = false;
+  });
 
-  source.addEventListener('error', (e: MessageEvent) => {
+  source.addEventListener("error", (e: MessageEvent) => {
     // SSE 自带的 error event（连接断开等）
     // 也可能是后端发送的 error event
     try {
-      const data = JSON.parse((e as any).data || '{}')
+      const data = JSON.parse((e as any).data || "{}");
       if (data.message) {
-        message.error(data.message)
-        hermesSteps.value.push({
-          phase: 'failed',
-          actor: 'hermes',
-          message: data.message,
-          timestamp: Date.now(),
-        })
+        message.error(data.message);
+        const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+        if (!(lastStep?.phase === "failed" && lastStep.message === data.message)) {
+          hermesSteps.value.push({
+            phase: "failed",
+            actor: "hermes",
+            message: data.message,
+            timestamp: Date.now(),
+          });
+        }
       }
     } catch {
       // 连接级错误
       if (source.readyState === EventSource.CLOSED) {
         // 正常关闭，忽略
       } else {
-        message.error('SSE 连接中断，请检查后端服务')
+        message.error("SSE 连接中断，请检查后端服务");
       }
     }
 
-    hermesProcessRef.value?.stopTimer()
-    source.close()
-    activeEventSource = null
-    loading.value = false
-  })
-}
+    hermesProcessRef.value?.stopTimer();
+    source.close();
+    activeEventSource = null;
+    loading.value = false;
+  });
+};
 
 const handleExecuteSql = async () => {
-  if (!currentDatasource.value || !generatedSql.value || loading.value) return
-  loading.value = true
-  queryResult.value = null
-  hasExecutedSql.value = false
+  if (!currentDatasource.value || !generatedSql.value || loading.value) return;
+  loading.value = true;
+  queryResult.value = null;
+  hasExecutedSql.value = false;
 
   try {
-    const data = await post('/workbench/execute', { 
-      datasource_id: currentDatasource.value, 
+    const data = await post("/workbench/execute", {
+      datasource_id: currentDatasource.value,
       sql: generatedSql.value,
-      audit_log_id: currentAuditLogId.value
-    })
-    console.log('Execute result:', data)
-    queryResult.value = data
-    hasExecutedSql.value = true
+      audit_log_id: currentAuditLogId.value,
+    });
+    console.log("Execute result:", data);
+    queryResult.value = data;
+    hasExecutedSql.value = true;
 
-    if (data.status === 'success') {
-      message.success(`查询完成，返回 ${data.row_count} 条记录 (${data.duration_ms}ms)`)
-    } else if (data.status === 'empty') {
-      message.info('查询成功，但没有返回数据')
+    if (data.status === "success") {
+      message.success(
+        `查询完成，返回 ${data.row_count} 条记录 (${data.duration_ms}ms)`,
+      );
+    } else if (data.status === "empty") {
+      message.info("查询成功，但没有返回数据");
     } else {
-      message.error(data.message || '执行失败')
+      message.error(data.message || "执行失败");
     }
     if (data.warning) {
-      message.warning(data.warning)
+      message.warning(data.warning);
     }
-    
+
     // 滚动到结果区域
     setTimeout(() => {
-      const el = document.querySelector('.result-container')
-      if (el) el.scrollIntoView({ behavior: 'smooth' })
-    }, 100)
+      const el = document.querySelector(".result-container");
+      if (el) el.scrollIntoView({ behavior: "smooth" });
+    }, 100);
   } catch (error) {
-    hasExecutedSql.value = false
-    message.error('执行请求失败')
+    hasExecutedSql.value = false;
+    message.error("执行请求失败");
   } finally {
-    loading.value = false
+    loading.value = false;
   }
-}
+};
 </script>
 
 <template>
@@ -424,11 +491,11 @@ const handleExecuteSql = async () => {
         <div class="header-actions">
           <div class="datasource-picker">
             <span class="picker-label">当前数据源</span>
-            <n-select 
-              v-model:value="currentDatasource" 
-              :options="datasourceOptions" 
-              placeholder="请选择数据源" 
-              style="width: 300px;"
+            <n-select
+              v-model:value="currentDatasource"
+              :options="datasourceOptions"
+              placeholder="请选择数据源"
+              style="width: 300px"
             />
           </div>
         </div>
@@ -436,7 +503,10 @@ const handleExecuteSql = async () => {
     </div>
 
     <div class="page-content">
-      <AiAssistant :disabled="loading || !currentDatasource" @submit="handleQuerySubmit" />
+      <AiAssistant
+        :disabled="loading || !currentDatasource"
+        @submit="handleQuerySubmit"
+      />
 
       <div class="workbench-grid">
         <div class="main-area">
@@ -445,7 +515,9 @@ const handleExecuteSql = async () => {
             <span class="clarification-icon">💬</span>
             <div class="clarification-content">
               <div class="clarification-title">AI 需要澄清</div>
-              <div class="clarification-text">{{ formatClarification(clarification) }}</div>
+              <div class="clarification-text">
+                {{ formatClarification(clarification) }}
+              </div>
             </div>
           </div>
 
@@ -464,19 +536,23 @@ const handleExecuteSql = async () => {
                 :execution-status="queryResult?.status"
                 @execute="handleExecuteSql"
               />
-              <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
+              <div v-else class="panel-placeholder">
+                生成 SQL 后会展示候选语句与解释说明。
+              </div>
             </section>
 
             <section class="panel">
               <h2 class="panel-title">执行结果</h2>
               <QueryResult v-if="queryResult" :result="queryResult" />
-              <div v-else class="panel-placeholder">执行完成后，这里会展示结果表格或错误信息。</div>
+              <div v-else class="panel-placeholder">
+                执行完成后，这里会展示结果表格或错误信息。
+              </div>
             </section>
           </div>
         </div>
 
         <div class="side-area" :class="{ 'is-active': hermesSteps.length > 0 }">
-          <!-- Hermes 工作过程面板 -->
+          <!-- 调用追踪面板 -->
           <HermesProcess
             ref="hermesProcessRef"
             :steps="hermesSteps"
@@ -486,10 +562,10 @@ const handleExecuteSql = async () => {
             :hermes-session-id="hermesSessionId"
             @reset="handleResetContext"
           />
-          
+
           <div v-if="hermesSteps.length === 0" class="side-placeholder">
             <div class="placeholder-icon">🤖</div>
-            <p>准备就绪。在这里将展示 AI 的思考过程与笔记检索详情。</p>
+            <p>准备就绪。在这里将展示 Hermes 调用日志、参考笔记与执行结果。</p>
           </div>
         </div>
       </div>

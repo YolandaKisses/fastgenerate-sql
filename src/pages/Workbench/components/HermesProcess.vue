@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onUnmounted } from "vue";
+import { groupHermesProcessRounds } from "../workbenchState";
 
 export interface HermesStep {
   phase: string;
@@ -55,6 +56,7 @@ const phaseIcon = (phase: string) => {
     note_used: "📚",
     clarification: "💬",
     calling_hermes: "🤖",
+    hermes_trace: "🔎",
     completed: "✅",
     failed: "❌",
   };
@@ -83,12 +85,16 @@ const dotActorClass = (step: HermesStep) => {
   return isUserStep(step) ? "dot-user" : "dot-hermes";
 };
 
-const shouldShowLine = (idx: number) => {
-  const step = props.steps[idx];
-  const nextStep = props.steps[idx + 1];
+const shouldShowLine = (
+  roundSteps: HermesStep[],
+  idx: number,
+  isLatestRound: boolean,
+) => {
+  const step = roundSteps[idx];
+  const nextStep = roundSteps[idx + 1];
   if (!step || isUserStep(step)) return false;
   if (nextStep && isUserStep(nextStep)) return false;
-  return idx < props.steps.length - 1 || props.loading;
+  return idx < roundSteps.length - 1 || (isLatestRound && props.loading);
 };
 
 const detailLines = (detail: string) => {
@@ -99,11 +105,12 @@ const stepDetailLines = (step: HermesStep) => {
   return step.detail ? detailLines(step.detail) : [];
 };
 
-const shouldShowDetail = (step: HermesStep, idx: number) => {
+const shouldShowDetail = (step: HermesStep) => {
   if (!step.detail) return false;
+  const isLastStep = props.steps[props.steps.length - 1] === step;
   const isActiveClarification =
     step.phase === "clarification" &&
-    idx === props.steps.length - 1 &&
+    isLastStep &&
     step.detail === props.activeClarification;
   return !isActiveClarification;
 };
@@ -124,13 +131,42 @@ const isActive = computed(() => props.steps.length > 0);
 
 const roundCount = computed(() => Math.ceil(props.historyCount / 2));
 
+const processRounds = computed(() => groupHermesProcessRounds(props.steps));
+
+const expandedRoundKeys = ref<Set<string>>(new Set());
+
+const isLatestRound = (roundIdx: number) =>
+  roundIdx === processRounds.value.length - 1;
+
+const isRoundExpanded = (roundKey: string, roundIdx: number) =>
+  isLatestRound(roundIdx) || expandedRoundKeys.value.has(roundKey);
+
+const toggleRound = (roundKey: string, roundIdx: number) => {
+  if (isLatestRound(roundIdx)) return;
+  const nextExpanded = new Set(expandedRoundKeys.value);
+  if (nextExpanded.has(roundKey)) {
+    nextExpanded.delete(roundKey);
+  } else {
+    nextExpanded.add(roundKey);
+  }
+  expandedRoundKeys.value = nextExpanded;
+};
+
+const roundStatusText = (roundSteps: HermesStep[]) => {
+  const lastStep = roundSteps[roundSteps.length - 1];
+  if (!lastStep) return "无记录";
+  if (lastStep.phase === "completed") return lastStep.message || "已完成";
+  if (lastStep.phase === "failed") return lastStep.message || "失败";
+  if (lastStep.phase === "clarification") return "需要澄清";
+  return lastStep.message;
+};
+
 const shortSessionId = computed(() => {
   if (!props.hermesSessionId) return "未建立";
   return props.hermesSessionId.length > 16
     ? `${props.hermesSessionId.slice(0, 8)}…${props.hermesSessionId.slice(-6)}`
     : props.hermesSessionId;
 });
-
 </script>
 
 <template>
@@ -152,7 +188,7 @@ const shortSessionId = computed(() => {
             />
           </svg>
         </div>
-        <span>Hermes Process</span>
+        <span>调用追踪</span>
       </div>
       <div class="process-actions">
         <div v-if="historyCount > 0" class="context-pill">
@@ -176,87 +212,127 @@ const shortSessionId = computed(() => {
     </div>
 
     <div class="process-timeline">
-      <TransitionGroup name="step-enter">
-        <div
-          v-for="(step, idx) in steps"
-          :key="idx"
-          class="timeline-step"
-          :class="[
-            phaseClass(step.phase),
-            { 'is-user-step': isUserStep(step) },
-            { 'is-last': idx === steps.length - 1 && loading },
-          ]"
+      <template v-for="(round, roundIdx) in processRounds" :key="round.key">
+        <button
+          v-if="!isRoundExpanded(round.key, roundIdx)"
+          type="button"
+          class="round-summary"
+          @click="toggleRound(round.key, roundIdx)"
         >
-          <div class="step-connector">
-            <span
-              class="step-dot"
-              :class="[phaseClass(step.phase), dotActorClass(step)]"
-            >
-              {{ phaseIcon(step.phase) }}
-            </span>
-            <div v-if="shouldShowLine(idx)" class="step-line"></div>
-          </div>
-          <div
-            class="step-content"
-            :class="{ 'is-note-hit': step.phase === 'note_hit' }"
+          <span class="round-summary-title">第 {{ round.index }} 轮</span>
+          <span class="round-summary-question">{{ round.question }}</span>
+          <span class="round-summary-meta">
+            {{ roundStatusText(round.steps) }} · {{ round.steps.length }} 条记录
+          </span>
+        </button>
+
+        <div v-else class="round-expanded">
+          <button
+            v-if="!isLatestRound(roundIdx)"
+            type="button"
+            class="round-summary round-summary-expanded"
+            @click="toggleRound(round.key, roundIdx)"
           >
-            <div class="step-main">
-              <span class="actor-badge" :class="actorClass(step)">
-                <span class="badge-icon">
-                  <svg
-                    v-if="isUserStep(step)"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="12" cy="7" r="4"></circle>
-                  </svg>
-                  <svg
-                    v-else-if="stepActor(step) === 'system'"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <circle cx="11" cy="11" r="7"></circle>
-                    <path d="M20 20l-4-4"></path>
-                  </svg>
-                  <svg
-                    v-else
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <rect x="3" y="11" width="18" height="10" rx="2"></rect>
-                    <circle cx="12" cy="5" r="2"></circle>
-                    <path d="M12 7v4"></path>
-                  </svg>
+            <span class="round-summary-title">第 {{ round.index }} 轮</span>
+            <span class="round-summary-question">{{ round.question }}</span>
+            <span class="round-summary-meta">收起</span>
+          </button>
+
+          <TransitionGroup name="step-enter" class="round-steps" tag="div">
+            <div
+              v-for="(step, idx) in round.steps"
+              :key="`${round.key}-${idx}`"
+              class="timeline-step"
+              :class="[
+                phaseClass(step.phase),
+                { 'is-user-step': isUserStep(step) },
+                {
+                  'is-last':
+                    idx === round.steps.length - 1 &&
+                    loading &&
+                    isLatestRound(roundIdx),
+                },
+              ]"
+            >
+              <div class="step-connector">
+                <span
+                  class="step-dot"
+                  :class="[phaseClass(step.phase), dotActorClass(step)]"
+                >
+                  {{ phaseIcon(step.phase) }}
                 </span>
-                {{ actorLabel(step) }}
-              </span>
-              <span class="step-message">{{ step.message }}</span>
-            </div>
-            <span v-if="shouldShowDetail(step, idx)" class="step-detail">
-              <span
-                v-for="(line, lineIdx) in stepDetailLines(step)"
-                :key="lineIdx"
-                class="step-detail-line"
+                <div
+                  v-if="
+                    shouldShowLine(round.steps, idx, isLatestRound(roundIdx))
+                  "
+                  class="step-line"
+                ></div>
+              </div>
+              <div
+                class="step-content"
+                :class="{ 'is-note-hit': step.phase === 'note_hit' }"
               >
-                {{ line }}
-              </span>
-            </span>
-          </div>
+                <div class="step-main">
+                  <span class="actor-badge" :class="actorClass(step)">
+                    <span class="badge-icon">
+                      <svg
+                        v-if="isUserStep(step)"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path
+                          d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"
+                        ></path>
+                        <circle cx="12" cy="7" r="4"></circle>
+                      </svg>
+                      <svg
+                        v-else-if="stepActor(step) === 'system'"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <circle cx="11" cy="11" r="7"></circle>
+                        <path d="M20 20l-4-4"></path>
+                      </svg>
+                      <svg
+                        v-else
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+                        <circle cx="12" cy="5" r="2"></circle>
+                        <path d="M12 7v4"></path>
+                      </svg>
+                    </span>
+                    {{ actorLabel(step) }}
+                  </span>
+                  <span class="step-message">{{ step.message }}</span>
+                </div>
+                <span v-if="shouldShowDetail(step)" class="step-detail">
+                  <span
+                    v-for="(line, lineIdx) in stepDetailLines(step)"
+                    :key="lineIdx"
+                    class="step-detail-line"
+                  >
+                    {{ line }}
+                  </span>
+                </span>
+              </div>
+            </div>
+          </TransitionGroup>
         </div>
-      </TransitionGroup>
+      </template>
 
       <!-- loading spinner for the current active step -->
       <div v-if="loading" class="timeline-step is-loading">
@@ -316,6 +392,8 @@ const shortSessionId = computed(() => {
   font-size: 14px;
   font-weight: 600;
   color: #3b2e8a;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .title-svg-icon {
@@ -350,6 +428,7 @@ const shortSessionId = computed(() => {
   gap: 12px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .context-pill {
@@ -452,6 +531,64 @@ const shortSessionId = computed(() => {
 
 .process-timeline {
   padding: 16px 20px 20px;
+}
+
+.round-summary {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border: 1px solid #ded9fb;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #5c53a3;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.2s,
+    background 0.2s,
+    box-shadow 0.2s;
+}
+
+.round-summary:hover {
+  border-color: #c4bfef;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(107, 95, 191, 0.08);
+}
+
+.round-summary-expanded {
+  margin-bottom: 12px;
+  background: rgba(241, 239, 255, 0.72);
+}
+
+.round-summary-title,
+.round-summary-meta {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.round-summary-question {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #2d2b3d;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.round-summary-meta {
+  color: #8c8ab0;
+  font-weight: 600;
+}
+
+.round-steps + .round-summary {
+  margin-top: 4px;
 }
 
 .timeline-step {
