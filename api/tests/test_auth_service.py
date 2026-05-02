@@ -39,6 +39,20 @@ def test_default_admin_user_is_created_with_hashed_password(session):
     assert verify_password("888888", user.password_salt, user.password_hash)
 
 
+def test_existing_admin_password_is_not_reset_on_startup(session):
+    user = ensure_default_admin_user(session)
+    password_hash, password_salt = hash_password("changed-password")
+    user.password_hash = password_hash
+    user.password_salt = password_salt
+    session.add(user)
+    session.commit()
+
+    existing = ensure_default_admin_user(session)
+
+    assert verify_password("changed-password", existing.password_salt, existing.password_hash)
+    assert not verify_password("888888", existing.password_salt, existing.password_hash)
+
+
 def test_password_hash_uses_unique_salt():
     first_hash, first_salt = hash_password("888888")
     second_hash, second_salt = hash_password("888888")

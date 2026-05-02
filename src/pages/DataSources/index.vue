@@ -39,10 +39,7 @@ const fetchSources = async () => {
 }
 
 onMounted(async () => {
-  const initialSource = await fetchSources()
-  if (initialSource?.id) {
-    await testConnection(initialSource.id, { refreshSources: true })
-  }
+  await fetchSources()
 })
 
 const handleSelect = (source: any) => {

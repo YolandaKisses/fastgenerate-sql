@@ -3,7 +3,7 @@ import { NDialogProvider, NMessageProvider } from 'naive-ui'
 import { defineComponent } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DataSourcesPage from '../src/pages/DataSources/index.vue'
-import { get, post } from '../src/services/request'
+import { get, patch, post } from '../src/services/request'
 
 vi.mock('../src/services/request', () => ({
   del: vi.fn(),
@@ -32,7 +32,7 @@ describe('数据源配置页面', () => {
     vi.clearAllMocks()
   })
 
-  it('初始化时应自动选中第一个数据源并触发连接测试', async () => {
+  it('初始化时应自动选中第一个数据源但不触发连接测试', async () => {
     vi.mocked(get).mockResolvedValue([
       {
         id: 1,
@@ -57,17 +57,15 @@ describe('数据源配置页面', () => {
         password: '',
       },
     ])
-    vi.mocked(post).mockResolvedValue({ success: true, message: '连接测试成功' })
-
     const { container } = renderPage()
 
     await waitFor(() => {
-      expect(post).toHaveBeenCalledWith('/datasources/1/test')
+      const selectedItem = container.querySelector('.selected-item')
+      expect(selectedItem).not.toBeNull()
+      expect(selectedItem).toHaveTextContent('Primary_DB')
     })
 
-    const selectedItem = container.querySelector('.selected-item')
-    expect(selectedItem).not.toBeNull()
-    expect(selectedItem).toHaveTextContent('Primary_DB')
+    expect(post).not.toHaveBeenCalled()
   })
 
   it('连接测试失败时应显示错误反馈', async () => {
@@ -77,7 +75,13 @@ describe('数据源配置页面', () => {
     // 模拟连接测试失败
     vi.mocked(post).mockResolvedValue({ success: false, message: '连接拒绝: 认证失败' })
 
-    renderPage()
+    const { getAllByText, getByText } = renderPage()
+
+    await waitFor(() => {
+      expect(getAllByText('Test_DB').length).toBeGreaterThan(0)
+    })
+
+    getByText('测试连接').click()
 
     await waitFor(() => {
       expect(post).toHaveBeenCalledWith('/datasources/1/test')
@@ -110,6 +114,39 @@ describe('数据源配置页面', () => {
       // 对于 n-select，它在界面上显示的是 label "PostgreSQL"
       expect(getByText('PostgreSQL')).toBeDefined()
     })
+  })
+
+  it('编辑已有密码数据源时允许密码留空并保留旧密码', async () => {
+    vi.mocked(get).mockResolvedValue([
+      {
+        id: 1,
+        name: 'Primary_DB',
+        db_type: 'mysql',
+        status: 'connection_ok',
+        host: '127.0.0.1',
+        port: 3306,
+        database: 'primary',
+        username: 'root',
+        auth_type: 'password',
+      },
+    ])
+    vi.mocked(patch).mockResolvedValue({ id: 1, name: 'Primary_DB_Renamed' })
+
+    const { container, getAllByText, getByText } = renderPage()
+
+    await waitFor(() => {
+      expect(getAllByText('Primary_DB').length).toBeGreaterThan(0)
+    })
+
+    await fireEvent.update(container.querySelector('input[placeholder="例如: Production_DB"]') as HTMLInputElement, 'Primary_DB_Renamed')
+    getByText('保存修改').click()
+
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith('/datasources/1', expect.objectContaining({
+        name: 'Primary_DB_Renamed',
+      }))
+    })
+    expect(vi.mocked(patch).mock.calls[0][1]).not.toHaveProperty('password')
   })
 
   it('点击“新建连接”应清空表单并允许保存', async () => {

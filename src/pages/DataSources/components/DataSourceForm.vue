@@ -52,6 +52,7 @@ watch(
       // 确保 auth_type 有默认值，同时保留已有状态
       formModel.value = {
         auth_type: newVal.auth_type || "password",
+        password: "",
         ...newVal,
       };
     } else {
@@ -92,7 +93,8 @@ const rules: FormRules = {
   },
   password: {
     validator(rule, value) {
-      if (formModel.value.auth_type === "password" && !value)
+      const isExistingSource = Boolean(formModel.value.id);
+      if (formModel.value.auth_type === "password" && !isExistingSource && !value)
         return new Error("请输入密码");
       return true;
     },
@@ -110,7 +112,11 @@ const handleSave = async () => {
   if (!formRef.value) return;
   try {
     await formRef.value.validate();
-    emit("save", formModel.value);
+    const payload = { ...formModel.value };
+    if (payload.id && payload.auth_type === "password" && !payload.password) {
+      delete (payload as Partial<typeof payload>).password;
+    }
+    emit("save", payload);
   } catch (errors) {
     console.debug("表单校验未通过", errors);
   }

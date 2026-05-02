@@ -14,14 +14,6 @@ DEFAULT_ADMIN_NAME = "系统管理员"
 def ensure_default_admin_user(session: Session) -> AppUser:
     existing = session.exec(select(AppUser).where(AppUser.account == DEFAULT_ADMIN_ACCOUNT)).first()
     if existing:
-        if not verify_password(DEFAULT_ADMIN_PASSWORD, existing.password_salt, existing.password_hash):
-            password_hash, password_salt = hash_password(DEFAULT_ADMIN_PASSWORD)
-            existing.password_hash = password_hash
-            existing.password_salt = password_salt
-            existing.updated_at = datetime.now()
-            session.add(existing)
-            session.commit()
-            session.refresh(existing)
         return existing
 
     password_hash, password_salt = hash_password(DEFAULT_ADMIN_PASSWORD)

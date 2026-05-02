@@ -227,6 +227,8 @@ const subscribeKnowledgeTask = (taskId: number) => {
 
 const handleKnowledgeSync = async () => {
   if (!currentSource.value) return
+  const sourceId = currentSource.value
+  const totalTables = tables.value.length
 
   dialog.warning({
     title: '确认同步知识库',
@@ -239,11 +241,11 @@ const handleKnowledgeSync = async () => {
       knowledgeTask.value = {
         status: 'pending',
         completed_tables: 0,
-        total_tables: tables.value.length,
+        total_tables: totalTables,
       }
 
       try {
-        const task = await post(`/schema/knowledge/sync/${currentSource.value}`)
+        const task = await post(`/schema/knowledge/sync/${sourceId}`)
         knowledgeTask.value = task
         fetchSources()
         subscribeKnowledgeTask(task.id)
