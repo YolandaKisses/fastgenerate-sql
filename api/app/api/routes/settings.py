@@ -2,12 +2,13 @@ import os
 import subprocess
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
+from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.models.setting import RuntimeSetting, RuntimeSettingUpdate
 from app.services import setting_service
 from app.core.config import settings as env_settings
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(get_current_user)])
 
 @router.get("/")
 def get_all_settings(session: Session = Depends(get_session)):

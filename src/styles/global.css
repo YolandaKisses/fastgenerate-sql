@@ -1,0 +1,130 @@
+/* Global Styles and UI Enhancements */
+
+:root {
+  --primary-color: #2080f0;
+  --bg-color: #fbfcfd;
+  --text-color: #181c22;
+  --text-muted: #717785;
+  --border-color: #efeff5;
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  overflow-x: hidden;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #e0e0e6;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #cfcfd6;
+}
+
+/* Selection Color */
+::selection {
+  background-color: rgba(32, 128, 240, 0.15);
+  color: var(--primary-color);
+}
+
+/* Smooth Page Transitions */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--transition-normal);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Premium Button Interaction */
+button {
+  transition: all var(--transition-fast);
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+/* Naive UI Component Overrides for Premium Feel */
+.n-button {
+  font-weight: 500 !important;
+}
+
+.n-card {
+  transition: transform var(--transition-normal), box-shadow var(--transition-normal) !important;
+}
+
+.n-input .n-input__border, 
+.n-input .n-input__state-border {
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast) !important;
+}
+
+/* Sidebar Trigger Global Overrides - Exhaustive Selectors */
+.n-layout-sider-trigger,
+.n-layout-toggle-button,
+.n-layout-sider-trigger--right,
+.n-layout-sider-trigger--left,
+.n-layout-sider-trigger--bottom {
+  border-radius: 50% !important;
+  width: 28px !important;
+  height: 28px !important;
+  right: -14px !important;
+  top: 60px !important; /* Move to top area */
+  bottom: auto !important;
+  transform: translateY(0) !important; /* Force reset of vertical center */
+  border: 1px solid #efeff5 !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  color: #717785 !important;
+  z-index: 99 !important;
+  cursor: pointer !important;
+}
+
+.n-layout-sider-trigger:hover,
+.n-layout-toggle-button:hover {
+  color: #2080f0 !important;
+  box-shadow: 0 6px 16px rgba(32, 128, 240, 0.2) !important;
+  border-color: #d6e3ff !important;
+}
+
+/* Internal icon sizing */
+.n-layout-sider-trigger .n-base-icon,
+.n-layout-toggle-button .n-base-icon {
+  font-size: 16px !important;
+}
+
+/* Special fix for Naive UI's internal wrapper if present */
+.n-layout-sider-trigger__icon {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}

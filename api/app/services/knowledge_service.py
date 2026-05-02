@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
-import time
+import threading
 import re
 
 from sqlmodel import Session, select
@@ -16,6 +16,44 @@ from app.services.hermes_service import run_hermes_json
 from app.services import setting_service
 
 STALE_RUNNING_TASK_AFTER = timedelta(minutes=8)
+
+
+class _TaskNotifier:
+    """In-process task update notifier with per-subscriber version tracking."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._channels: dict[int, tuple[threading.Condition, list[int]]] = {}
+
+    def _ensure(self, task_id: int) -> tuple[threading.Condition, list[int]]:
+        with self._lock:
+            if task_id not in self._channels:
+                self._channels[task_id] = (threading.Condition(), [0])
+            return self._channels[task_id]
+
+    def notify(self, task_id: int) -> None:
+        condition, version = self._ensure(task_id)
+        with condition:
+            version[0] += 1
+            condition.notify_all()
+
+    def wait(self, task_id: int, last_version: int, timeout: float = 5.0) -> int:
+        condition, version = self._ensure(task_id)
+        with condition:
+            condition.wait_for(lambda: version[0] > last_version, timeout=timeout)
+            return version[0]
+
+    def cleanup(self, task_id: int) -> None:
+        with self._lock:
+            self._channels.pop(task_id, None)
+
+
+_notifier = _TaskNotifier()
+
+
+def _notify_task_updated(task_id: int | None) -> None:
+    if task_id is not None:
+        _notifier.notify(task_id)
 
 
 def get_obsidian_root_path(session: Session) -> str:
@@ -60,6 +98,7 @@ def create_knowledge_sync_task(session: Session, datasource_id: int) -> Knowledg
     session.add(datasource)
     session.commit()
     session.refresh(task)
+    _notify_task_updated(task.id)
     return task
 
 
@@ -122,6 +161,8 @@ def mark_stale_knowledge_sync_tasks(
 
     if stale_tasks:
         session.commit()
+        for task in stale_tasks:
+            _notify_task_updated(task.id)
 
     return len(stale_tasks)
 
@@ -138,6 +179,7 @@ def update_knowledge_task_progress(
     task.current_table = current_table
     session.add(task)
     session.commit()
+    _notify_task_updated(task.id)
 
 
 def knowledge_task_payload(task: KnowledgeSyncTask) -> dict:
@@ -322,6 +364,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             task.finished_at = datetime.now()
             session.add(task)
             session.commit()
+            _notify_task_updated(task.id)
             return
 
         tables = session.exec(
@@ -340,6 +383,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
         session.add(task)
         session.add(datasource)
         session.commit()
+        _notify_task_updated(task.id)
 
         try:
             output_dir = Path(task.output_dir)
@@ -393,6 +437,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                 task.current_table = None
                 session.add(task)
                 session.commit()
+                _notify_task_updated(task.id)
 
             task.finished_at = datetime.now()
             index_markdown = render_datasource_index_markdown(datasource, task, tables)
@@ -426,6 +471,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             session.add(task)
             session.add(datasource)
             session.commit()
+            _notify_task_updated(task.id)
 
         except Exception as exc:
             task.status = KnowledgeSyncTaskStatus.FAILED
@@ -441,11 +487,13 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             session.add(task)
             session.add(datasource)
             session.commit()
+            _notify_task_updated(task.id)
 
 
 def stream_knowledge_task_events(engine, task_id: int) -> Generator[str, None, None]:
     """订阅知识库同步任务进度；客户端断开不会影响后台任务。"""
     last_signature = None
+    last_version = 0
     terminal_statuses = {"completed", "partial_success", "failed"}
 
     while True:
@@ -472,9 +520,10 @@ def stream_knowledge_task_events(engine, task_id: int) -> Generator[str, None, N
                 last_signature = signature
 
             if payload["status"] in terminal_statuses:
+                _notifier.cleanup(task_id)
                 return
 
-        time.sleep(1)
+        last_version = _notifier.wait(task_id, last_version, timeout=5.0)
 
 
 def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None]:

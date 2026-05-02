@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { NSelect, useMessage } from 'naive-ui'
+import { NSelect, useMessage, useDialog } from 'naive-ui'
 import TableList from './components/TableList.vue'
 import SchemaEditor from './components/SchemaEditor.vue'
-import { createEventSource, get, post } from '../../services/request'
+import { get, post, streamSse } from '../../services/request'
 
 const message = useMessage()
+const dialog = useDialog()
 const currentSource = ref<number | null>(null)
 const sourceOptions = ref<{label: string, value: number}[]>([])
 const tables = ref<any[]>([])
@@ -14,8 +15,8 @@ const knowledgeTask = ref<any | null>(null)
 const actualTableCount = ref(0)
 const knowledgeSyncing = ref(false)
 
-// 当前活跃的知识库同步 EventSource
-let activeKnowledgeSSE: EventSource | null = null
+// 当前活跃的知识库同步流式请求
+let activeKnowledgeController: AbortController | null = null
 
 // 当前处理中的表名（用于实时展示）
 // 移除了独立的 currentSyncTable ref，改用 knowledgeTask.current_table
@@ -98,9 +99,9 @@ const fetchLatestKnowledgeTask = async (dsId: number) => {
 
 // 清理活跃的 SSE 连接
 const cleanupKnowledgeSSE = () => {
-  if (activeKnowledgeSSE) {
-    activeKnowledgeSSE.close()
-    activeKnowledgeSSE = null
+  if (activeKnowledgeController) {
+    activeKnowledgeController.abort()
+    activeKnowledgeController = null
   }
 }
 
@@ -128,18 +129,28 @@ const handleSelectTable = (table: any) => {
 
 const handleSync = async () => {
   if (!currentSource.value) return
-  try {
-    const data = await post(`/schema/sync/${currentSource.value}`)
-    if (data.success) {
-      message.success(data.message)
-      fetchTables(currentSource.value)
-      fetchLatestKnowledgeTask(currentSource.value)
-    } else {
-      message.error(data.message)
+  const sourceId = currentSource.value
+
+  dialog.info({
+    title: '同步数据源结构',
+    content: '将从数据库重新读取表和字段信息，确定继续吗？',
+    positiveText: '开始同步',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const data = await post(`/schema/sync/${sourceId}`)
+        if (data.success) {
+          message.success(data.message)
+          fetchTables(sourceId)
+          fetchLatestKnowledgeTask(sourceId)
+        } else {
+          message.error(data.message)
+        }
+      } catch (error) {
+        message.error('同步请求失败')
+      }
     }
-  } catch (error) {
-    message.error('同步请求失败')
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -148,11 +159,20 @@ const handleSync = async () => {
 const subscribeKnowledgeTask = (taskId: number) => {
   cleanupKnowledgeSSE()
 
-  const source = createEventSource(`/schema/knowledge/tasks/${taskId}/events`)
-  activeKnowledgeSSE = source
+  const controller = new AbortController()
+  activeKnowledgeController = controller
 
-  source.addEventListener('status', (e: MessageEvent) => {
-    const data = JSON.parse(e.data)
+  const refreshAfterTerminal = () => {
+    controller.abort()
+    activeKnowledgeController = null
+    if (currentSource.value) {
+      fetchLatestKnowledgeTask(currentSource.value)
+      fetchSources()
+    }
+  }
+
+  streamSse(`/schema/knowledge/tasks/${taskId}/events`, {
+  status: (data) => {
     const status = data.status || 'running'
     
     knowledgeTask.value = {
@@ -169,47 +189,35 @@ const subscribeKnowledgeTask = (taskId: number) => {
     if (status === 'completed') {
       knowledgeSyncing.value = false
       message.success(data.message || '知识库同步完成')
-      source.close()
-      activeKnowledgeSSE = null
-      if (currentSource.value) {
-        fetchLatestKnowledgeTask(currentSource.value)
-        fetchSources()
-      }
+      refreshAfterTerminal()
     } else if (status === 'partial_success') {
       knowledgeSyncing.value = false
       message.warning(data.message || '知识库部分同步成功')
-      source.close()
-      activeKnowledgeSSE = null
-      if (currentSource.value) {
-        fetchLatestKnowledgeTask(currentSource.value)
-        fetchSources()
-      }
+      refreshAfterTerminal()
     } else if (status === 'failed') {
       knowledgeSyncing.value = false
       message.error(data.error_message || data.message || '知识库同步失败')
-      source.close()
-      activeKnowledgeSSE = null
-      if (currentSource.value) {
-        fetchLatestKnowledgeTask(currentSource.value)
-        fetchSources()
-      }
+      refreshAfterTerminal()
     }
-  })
+  },
 
-  source.addEventListener('error', (e: MessageEvent) => {
-    try {
-      const data = JSON.parse((e as any).data || '{}')
-      if (data.message) {
-        message.error(data.message)
-      }
-    } catch {
-      if (source.readyState !== EventSource.CLOSED) {
-        message.error('知识库同步 SSE 连接中断')
-      }
+  error: (data) => {
+    if (data.message) {
+      message.error(data.message)
     }
     knowledgeSyncing.value = false
-    source.close()
-    activeKnowledgeSSE = null
+    controller.abort()
+    activeKnowledgeController = null
+    if (currentSource.value) {
+      fetchLatestKnowledgeTask(currentSource.value)
+      fetchSources()
+    }
+  },
+  }, { signal: controller.signal }).catch((error) => {
+    if (controller.signal.aborted) return
+    message.error(error?.message || '知识库同步 SSE 连接中断')
+    knowledgeSyncing.value = false
+    activeKnowledgeController = null
     if (currentSource.value) {
       fetchLatestKnowledgeTask(currentSource.value)
       fetchSources()
@@ -220,23 +228,31 @@ const subscribeKnowledgeTask = (taskId: number) => {
 const handleKnowledgeSync = async () => {
   if (!currentSource.value) return
 
-  cleanupKnowledgeSSE()
-  knowledgeSyncing.value = true
-  knowledgeTask.value = {
-    status: 'pending',
-    completed_tables: 0,
-    total_tables: tables.value.length,
-  }
+  dialog.warning({
+    title: '确认同步知识库',
+    content: '同步知识库会将补充备注上传并重新建立 RAG 索引，耗时取决于表数量。确定继续吗？',
+    positiveText: '确认开始',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      cleanupKnowledgeSSE()
+      knowledgeSyncing.value = true
+      knowledgeTask.value = {
+        status: 'pending',
+        completed_tables: 0,
+        total_tables: tables.value.length,
+      }
 
-  try {
-    const task = await post(`/schema/knowledge/sync/${currentSource.value}`)
-    knowledgeTask.value = task
-    fetchSources()
-    subscribeKnowledgeTask(task.id)
-  } catch (error: any) {
-    knowledgeSyncing.value = false
-    message.error(error.message || '知识库同步启动失败')
-  }
+      try {
+        const task = await post(`/schema/knowledge/sync/${currentSource.value}`)
+        knowledgeTask.value = task
+        fetchSources()
+        subscribeKnowledgeTask(task.id)
+      } catch (error: any) {
+        knowledgeSyncing.value = false
+        message.error(error.message || '知识库同步启动失败')
+      }
+    }
+  })
 }
 </script>
 

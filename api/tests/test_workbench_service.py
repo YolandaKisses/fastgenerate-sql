@@ -208,19 +208,6 @@ def test_schema_sync_success_alone_does_not_allow_asking():
             database="demo",
             username="root",
             password="secret",
-            status=DataSourceStatus.READY,
-            sync_status=SyncStatus.SYNC_SUCCESS,
-        )
-    )
-    assert not can_ask_datasource(
-        DataSource(
-            name="demo",
-            db_type="mysql",
-            host="localhost",
-            port=3306,
-            database="demo",
-            username="root",
-            password="secret",
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.NEVER_SYNCED,
         )

@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
+from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.models.datasource import DataSource, DataSourceCreate, DataSourceRead, DataSourceUpdate, DataSourceStatus
 from app.services import datasource_service
 
-router = APIRouter(prefix="/datasources", tags=["datasources"])
+router = APIRouter(prefix="/datasources", tags=["datasources"], dependencies=[Depends(get_current_user)])
 
 @router.post("/", response_model=DataSourceRead)
 def create_datasource(ds_in: DataSourceCreate, session: Session = Depends(get_session)):

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, onUnmounted } from "vue";
-import { NSelect, NButton, useMessage } from "naive-ui";
+import { NSelect, NButton, useMessage, useDialog } from "naive-ui";
 import AiAssistant from "./components/AiAssistant.vue";
 import SqlEditor from "./components/SqlEditor.vue";
 import QueryResult from "./components/QueryResult.vue";
@@ -14,11 +14,12 @@ import {
   startNextProcessRound,
 } from "./workbenchState";
 import type { MessageHistoryEntry } from "./workbenchState";
-import { API_BASE_URL, get, post } from "../../services/request";
+import { get, post, streamSse } from "../../services/request";
 
 const STORAGE_KEY = "workbench_state";
 
 const message = useMessage();
+const dialog = useDialog();
 const loading = ref(false);
 const currentDatasource = ref<number | null>(null);
 const datasourceOptions = ref<{ label: string; value: number }[]>([]);
@@ -50,21 +51,29 @@ const canAskDatasource = (ds: any) => {
 
 // 清除上下文
 const handleResetContext = () => {
-  messageHistory.value = [];
-  generatedSql.value = "";
-  displayedSql.value = "";
-  sqlExplanation.value = "";
-  clarification.value = "";
-  queryResult.value = null;
-  hasExecutedSql.value = false;
-  hermesSteps.value = [];
-  currentAuditLogId.value = null;
-  hermesSessionId.value = null;
-  message.info("上下文已清除");
+  dialog.warning({
+    title: "确认清除上下文",
+    content: "清除后将丢失当前的对话历史和生成的 SQL。确定继续吗？",
+    positiveText: "确定清除",
+    negativeText: "取消",
+    onPositiveClick: () => {
+      messageHistory.value = [];
+      generatedSql.value = "";
+      displayedSql.value = "";
+      sqlExplanation.value = "";
+      clarification.value = "";
+      queryResult.value = null;
+      hasExecutedSql.value = false;
+      hermesSteps.value = [];
+      currentAuditLogId.value = null;
+      hermesSessionId.value = null;
+      message.info("上下文已清除");
+    },
+  });
 };
 
-// 当前活跃的 EventSource 引用
-let activeEventSource: EventSource | null = null;
+// 当前活跃的流式请求控制器
+let activeStreamController: AbortController | null = null;
 
 // 渐进渲染的 requestAnimationFrame ID
 let renderRafId: number | null = null;
@@ -185,10 +194,10 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  // 清理活跃的 EventSource
-  if (activeEventSource) {
-    activeEventSource.close();
-    activeEventSource = null;
+  // 清理活跃的流式请求
+  if (activeStreamController) {
+    activeStreamController.abort();
+    activeStreamController = null;
   }
   // 清理渐进渲染
   if (renderRafId !== null) {
@@ -259,10 +268,10 @@ const handleQuerySubmit = (question: string) => {
   messageHistory.value.push({ role: "user", content: question });
   messageHistory.value = compactMessageHistoryForStorage(messageHistory.value);
 
-  // 取消之前的 EventSource / 渲染
-  if (activeEventSource) {
-    activeEventSource.close();
-    activeEventSource = null;
+  // 取消之前的流式请求 / 渲染
+  if (activeStreamController) {
+    activeStreamController.abort();
+    activeStreamController = null;
   }
   if (renderRafId !== null) {
     cancelAnimationFrame(renderRafId);
@@ -272,19 +281,19 @@ const handleQuerySubmit = (question: string) => {
   // 启动计时器
   hermesProcessRef.value?.startTimer();
 
-  // 构建 SSE URL
-  const url = new URL(`${API_BASE_URL}/workbench/ask_stream`);
-  url.searchParams.set("datasource_id", String(currentDatasource.value));
-  url.searchParams.set("question", question);
+  // 构建流式请求路径
+  const params = new URLSearchParams();
+  params.set("datasource_id", String(currentDatasource.value));
+  params.set("question", question);
   if (hermesSessionId.value) {
-    url.searchParams.set("hermes_session_id", hermesSessionId.value);
+    params.set("hermes_session_id", hermesSessionId.value);
   }
 
-  const source = new EventSource(url.toString());
-  activeEventSource = source;
+  const controller = new AbortController();
+  activeStreamController = controller;
 
-  source.addEventListener("status", (e: MessageEvent) => {
-    const data = JSON.parse(e.data);
+  streamSse(`/workbench/ask_stream?${params.toString()}`, {
+  status: (data) => {
     const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
     if (
       data.phase === "failed" &&
@@ -304,10 +313,9 @@ const handleQuerySubmit = (question: string) => {
     if (data.phase === "completed" || data.phase === "failed") {
       hermesProcessRef.value?.stopTimer();
     }
-  });
+  },
 
-  source.addEventListener("note_hit", (e: MessageEvent) => {
-    const data = JSON.parse(e.data);
+  note_hit: (data) => {
     const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
 
     if (lastStep && lastStep.phase === "note_hit") {
@@ -327,10 +335,9 @@ const handleQuerySubmit = (question: string) => {
         timestamp: Date.now(),
       });
     }
-  });
+  },
 
-  source.addEventListener("note_used", (e: MessageEvent) => {
-    const data = JSON.parse(e.data);
+  note_used: (data) => {
     const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
 
     if (lastStep && lastStep.phase === "note_used") {
@@ -349,15 +356,13 @@ const handleQuerySubmit = (question: string) => {
         timestamp: Date.now(),
       });
     }
-  });
+  },
 
-  source.addEventListener("hermes_trace", (e: MessageEvent) => {
-    const data = JSON.parse(e.data);
+  hermes_trace: (data) => {
     if (!data.message) return;
-  });
+  },
 
-  source.addEventListener("result", (e: MessageEvent) => {
-    const data = JSON.parse(e.data);
+  result: (data) => {
     console.log("SSE result:", data);
 
     if (data.audit_log_id) {
@@ -399,40 +404,35 @@ const handleQuerySubmit = (question: string) => {
       message.warning(data.warning);
     }
 
-    source.close();
-    activeEventSource = null;
+    controller.abort();
+    activeStreamController = null;
     loading.value = false;
-  });
+  },
 
-  source.addEventListener("error", (e: MessageEvent) => {
-    // SSE 自带的 error event（连接断开等）
-    // 也可能是后端发送的 error event
-    try {
-      const data = JSON.parse((e as any).data || "{}");
-      if (data.message) {
-        message.error(data.message);
-        const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
-        if (!(lastStep?.phase === "failed" && lastStep.message === data.message)) {
-          hermesSteps.value.push({
-            phase: "failed",
-            actor: "hermes",
-            message: data.message,
-            timestamp: Date.now(),
-          });
-        }
-      }
-    } catch {
-      // 连接级错误
-      if (source.readyState === EventSource.CLOSED) {
-        // 正常关闭，忽略
-      } else {
-        message.error("SSE 连接中断，请检查后端服务");
+  error: (data) => {
+    if (data.message) {
+      message.error(data.message);
+      const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+      if (!(lastStep?.phase === "failed" && lastStep.message === data.message)) {
+        hermesSteps.value.push({
+          phase: "failed",
+          actor: "hermes",
+          message: data.message,
+          timestamp: Date.now(),
+        });
       }
     }
 
     hermesProcessRef.value?.stopTimer();
-    source.close();
-    activeEventSource = null;
+    controller.abort();
+    activeStreamController = null;
+    loading.value = false;
+  },
+  }, { signal: controller.signal }).catch((error) => {
+    if (controller.signal.aborted) return;
+    message.error(error?.message || "SSE 连接中断，请检查后端服务");
+    hermesProcessRef.value?.stopTimer();
+    activeStreamController = null;
     loading.value = false;
   });
 };

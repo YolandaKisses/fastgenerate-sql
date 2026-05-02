@@ -1,10 +1,38 @@
 import sqlalchemy
 from datetime import datetime
+from pathlib import Path
+import re
 from sqlmodel import Session, select
 from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.schema import SchemaTable, SchemaField
 from fastapi import HTTPException
 from app.services.datasource_service import build_connect_args, build_database_url
+from app.services import setting_service
+from app.core.config import settings
+
+
+def sanitize_path_segment(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
+    return cleaned or "untitled"
+
+
+def delete_table_note_if_exists(session: Session, ds: DataSource, table_name: str) -> None:
+    vault_root = setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
+    if not vault_root:
+        return
+
+    note_path = (
+        Path(vault_root)
+        / sanitize_path_segment(ds.name)
+        / "tables"
+        / f"{sanitize_path_segment(table_name)}.md"
+    )
+    try:
+        if note_path.exists():
+            note_path.unlink()
+    except OSError:
+        # Schema 同步不能因为旧知识库文件清理失败而回滚元数据更新。
+        pass
 
 def sync_schema_for_datasource(session: Session, ds: DataSource):
     ds.sync_status = SyncStatus.SYNCING
@@ -23,8 +51,10 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
         # 获取现有表，以保留用户自定义的备注
         existing_tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == ds.id)).all()
         table_map = {t.name: t for t in existing_tables}
+        changed_table_notes: set[str] = set()
 
         table_names = inspector.get_table_names()
+        current_table_names = set(table_names)
         if not table_names:
             ds.status = DataSourceStatus.SYNC_FAILED
             ds.sync_status = SyncStatus.SYNC_FAILED
@@ -33,6 +63,18 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
             session.add(ds)
             session.commit()
             return {"success": False, "message": ds.last_sync_message}
+
+        for obsolete_table in existing_tables:
+            if obsolete_table.name not in current_table_names:
+                existing_fields = session.exec(
+                    select(SchemaField).where(SchemaField.table_id == obsolete_table.id)
+                ).all()
+                for field in existing_fields:
+                    session.delete(field)
+                delete_table_note_if_exists(session, ds, obsolete_table.name)
+                session.delete(obsolete_table)
+
+        session.commit()
 
         for t_name in table_names:
             # 兼容不同方言获取注释
@@ -44,9 +86,12 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
 
             if t_name in table_map:
                 table_obj = table_map[t_name]
+                if table_obj.original_comment != comment:
+                    changed_table_notes.add(t_name)
                 table_obj.original_comment = comment
                 session.add(table_obj)
             else:
+                changed_table_notes.add(t_name)
                 table_obj = SchemaTable(
                     datasource_id=ds.id,
                     name=t_name,
@@ -61,13 +106,22 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
 
         for t_obj in synced_tables:
             # 只同步目前数据库真实存在的表
-            if t_obj.name not in table_names:
+            if t_obj.name not in current_table_names:
                 continue
 
             existing_fields = session.exec(select(SchemaField).where(SchemaField.table_id == t_obj.id)).all()
             field_map = {f.name: f for f in existing_fields}
 
             columns = inspector.get_columns(t_obj.name)
+            current_field_names = {col.get("name") for col in columns if col.get("name")}
+            existing_field_names = {field.name for field in existing_fields}
+            if current_field_names != existing_field_names:
+                changed_table_notes.add(t_obj.name)
+
+            for obsolete_field in existing_fields:
+                if obsolete_field.name not in current_field_names:
+                    session.delete(obsolete_field)
+
             for col in columns:
                 try:
                     c_name = col["name"]
@@ -79,6 +133,8 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
 
                 if c_name in field_map:
                     f_obj = field_map[c_name]
+                    if f_obj.type != c_type or f_obj.original_comment != c_comment:
+                        changed_table_notes.add(t_obj.name)
                     f_obj.type = c_type
                     f_obj.original_comment = c_comment
                     session.add(f_obj)
@@ -90,6 +146,9 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
                         original_comment=c_comment
                     )
                     session.add(f_obj)
+
+        for table_name in changed_table_notes:
+            delete_table_note_if_exists(session, ds, table_name)
 
         ds.status = DataSourceStatus.CONNECTION_OK
         ds.sync_status = SyncStatus.NEVER_SYNCED

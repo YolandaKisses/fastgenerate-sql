@@ -9,7 +9,7 @@ from app.models.knowledge import KnowledgeSyncTask
 from app.models.audit_log import AuditLog
 import sqlalchemy
 import time
-from app.services.datasource_service import build_database_url
+from app.services.datasource_service import build_connect_args, build_database_url
 from app.core.config import settings
 from app.services.hermes_service import iter_hermes_session_json, run_hermes_session_json
 from app.services import setting_service
@@ -540,14 +540,15 @@ def ask_llm_stream(
 
 
 def apply_query_limits(conn, db_type: str, timeout_ms: int = 30000):
-    raw_connection = getattr(getattr(conn, "connection", None), "driver_connection", None)
-    if raw_connection is not None and hasattr(raw_connection, "call_timeout"):
-        raw_connection.call_timeout = timeout_ms
-
     if db_type == "mysql":
         conn.execute(sqlalchemy.text(f"SET SESSION MAX_EXECUTION_TIME={timeout_ms}"))
     elif db_type == "postgresql":
         conn.execute(sqlalchemy.text(f"SET statement_timeout = {timeout_ms}"))
+    elif db_type == "oracle":
+        # oracledb 驱动通过 call_timeout 控制单次网络往返超时（毫秒）
+        raw_connection = getattr(getattr(conn, "connection", None), "driver_connection", None)
+        if raw_connection is not None and hasattr(raw_connection, "call_timeout"):
+            raw_connection.call_timeout = timeout_ms
 
 def execute_readonly_sql(session: Session, datasource_id: int, sql: str, audit_log_id: int | None = None) -> dict:
     """校验并执行只读 SQL，如果提供 audit_log_id 则精确更新对应日志"""
@@ -563,7 +564,7 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str, audit_l
 
     try:
         url = build_database_url(ds)
-        engine = sqlalchemy.create_engine(url)
+        engine = sqlalchemy.create_engine(url, connect_args=build_connect_args(ds, 10))
 
         start_time = time.time()
         with engine.connect() as conn:

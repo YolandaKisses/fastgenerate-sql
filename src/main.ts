@@ -2,6 +2,7 @@ import { createApp, h } from 'vue'
 import { createPinia } from 'pinia'
 import { NConfigProvider, GlobalThemeOverrides, zhCN, dateZhCN } from 'naive-ui'
 import App from './App.vue'
+import './styles/global.css'
 import { router } from './router'
 
 const themeOverrides: GlobalThemeOverrides = {

@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/vue'
+import { fireEvent, render, waitFor } from '@testing-library/vue'
 import { NDialogProvider, NMessageProvider } from 'naive-ui'
 import { defineComponent } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -87,7 +87,7 @@ describe('数据源配置页面', () => {
 
   it('点击列表中其他数据源时应更新表单内容', async () => {
     const mockSources = [
-      { id: 1, name: 'DB_1', db_type: 'mysql', status: 'ready', host: 'host1' },
+      { id: 1, name: 'DB_1', db_type: 'mysql', status: 'connection_ok', host: 'host1' },
       { id: 2, name: 'DB_2', db_type: 'postgresql', status: 'draft', host: 'host2' }
     ]
     vi.mocked(get).mockResolvedValue(mockSources)
@@ -114,7 +114,7 @@ describe('数据源配置页面', () => {
 
   it('点击“新建连接”应清空表单并允许保存', async () => {
     vi.mocked(get).mockResolvedValue([
-      { id: 1, name: 'Existing_DB', db_type: 'mysql', status: 'ready', host: 'host1' }
+      { id: 1, name: 'Existing_DB', db_type: 'mysql', status: 'connection_ok', host: 'host1' }
     ])
     vi.mocked(post).mockResolvedValue({ id: 100, name: 'New_Connection', success: true })
 
@@ -132,11 +132,11 @@ describe('数据源配置页面', () => {
     })
 
     // 填充基本信息（必填项）
-    const nameInput = container.querySelector('input[placeholder="例如: Production_DB"]') as HTMLInputElement
-    if (nameInput) {
-      nameInput.value = 'New_Connection_Updated'
-      nameInput.dispatchEvent(new Event('input'))
-    }
+    await fireEvent.update(container.querySelector('input[placeholder="例如: Production_DB"]') as HTMLInputElement, 'New_Connection')
+    await fireEvent.update(container.querySelector('input[placeholder="app_db"]') as HTMLInputElement, 'app_db')
+    const credentialInputs = Array.from(container.querySelectorAll('.auth-content input')) as HTMLInputElement[]
+    await fireEvent.update(credentialInputs[0], 'root')
+    await fireEvent.update(credentialInputs[1], 'secret')
     
     const saveButton = getByText('保存修改')
     saveButton.click()
@@ -155,22 +155,22 @@ describe('数据源配置页面', () => {
     ])
     vi.mocked(post).mockResolvedValue({ success: true })
 
-    const { getByText, queryByText, container } = renderPage()
+    const { getAllByText, getByText, container } = renderPage()
 
     await waitFor(() => {
-      expect(getByText('SSH_DB')).toBeDefined()
+      expect(getAllByText('SSH_DB').length).toBeGreaterThan(0)
     })
 
     // 默认是用户名密码模式，应该能看到“用户名”
     expect(container.textContent).toContain('用户名')
 
     // 切换到 SSH 通道 (使用 n-radio-button)
-    const sshBtn = getByText('SSH 通道')
-    sshBtn.click()
+    const sshInput = container.querySelector('input[value="ssh"]') as HTMLInputElement
+    await fireEvent.click(sshInput)
 
     await waitFor(() => {
-      expect(container.textContent).toContain('SSH 主机')
-      expect(container.textContent).not.toContain('用户名')
+      expect(container.textContent).toContain('SSH 通道连接')
+      expect(container.querySelectorAll('.auth-content input')).toHaveLength(0)
     })
   })
 })

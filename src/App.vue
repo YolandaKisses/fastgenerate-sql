@@ -1,18 +1,32 @@
 <script setup lang="ts">
 import { NDialogProvider, NLayout, NMessageProvider } from 'naive-ui'
-import { RouterView } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
+import { computed } from 'vue'
 import AppSidebar from './components/layout/AppSidebar.vue'
+
+const route = useRoute()
+const isLoginPage = computed(() => route.path === '/login')
 </script>
 
 <template>
   <n-message-provider>
     <n-dialog-provider>
-      <n-layout has-sider class="app-layout">
+      <router-view v-slot="{ Component }">
+        <transition name="fade" mode="out-in" appear>
+          <component :is="Component" v-if="isLoginPage" />
+        </transition>
+      </router-view>
+
+      <n-layout v-if="!isLoginPage" has-sider class="app-layout">
         <AppSidebar />
         
         <n-layout class="main-content">
           <div class="page-container">
-            <RouterView />
+            <router-view v-slot="{ Component }">
+              <transition name="fade" mode="out-in" appear>
+                <component :is="Component" />
+              </transition>
+            </router-view>
           </div>
         </n-layout>
       </n-layout>

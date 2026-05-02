@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
+from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.services import workbench_service
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/workbench", tags=["workbench"])
+router = APIRouter(prefix="/workbench", tags=["workbench"], dependencies=[Depends(get_current_user)])
 
 import json
 import re

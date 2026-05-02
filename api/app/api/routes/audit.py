@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
+from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.models.audit_log import AuditLog
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
-router = APIRouter(prefix="/audit", tags=["audit"])
+router = APIRouter(prefix="/audit", tags=["audit"], dependencies=[Depends(get_current_user)])
 
 @router.get("/logs")
 def get_logs(session: Session = Depends(get_session)):

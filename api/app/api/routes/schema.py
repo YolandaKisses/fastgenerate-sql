@@ -3,6 +3,7 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
+from app.api.deps import get_current_user
 from app.core.database import engine, get_session
 from app.models.datasource import DataSource
 from app.models.knowledge import KnowledgeSyncTask
@@ -10,7 +11,7 @@ from app.models.schema import SchemaTable, SchemaField
 from app.services import knowledge_service, schema_service
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/schema", tags=["schema"])
+router = APIRouter(prefix="/schema", tags=["schema"], dependencies=[Depends(get_current_user)])
 
 class RemarkUpdate(BaseModel):
     remark: str
@@ -82,12 +83,18 @@ def stream_knowledge_task_events(task_id: int):
     )
 
 
-@router.get("/knowledge/sync_stream/{datasource_id}")
+@router.get("/knowledge/sync_stream/{datasource_id}", deprecated=True)
 def sync_knowledge_stream(
     datasource_id: int,
     session: Session = Depends(get_session),
 ):
-    """兼容旧入口：启动后台任务并用 SSE 订阅进度。"""
+    """[已废弃] 兼容旧入口：启动后台任务并用 SSE 订阅进度。
+
+    新流程请使用：
+      POST /schema/knowledge/sync/{datasource_id}  → 启动任务
+      GET  /schema/knowledge/tasks/{task_id}/events → 订阅进度
+    本接口将在下一版本移除。
+    """
     try:
         task = knowledge_service.create_knowledge_sync_task(session, datasource_id)
     except ValueError as exc:

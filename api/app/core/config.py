@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     DATA_DIR: str = os.path.expanduser("~/.fastgenerate_sql_data")
     OBSIDIAN_VAULT_ROOT: str = os.path.expanduser("~/Documents/obsidian知识库/FastGenerate SQL")
     HERMES_CLI_PATH: str = os.path.expanduser("~/.local/bin/hermes")
+    AUTH_TOKEN_SECRET: str = ""
+    AUTH_TOKEN_EXPIRE_MINUTES: int = 480
     
     @property
     def DATABASE_URL(self) -> str:

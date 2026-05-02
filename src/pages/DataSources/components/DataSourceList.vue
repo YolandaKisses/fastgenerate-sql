@@ -13,7 +13,7 @@ const emit = defineEmits(['select'])
 const getStatusType = (status: string) => {
   switch (status) {
     case 'connection_ok':
-    case 'ready': return 'success'
+      return 'success'
     case 'draft': return 'default'
     case 'stale': return 'warning'
     case 'connection_failed':

@@ -8,7 +8,6 @@ class DataSourceStatus(str, Enum):
     CONNECTION_FAILED = "connection_failed"
     CONNECTION_OK = "connection_ok"
     SYNC_FAILED = "sync_failed"
-    READY = "ready"
     STALE = "stale"
 
 
@@ -33,7 +32,7 @@ class DataSourceBase(SQLModel):
 
 class DataSource(DataSourceBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    password: str # 实际应加密存储
+    password: str
     last_synced_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
