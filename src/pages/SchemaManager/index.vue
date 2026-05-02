@@ -171,19 +171,28 @@ const subscribeKnowledgeTask = (taskId: number) => {
       message.success(data.message || '知识库同步完成')
       source.close()
       activeKnowledgeSSE = null
-      if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
+      if (currentSource.value) {
+        fetchLatestKnowledgeTask(currentSource.value)
+        fetchSources()
+      }
     } else if (status === 'partial_success') {
       knowledgeSyncing.value = false
       message.warning(data.message || '知识库部分同步成功')
       source.close()
       activeKnowledgeSSE = null
-      if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
+      if (currentSource.value) {
+        fetchLatestKnowledgeTask(currentSource.value)
+        fetchSources()
+      }
     } else if (status === 'failed') {
       knowledgeSyncing.value = false
       message.error(data.error_message || data.message || '知识库同步失败')
       source.close()
       activeKnowledgeSSE = null
-      if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
+      if (currentSource.value) {
+        fetchLatestKnowledgeTask(currentSource.value)
+        fetchSources()
+      }
     }
   })
 
@@ -201,7 +210,10 @@ const subscribeKnowledgeTask = (taskId: number) => {
     knowledgeSyncing.value = false
     source.close()
     activeKnowledgeSSE = null
-    if (currentSource.value) fetchLatestKnowledgeTask(currentSource.value)
+    if (currentSource.value) {
+      fetchLatestKnowledgeTask(currentSource.value)
+      fetchSources()
+    }
   })
 }
 
@@ -219,6 +231,7 @@ const handleKnowledgeSync = async () => {
   try {
     const task = await post(`/schema/knowledge/sync/${currentSource.value}`)
     knowledgeTask.value = task
+    fetchSources()
     subscribeKnowledgeTask(task.id)
   } catch (error: any) {
     knowledgeSyncing.value = false

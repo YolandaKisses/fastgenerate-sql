@@ -8,7 +8,7 @@ import { del, get, patch, post } from '../../services/request'
 const message = useMessage()
 const dialog = useDialog()
 const sources = ref<any[]>([])
-const selectedSource = ref<any | null>({
+const createDefaultSource = () => ({
   name: 'New_Connection',
   db_type: 'mysql',
   host: '127.0.0.1',
@@ -17,20 +17,31 @@ const selectedSource = ref<any | null>({
   username: 'root',
   password: ''
 })
+const selectedSource = ref<any | null>(null)
 
 const fetchSources = async () => {
   try {
     sources.value = await get('/datasources/')
+    if (selectedSource.value?.id) {
+      const currentSource = sources.value.find((source) => source.id === selectedSource.value.id)
+      selectedSource.value = currentSource ? { ...currentSource } : null
+    }
     if (sources.value.length > 0 && !selectedSource.value) {
-      selectedSource.value = { ...sources.value[0] }
+      const firstSource = { ...sources.value[0] }
+      selectedSource.value = firstSource
+      return firstSource
     }
   } catch (error) {
     message.error('无法连接到后端服务')
   }
+  return selectedSource.value
 }
 
-onMounted(() => {
-  fetchSources()
+onMounted(async () => {
+  const initialSource = await fetchSources()
+  if (initialSource?.id) {
+    await testConnection(initialSource.id, { refreshSources: true })
+  }
 })
 
 const handleSelect = (source: any) => {
@@ -38,15 +49,7 @@ const handleSelect = (source: any) => {
 }
 
 const handleCreateNew = () => {
-  selectedSource.value = {
-    name: 'New_Connection',
-    db_type: 'mysql',
-    host: '127.0.0.1',
-    port: 3306,
-    database: '',
-    username: 'root',
-    password: ''
-  }
+  selectedSource.value = createDefaultSource()
 }
 
 const handleSave = async (data: any) => {
@@ -64,7 +67,7 @@ const handleSave = async (data: any) => {
   }
 }
 
-const handleTest = async (id: number | null) => {
+const testConnection = async (id: number | null, options: { refreshSources?: boolean } = {}) => {
   if (!id) {
     message.warning('请先保存后再测试连接')
     return
@@ -76,11 +79,15 @@ const handleTest = async (id: number | null) => {
     } else {
       message.error(data.message || '连接测试失败')
     }
-    await fetchSources()
+    if (options.refreshSources ?? true) {
+      await fetchSources()
+    }
   } catch (error) {
     message.error('请求失败')
   }
 }
+
+const handleTest = (id: number | null) => testConnection(id)
 
 const handleDelete = async (id: number | null) => {
   if (!id) return

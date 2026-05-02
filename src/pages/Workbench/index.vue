@@ -42,6 +42,10 @@ const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null)
 // 对话上下文历史 (用于多轮澄清)
 const messageHistory = ref<MessageHistoryEntry[]>([])
 
+const canAskDatasource = (ds: any) => {
+  return ds.status === 'connection_ok' && ds.sync_status === 'sync_success'
+}
+
 // 清除上下文
 const handleResetContext = () => {
   messageHistory.value = []
@@ -133,7 +137,7 @@ onMounted(async () => {
   try {
     const data = await get('/datasources/')
     datasourceOptions.value = data
-      .filter((ds: any) => ds.status === 'READY' || ds.status === 'ready' || ds.status === 'connection_ok')
+      .filter(canAskDatasource)
       .map((ds: any) => ({ label: `${ds.name} (${ds.db_type})`, value: ds.id }))
     
     // 校验恢复的状态是否依然有效
@@ -434,49 +438,60 @@ const handleExecuteSql = async () => {
     <div class="page-content">
       <AiAssistant :disabled="loading || !currentDatasource" @submit="handleQuerySubmit" />
 
-      <!-- Hermes 工作过程面板 -->
-      <HermesProcess
-        ref="hermesProcessRef"
-        :steps="hermesSteps"
-        :loading="loading"
-        :history-count="messageHistory.length"
-        :active-clarification="formatClarification(clarification)"
-        :hermes-session-id="hermesSessionId"
-        @reset="handleResetContext"
-      />
+      <div class="workbench-grid">
+        <div class="main-area">
+          <!-- 澄清提示 -->
+          <div v-if="clarification" class="clarification-box">
+            <span class="clarification-icon">💬</span>
+            <div class="clarification-content">
+              <div class="clarification-title">AI 需要澄清</div>
+              <div class="clarification-text">{{ formatClarification(clarification) }}</div>
+            </div>
+          </div>
 
-      <!-- 澄清提示 -->
-      <div v-if="clarification" class="clarification-box">
-        <span class="clarification-icon">💬</span>
-        <div class="clarification-content">
-          <div class="clarification-title">AI 需要澄清</div>
-          <div class="clarification-text">{{ formatClarification(clarification) }}</div>
+          <div class="workbench-sections">
+            <section class="panel">
+              <h2 class="panel-title">SQL 候选</h2>
+              <SqlEditor
+                v-if="generatedSql || isRendering"
+                :sql="generatedSql"
+                :displayed-sql="displayedSql"
+                :is-rendering="isRendering"
+                :explanation="sqlExplanation"
+                :validation-state="validationState"
+                :validation-reasons="validationReasons"
+                :executed="hasExecutedSql"
+                :execution-status="queryResult?.status"
+                @execute="handleExecuteSql"
+              />
+              <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
+            </section>
+
+            <section class="panel">
+              <h2 class="panel-title">执行结果</h2>
+              <QueryResult v-if="queryResult" :result="queryResult" />
+              <div v-else class="panel-placeholder">执行完成后，这里会展示结果表格或错误信息。</div>
+            </section>
+          </div>
         </div>
-      </div>
 
-      <div class="workbench-sections">
-        <section class="panel">
-          <h2 class="panel-title">SQL 候选</h2>
-          <SqlEditor
-            v-if="generatedSql || isRendering"
-            :sql="generatedSql"
-            :displayed-sql="displayedSql"
-            :is-rendering="isRendering"
-            :explanation="sqlExplanation"
-            :validation-state="validationState"
-            :validation-reasons="validationReasons"
-            :executed="hasExecutedSql"
-            :execution-status="queryResult?.status"
-            @execute="handleExecuteSql"
+        <div class="side-area" :class="{ 'is-active': hermesSteps.length > 0 }">
+          <!-- Hermes 工作过程面板 -->
+          <HermesProcess
+            ref="hermesProcessRef"
+            :steps="hermesSteps"
+            :loading="loading"
+            :history-count="messageHistory.length"
+            :active-clarification="formatClarification(clarification)"
+            :hermes-session-id="hermesSessionId"
+            @reset="handleResetContext"
           />
-          <div v-else class="panel-placeholder">生成 SQL 后会展示候选语句与解释说明。</div>
-        </section>
-
-        <section class="panel">
-          <h2 class="panel-title">执行结果</h2>
-          <QueryResult v-if="queryResult" :result="queryResult" />
-          <div v-else class="panel-placeholder">执行完成后，这里会展示结果表格或错误信息。</div>
-        </section>
+          
+          <div v-if="hermesSteps.length === 0" class="side-placeholder">
+            <div class="placeholder-icon">🤖</div>
+            <p>准备就绪。在这里将展示 AI 的思考过程与笔记检索详情。</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -533,8 +548,57 @@ const handleExecuteSql = async () => {
 .page-content {
   display: flex;
   flex-direction: column;
+  gap: 20px;
+  width: 100%;
+}
+
+.workbench-grid {
+  display: flex;
   gap: 24px;
-  max-width: 1200px;
+  align-items: flex-start;
+}
+
+.main-area {
+  flex: 1;
+  min-width: 0; /* 防止子元素撑破容器 */
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.side-area {
+  width: 400px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+}
+
+.side-placeholder {
+  padding: 40px 24px;
+  border: 1px dashed #e2e8f0;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.placeholder-icon {
+  font-size: 32px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.side-placeholder p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .workbench-sections {

@@ -1,10 +1,11 @@
-from app.models.datasource import DataSource, DataSourceStatus
+from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.setting import RuntimeSetting
 from app.services import workbench_service
 from app.api.routes.workbench import is_valid_hermes_session_id
 from app.services.hermes_service import parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
     ask_llm_stream,
+    can_ask_datasource,
     normalize_note_name,
     note_used_payload,
     validate_sql_candidate,
@@ -88,6 +89,65 @@ def test_hermes_session_id_route_validation_rejects_unsafe_values():
     assert not is_valid_hermes_session_id("a" * 129)
 
 
+def test_can_ask_datasource_requires_connection_ok_and_sync_success():
+    assert can_ask_datasource(
+        DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+    )
+
+
+def test_schema_sync_success_alone_does_not_allow_asking():
+    assert not can_ask_datasource(
+        DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.NEVER_SYNCED,
+            last_sync_message="Schema 已同步，请同步到知识库",
+        )
+    )
+    assert not can_ask_datasource(
+        DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.READY,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+    )
+    assert not can_ask_datasource(
+        DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.NEVER_SYNCED,
+        )
+    )
+
+
 def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
@@ -123,7 +183,8 @@ def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
             database="demo",
             username="root",
             password="secret",
-            status=DataSourceStatus.READY,
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
         )
         session.add(ds)
         session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
@@ -166,7 +227,8 @@ def test_stream_labels_hermes_used_notes_as_references_not_hits(tmp_path, monkey
             database="demo",
             username="root",
             password="secret",
-            status=DataSourceStatus.READY,
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
         )
         session.add(ds)
         session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
@@ -220,7 +282,8 @@ def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path,
             database="demo",
             username="root",
             password="secret",
-            status=DataSourceStatus.READY,
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
         )
         session.add(ds)
         session.commit()

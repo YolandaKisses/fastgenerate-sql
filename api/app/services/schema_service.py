@@ -91,9 +91,13 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
                     )
                     session.add(f_obj)
 
-        ds.status = DataSourceStatus.READY
-        ds.sync_status = SyncStatus.SYNC_PARTIAL_SUCCESS if has_partial_failures else SyncStatus.SYNC_SUCCESS
-        ds.last_sync_message = f"成功同步了 {len(table_names)} 张表" if not has_partial_failures else f"部分同步完成，共同步 {len(table_names)} 张表"
+        ds.status = DataSourceStatus.CONNECTION_OK
+        ds.sync_status = SyncStatus.NEVER_SYNCED
+        ds.last_sync_message = (
+            f"Schema 已同步 {len(table_names)} 张表，请继续同步到知识库"
+            if not has_partial_failures
+            else f"Schema 部分同步完成，共同步 {len(table_names)} 张表，请检查后同步到知识库"
+        )
         ds.last_synced_at = datetime.now()
         session.add(ds)
         session.commit()

@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Generator
 from sqlmodel import Session, select
-from app.models.datasource import DataSource, DataSourceStatus
+from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.schema import SchemaTable, SchemaField
 from app.models.knowledge import KnowledgeSyncTask
 from app.models.audit_log import AuditLog
@@ -16,6 +16,17 @@ from app.services import setting_service
 
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
 ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
+
+
+def can_ask_datasource(ds: DataSource) -> bool:
+    return ds.status == DataSourceStatus.CONNECTION_OK and ds.sync_status == SyncStatus.SYNC_SUCCESS
+
+
+def datasource_not_ready_message(ds: DataSource) -> str:
+    return (
+        f"数据源状态为 {ds.status}，同步状态为 {ds.sync_status}，"
+        "请先完成连接测试并成功同步知识库"
+    )
 
 
 def commit_with_warning(session: Session, warning_message: str) -> str | None:
@@ -339,8 +350,8 @@ def ask_llm(
     if not ds:
         return {"type": "error", "message": "数据源不存在"}
 
-    if ds.status not in (DataSourceStatus.READY, DataSourceStatus.CONNECTION_OK):
-        return {"type": "error", "message": f"数据源状态为 {ds.status}，请先完成连接测试"}
+    if not can_ask_datasource(ds):
+        return {"type": "error", "message": datasource_not_ready_message(ds)}
 
     vault_root = setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
     hermes_cli_path = setting_service.get_setting(session, "hermes_cli_path", settings.HERMES_CLI_PATH)
@@ -392,8 +403,8 @@ def ask_llm_stream(
     if not ds:
         yield _sse_event("error", {"message": "数据源不存在"})
         return
-    if ds.status not in (DataSourceStatus.READY, DataSourceStatus.CONNECTION_OK):
-        yield _sse_event("error", {"message": f"数据源状态为 {ds.status}，请先完成连接测试"})
+    if not can_ask_datasource(ds):
+        yield _sse_event("error", {"message": datasource_not_ready_message(ds)})
         return
 
     vault_root = setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)

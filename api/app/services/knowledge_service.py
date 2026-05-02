@@ -9,7 +9,7 @@ import re
 from sqlmodel import Session, select
 
 from app.core.config import settings
-from app.models.datasource import DataSource
+from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.knowledge import KnowledgeSyncTask, KnowledgeSyncTaskStatus
 from app.models.schema import SchemaField, SchemaTable
 from app.services.hermes_service import run_hermes_json
@@ -54,6 +54,10 @@ def create_knowledge_sync_task(session: Session, datasource_id: int) -> Knowledg
         output_dir=output_dir,
     )
     session.add(task)
+    datasource.status = DataSourceStatus.CONNECTION_OK
+    datasource.sync_status = SyncStatus.SYNCING
+    datasource.last_sync_message = "知识库同步任务已创建"
+    session.add(datasource)
     session.commit()
     session.refresh(task)
     return task
@@ -325,12 +329,16 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
         ).all()
 
         task.status = KnowledgeSyncTaskStatus.RUNNING
+        datasource.status = DataSourceStatus.CONNECTION_OK
+        datasource.sync_status = SyncStatus.SYNCING
+        datasource.last_sync_message = "知识库同步进行中"
         task.started_at = datetime.now()
         task.total_tables = len(tables)
         task.current_phase = "started"
         task.last_message = "知识库同步任务已启动"
         task.current_table = None
         session.add(task)
+        session.add(datasource)
         session.commit()
 
         try:
@@ -395,19 +403,28 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                 task.error_message = "所有表均同步失败"
                 task.current_phase = "failed"
                 task.last_message = task.error_message
+                datasource.sync_status = SyncStatus.SYNC_FAILED
+                datasource.last_sync_message = task.error_message
             elif task.failed_tables > 0:
                 task.status = KnowledgeSyncTaskStatus.PARTIAL_SUCCESS
                 task.error_message = f"部分完成：{task.failed_tables} 张表失败"
                 task.current_phase = "completed"
                 task.last_message = task.error_message
+                datasource.sync_status = SyncStatus.SYNC_PARTIAL_SUCCESS
+                datasource.last_sync_message = task.error_message
             else:
                 task.status = KnowledgeSyncTaskStatus.COMPLETED
                 task.error_message = None
                 task.current_phase = "completed"
                 task.last_message = f"知识库同步完成，共处理 {len(tables)} 张表"
+                datasource.sync_status = SyncStatus.SYNC_SUCCESS
+                datasource.last_sync_message = task.last_message
             task.current_table = None
+            datasource.status = DataSourceStatus.CONNECTION_OK
+            datasource.last_synced_at = task.finished_at
             
             session.add(task)
+            session.add(datasource)
             session.commit()
 
         except Exception as exc:
@@ -417,7 +434,12 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             task.last_message = f"知识库同步失败: {str(exc)[:200]}"
             task.current_table = None
             task.finished_at = datetime.now()
+            datasource.status = DataSourceStatus.CONNECTION_OK
+            datasource.sync_status = SyncStatus.SYNC_FAILED
+            datasource.last_sync_message = task.last_message
+            datasource.last_synced_at = task.finished_at
             session.add(task)
+            session.add(datasource)
             session.commit()
 
 
