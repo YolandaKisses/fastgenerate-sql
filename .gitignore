@@ -8,3 +8,10 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+
+# Logs and temporary artifacts
+*.log
+backend.log
+frontend.log
+2026*_*
+.venv/

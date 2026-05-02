@@ -64,6 +64,36 @@ def test_update_datasource_encrypts_new_database_password():
         assert "new-secret" in build_database_url(updated)
 
 
+def test_update_datasource_ignores_explicit_null_password():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        ds = create_datasource(
+            session,
+            DataSourceCreate(
+                name="demo",
+                db_type="mysql",
+                host="localhost",
+                port=3306,
+                database="demo",
+                username="root",
+                password="old-secret",
+            ),
+        )
+        stored_password = ds.password
+
+        updated = update_datasource(
+            session,
+            ds.id,
+            DataSourceUpdate(name="renamed", password=None),
+        )
+
+        assert updated.name == "renamed"
+        assert updated.password == stored_password
+        assert decrypt_datasource_password(updated.password) == "old-secret"
+
+
 def test_plaintext_legacy_datasource_password_still_builds_connection_url():
     ds = DataSource(
         name="legacy",

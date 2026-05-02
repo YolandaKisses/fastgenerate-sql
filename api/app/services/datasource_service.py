@@ -64,6 +64,8 @@ def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate) -> 
         raise HTTPException(status_code=404, detail="DataSource not found")
 
     ds_data = ds_in.model_dump(exclude_unset=True)
+    if ds_data.get("password") is None:
+        ds_data.pop("password", None)
     touched_connection_fields = False
     for key, value in ds_data.items():
         next_value = encrypt_datasource_password(value) if key == "password" else value

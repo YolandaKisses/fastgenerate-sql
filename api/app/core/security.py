@@ -30,13 +30,41 @@ def _datasource_secret_path() -> Path:
     return _auth_dir() / "datasource_secret"
 
 
+def _chmod_private(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _write_private_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp_path, path)
+        os.chmod(path, 0o600)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _write_private_text(path: Path, data: str) -> None:
+    _write_private_bytes(path, data.encode("utf-8"))
+
+
 def _datasource_secret() -> bytes:
     secret_path = _datasource_secret_path()
     if secret_path.exists():
+        _chmod_private(secret_path)
         return base64.urlsafe_b64decode(secret_path.read_text(encoding="utf-8"))
 
     secret = AESGCM.generate_key(bit_length=256)
-    secret_path.write_text(base64.urlsafe_b64encode(secret).decode("ascii"), encoding="utf-8")
+    _write_private_text(secret_path, base64.urlsafe_b64encode(secret).decode("ascii"))
     return secret
 
 
@@ -100,6 +128,7 @@ def get_or_create_rsa_key_pair() -> tuple[bytes, bytes]:
     private_path = _private_key_path()
     public_path = _public_key_path()
     if private_path.exists() and public_path.exists():
+        _chmod_private(private_path)
         return private_path.read_bytes(), public_path.read_bytes()
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -112,7 +141,7 @@ def get_or_create_rsa_key_pair() -> tuple[bytes, bytes]:
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    private_path.write_bytes(private_pem)
+    _write_private_bytes(private_path, private_pem)
     public_path.write_bytes(public_pem)
     return private_pem, public_pem
 
@@ -164,9 +193,10 @@ def _token_secret() -> str:
         return settings.AUTH_TOKEN_SECRET
     secret_path = _auth_dir() / "token_secret"
     if secret_path.exists():
+        _chmod_private(secret_path)
         return secret_path.read_text(encoding="utf-8")
     secret = secrets.token_urlsafe(48)
-    secret_path.write_text(secret, encoding="utf-8")
+    _write_private_text(secret_path, secret)
     return secret
 
 

@@ -9,6 +9,16 @@ class Settings(BaseSettings):
     HERMES_CLI_PATH: str = os.path.expanduser("~/.local/bin/hermes")
     AUTH_TOKEN_SECRET: str = ""
     AUTH_TOKEN_EXPIRE_MINUTES: int = 480
+    ALLOWED_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173"
+    DB_ECHO: bool = False
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.ALLOWED_ORIGINS.split(",")
+            if origin.strip() and origin.strip() != "*"
+        ]
     
     @property
     def DATABASE_URL(self) -> str:
