@@ -13,9 +13,18 @@ from app.services.datasource_service import build_connect_args, build_database_u
 from app.core.config import settings
 from app.services.hermes_service import iter_hermes_session_json, run_hermes_session_json
 from app.services import setting_service
+from app.services.path_utils import sanitize_path_segment
 
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
 ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
+SQL_KEYWORDS = {
+    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "ON", "AS",
+    "AND", "OR", "NOT", "NULL", "IS", "IN", "LIKE", "BETWEEN", "GROUP", "BY", "ORDER",
+    "HAVING", "LIMIT", "OFFSET", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "DATE",
+    "CURRENT_DATE", "CURDATE", "DATE_SUB", "INTERVAL", "DAY", "WEEK", "MONTH", "YEAR",
+    "CASE", "WHEN", "THEN", "ELSE", "END", "DESC", "ASC", "WITH", "UNION", "ALL",
+}
+SCHEMA_RETRIEVAL_HISTORY_LIMIT = 4
 
 
 def can_ask_datasource(ds: DataSource) -> bool:
@@ -59,11 +68,6 @@ def collect_table_payload(session: Session, datasource_id: int) -> list[dict]:
         fields = session.exec(select(SchemaField).where(SchemaField.table_id == table.id)).all()
         payload.append({"table": table, "fields": fields})
     return payload
-
-
-def sanitize_path_segment(value: str) -> str:
-    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
-    return cleaned or "untitled"
 
 
 def get_datasource_knowledge_dir(vault_root: str, datasource_name: str) -> Path:
@@ -118,56 +122,8 @@ def normalize_note_name(note: str) -> str:
     return sanitize_path_segment(name)
 
 
-def build_table_lookup(session: Session, datasource_id: int) -> dict[str, SchemaTable]:
-    tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)).all()
-    lookup = {}
-    for table in tables:
-        lookup[table.name] = table
-        lookup[sanitize_path_segment(table.name)] = table
-    return lookup
-
-
 def note_used_payload(note_name: str) -> dict:
     return {"note": normalize_note_name(note_name), "comment": ""}
-
-
-def detect_ambiguity(question: str, candidates: list[dict]) -> str | None:
-    if len(candidates) < 2:
-        return None
-
-    token_hits = {}
-    for candidate in candidates:
-        matched_terms = candidate.get("matched_terms", set())
-        for term in matched_terms:
-            token_hits[term] = token_hits.get(term, 0) + 1
-
-    ambiguous_terms = [term for term, count in token_hits.items() if count > 1]
-    if ambiguous_terms and len(question.strip()) <= 20:
-        term = sorted(ambiguous_terms, key=len, reverse=True)[0]
-        return f"你提到的“{term}”可能对应多个表或字段。请补充你要看的是哪类业务对象、时间范围或统计口径。"
-
-    top_score = candidates[0].get("score", 0)
-    second_score = candidates[1].get("score", 0)
-    if top_score == second_score and top_score > 0 and len(question.strip()) <= 12:
-        return "当前问题可能命中多个表。请补充具体业务对象、时间范围或你想统计的指标。"
-
-    return None
-
-
-def is_clarification_choice(question: str, history: list[dict] | None = None) -> bool:
-    normalized = question.strip().upper()
-    if not re.fullmatch(r"[A-D][\).、：:]?", normalized):
-        return False
-    if not history:
-        return False
-
-    for msg in reversed(history):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content", "")
-        if re.search(r"(?:^|\n|\s)[A-D][\).、：:]", content, flags=re.I):
-            return True
-    return False
 
 
 def build_schema_context(candidates: list[dict]) -> str:
@@ -197,6 +153,126 @@ def build_schema_context(candidates: list[dict]) -> str:
             lines.append(f"  - {f.name} ({f.type}) {f_comment}")
 
     return "\n".join(lines)
+
+
+def read_relevant_table_notes(candidates: list[dict], knowledge_dir: Path, limit: int = 6) -> tuple[str, list[str]]:
+    """读取候选表对应的 Obsidian 笔记；Obsidian 只作为业务补充。"""
+    if not candidates:
+        return "（没有匹配到候选表笔记）", []
+
+    sections = []
+    used_notes = []
+    for item in candidates[:limit]:
+        table = item["table"]
+        note_name = sanitize_path_segment(table.name)
+        note_path = knowledge_dir / f"{note_name}.md"
+        if not note_path.exists():
+            continue
+        text = note_path.read_text(encoding="utf-8", errors="ignore").strip()
+        if not text:
+            continue
+        if len(text) > 4000:
+            text = truncate_text_on_line_boundary(text, 4000)
+        used_notes.append(note_name)
+        sections.append(f"### Note: {note_name}\n{text}")
+
+    if not sections:
+        return "（候选表没有可读取的 Obsidian 笔记）", []
+    return "\n\n".join(sections), used_notes
+
+
+def truncate_text_on_line_boundary(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+
+    cut = text.rfind("\n", 0, limit)
+    if cut <= 0:
+        cut = limit
+    return text[:cut].rstrip() + "\n（后续内容已裁剪）"
+
+
+def schema_index_from_candidates(candidates: list[dict]) -> dict[str, set[str]]:
+    index = {}
+    for item in candidates:
+        table = item["table"]
+        index[table.name.lower()] = {field.name.lower() for field in item["fields"]}
+    return index
+
+
+def validate_sql_against_schema(sql: str, candidates: list[dict]) -> dict:
+    """基于本轮候选 Schema 做轻量表字段校验，防止 Hermes 使用上下文外字段。"""
+    base_validation = validate_sql_candidate(sql)
+    if base_validation["status"] == "invalid":
+        return base_validation
+
+    normalized_sql = base_validation["normalized_sql"]
+    schema_index = schema_index_from_candidates(candidates)
+    reasons = []
+    table_aliases: dict[str, str] = {}
+
+    table_matches = list(
+        re.finditer(
+            r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w.]*)(?:\s+(?:AS\s+)?([A-Za-z_][\w]*))?",
+            normalized_sql,
+            flags=re.I,
+        )
+    )
+    for match in table_matches:
+        raw_table = match.group(1)
+        table_name = raw_table.split(".")[-1]
+        table_key = table_name.lower()
+        if table_key not in schema_index:
+            reasons.append(f"SQL 引用了未在本轮 Schema Context 中提供的表 {table_name}")
+            continue
+        table_aliases[table_key] = table_key
+        alias = match.group(2)
+        if alias and alias.upper() not in SQL_KEYWORDS:
+            table_aliases[alias.lower()] = table_key
+
+    sql_without_strings = re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", normalized_sql)
+    warnings = []
+
+    for alias, field in re.findall(r"\b([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\b", sql_without_strings):
+        alias_key = alias.lower()
+        field_key = field.lower()
+        table_key = table_aliases.get(alias_key)
+        if not table_key:
+            reasons.append(f"SQL 引用了未知表或别名 {alias}")
+            continue
+        if field_key not in schema_index.get(table_key, set()):
+            reasons.append(f"SQL 引用了不存在字段 {alias}.{field}")
+
+    unqualified_fields = extract_unqualified_field_candidates(sql_without_strings)
+    if table_aliases and unqualified_fields:
+        available_fields = set()
+        for table_key in set(table_aliases.values()):
+            available_fields.update(schema_index.get(table_key, set()))
+        for field in unqualified_fields:
+            if field.lower() not in available_fields:
+                warnings.append(
+                    f"SQL 中的未限定标识符 {field} 未在候选字段中命中，可能是 SELECT 别名或方言标识"
+                )
+
+    return {
+        "status": "invalid" if reasons else "valid",
+        "normalized_sql": normalized_sql,
+        "reasons": reasons,
+        "warnings": warnings,
+    }
+
+
+def extract_unqualified_field_candidates(sql: str) -> set[str]:
+    candidates = set()
+    cleaned = re.sub(r"\b[A-Za-z_][\w]*\s*\(", " ", sql)
+    cleaned = re.sub(r"\b[A-Za-z_][\w]*\.[A-Za-z_][\w]*\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:FROM|JOIN)\s+[A-Za-z_][\w.]*\s+(?:AS\s+)?[A-Za-z_][\w]*", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"\b(?:FROM|JOIN)\s+[A-Za-z_][\w.]*", " ", cleaned, flags=re.I)
+    for token in re.findall(r"\b[A-Za-z_][\w]*\b", cleaned):
+        upper = token.upper()
+        if upper in SQL_KEYWORDS:
+            continue
+        candidates.add(token)
+    return candidates
 
 
 def validate_llm_result(result: dict) -> dict:
@@ -313,58 +389,89 @@ def validate_sql_candidate(sql: str) -> dict:
 # 公共 prompt / 日志辅助函数（ask_llm 和 ask_llm_stream 共用）
 # ---------------------------------------------------------------------------
 
-def _build_system_prompt(db_type: str, knowledge_dir: Path) -> str:
+def _build_system_prompt(db_type: str) -> str:
     """构建系统 prompt"""
-    return f"""你是一个企业级 SQL 生成助手。你当前的任务是先去本地 Obsidian 知识库里检索相关笔记，再根据结果生成只读 SQL 或提出澄清。
+    return f"""你是一个企业级 SQL 生成助手。你当前的任务是在系统提供的受控上下文中判断意图、识别歧义、提出关系补全建议，并生成只读 SQL 或提出澄清。
 
 规则：
 1. 【禁止写操作】只能生成 SELECT 语句，严禁生成 INSERT / UPDATE / DELETE / DROP / ALTER 等任何修改数据的操作。
 2. 【严禁猜测】当用户输入模糊、有歧义、或缺少关键信息（如无法确定具体表名、缺少必要过滤字段等）时，必须进入澄清模式，严禁盲目生成 SQL。
 3. 【强制选项】在澄清模式下，你必须列出最多 4 个具体的候选项（标记为 A、B...）让用户点击或回复选择，而不是空泛地提问。
 4. 数据库类型为 {db_type}，请使用对应方言。
-5. 你的主要知识来源是 Obsidian 知识库。请先在下面目录中查找相关笔记：
-   {knowledge_dir}
-6. 只有在确定用户意图后，才能生成 SQL。
-7. 如果用户选择了澄清选项，但该选项依赖表中不存在的字段、枚举或分类口径，必须再次进入澄清模式。禁止使用 LIKE 关键词、名称猜测、枚举猜测来替代缺失字段，除非用户明确允许模糊匹配。
-8. 返回 JSON 格式，只允许以下两种：
+5. Schema Context 来自系统 SQLite 元数据，是唯一可信的表字段来源。禁止使用未出现在 Schema Context 中的表、字段和关系。
+6. Obsidian Notes 仅作为业务解释和口径参考，不可覆盖 Schema Context。
+7. 你可以基于候选表字段和 Obsidian Notes 判断歧义、提出澄清、建议 join，但不得编造不存在的字段、枚举或关联。
+8. 如果用户选择了澄清选项，但该选项依赖表中不存在的字段、枚举或分类口径，必须再次进入澄清模式。禁止使用 LIKE 关键词、名称猜测、枚举猜测来替代缺失字段，除非用户明确允许模糊匹配。
+9. 返回 JSON 格式，只允许以下两种：
    - 澄清：{{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}}
    - SQL：{{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}}
-9. 不要返回任何 JSON 以外的文字。
+10. 不要返回任何 JSON 以外的文字。
 """
 
 
-def _build_full_prompt(system_prompt: str, question: str) -> str:
+def _build_full_prompt(system_prompt: str, question: str, schema_context: str, obsidian_context: str) -> str:
     """构建当前轮 prompt。多轮上下文交给 Hermes session 持有。"""
     prompt_lines = [system_prompt, ""]
 
     prompt_lines.extend([
         f"### 用户当前问题：{question}",
         "",
+        "### Schema Context",
+        schema_context,
+        "",
+        "### Obsidian Notes",
+        obsidian_context,
+        "",
         "执行要求：",
         "1. 如果用户的问题是对之前澄清的回应，请结合上下文生成 SQL。",
-        "2. 优先根据本地知识库检索结果来判断。",
-        "3. 严格返回 JSON 格式。",
+        "2. 判断歧义和补全关系时只能在 Schema Context 提供的候选范围内进行。",
+        "3. Obsidian Notes 只用于业务语义、口径、注意事项补充。",
+        "4. 严格返回 JSON 格式。",
     ])
     return "\n".join(prompt_lines)
 
 
-def _log_clarification(session: Session, datasource_id: int, ds_name: str,
-                       question: str, clarification_msg: str) -> tuple[str | None, int | None]:
-    """记录澄清审计日志，返回 (warning, log_id)"""
-    log = AuditLog(
-        datasource_id=datasource_id,
-        datasource_name=ds_name,
-        question=question,
-        clarified=True,
-        clarification_content=clarification_msg,
-        executed=False,
-    )
-    session.add(log)
-    warning = commit_with_warning(session, "问答已返回澄清，但审计日志写入失败")
-    if not warning:
-        session.refresh(log)
-        return None, log.id
-    return warning, None
+def prepare_question_context(
+    session: Session,
+    datasource_id: int,
+    question: str,
+    knowledge_dir: Path,
+    history: list[dict] | None = None,
+) -> tuple[list[dict], str, str, list[str]]:
+    retrieval_question = build_schema_retrieval_question(question, history)
+    candidates = retrieve_relevant_schema(session, datasource_id, retrieval_question)
+    schema_context = build_schema_context(candidates)
+    obsidian_context, note_names = read_relevant_table_notes(candidates, knowledge_dir)
+    return candidates, schema_context, obsidian_context, note_names
+
+
+def build_schema_retrieval_question(question: str, history: list[dict] | None = None) -> str:
+    history_parts = []
+    for item in history or []:
+        if item.get("role") == "user" and item.get("content"):
+            history_parts.append(str(item["content"]))
+    parts = history_parts[-SCHEMA_RETRIEVAL_HISTORY_LIMIT:]
+    parts.append(question)
+    return "\n".join(parts)
+
+
+def validate_and_guard_result(result: dict, knowledge_dir: Path, candidates: list[dict]) -> dict:
+    guarded = guard_sql_candidate_against_missing_semantics(result, knowledge_dir)
+    if guarded.get("type") != "sql_candidate":
+        return guarded
+
+    validation = validate_sql_against_schema(guarded.get("sql") or "", candidates)
+    if validation["status"] == "invalid":
+        return {
+            "type": "error",
+            "message": "；".join(validation["reasons"]),
+            "used_notes": guarded.get("used_notes") or [],
+        }
+    if validation.get("warnings"):
+        existing_warning = guarded.get("warning")
+        schema_warning = "；".join(validation["warnings"])
+        guarded["warning"] = f"{existing_warning}；{schema_warning}" if existing_warning else schema_warning
+    return guarded
 
 
 def _log_result(session: Session, datasource_id: int, ds_name: str,
@@ -408,7 +515,7 @@ def ask_llm(
     history: list[dict] | None = None,
     hermes_session_id: str | None = None,
 ) -> dict:
-    """核心问答：优先让 Hermes 检索 Obsidian 知识库 -> 返回澄清或 SQL"""
+    """核心问答：SQLite 先召回事实上下文，再让 Hermes 判断歧义或生成 SQL。"""
     ds = session.get(DataSource, datasource_id)
     if not ds:
         return {"type": "error", "message": "数据源不存在"}
@@ -424,8 +531,15 @@ def ask_llm(
         return {"type": "error", "message": "当前数据源还没有可用知识库，请先完成同步到知识库后再问答"}
 
     try:
-        system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
-        prompt = _build_full_prompt(system_prompt, question)
+        candidates, schema_context, obsidian_context, _note_names = prepare_question_context(
+            session,
+            datasource_id,
+            question,
+            knowledge_dir,
+            history,
+        )
+        system_prompt = _build_system_prompt(ds.db_type)
+        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
         raw_result, next_hermes_session_id = run_hermes_session_json(
             prompt,
             cwd=str(knowledge_dir),
@@ -433,7 +547,9 @@ def ask_llm(
             session_id=hermes_session_id,
         )
         result = validate_llm_result(raw_result)
-        result = guard_sql_candidate_against_missing_semantics(result, knowledge_dir)
+        result = validate_and_guard_result(result, knowledge_dir, candidates)
+        if result.get("type") == "error":
+            return result
         if next_hermes_session_id:
             result["hermes_session_id"] = next_hermes_session_id
 
@@ -450,7 +566,7 @@ def ask_llm(
 
 
 # ---------------------------------------------------------------------------
-# ask_llm_stream — SSE 流式端点（Phase 1）
+# ask_llm_stream — SSE 流式端点
 # ---------------------------------------------------------------------------
 
 def ask_llm_stream(
@@ -460,7 +576,7 @@ def ask_llm_stream(
     history: list[dict] | None = None,
     hermes_session_id: str | None = None,
 ) -> Generator[str, None, None]:
-    """流式问答：通过 SSE 逐步推送 Hermes 调用过程"""
+    """流式问答：通过 SSE 推送 SQLite-first 检索、Hermes 调用和校验过程。"""
 
     # 1. 校验数据源
     ds = session.get(DataSource, datasource_id)
@@ -485,11 +601,25 @@ def ask_llm_stream(
 
     emitted_notes = set()
 
-    # 2. 调用 Hermes。知识检索和澄清判断由 Hermes 面向 Obsidian 笔记完成。
+    yield _sse_event("status", {"phase": "retrieving_schema", "message": "正在从 SQLite 检索候选 Schema..."})
+    try:
+        candidates, schema_context, obsidian_context, _note_names = prepare_question_context(
+            session,
+            datasource_id,
+            question,
+            knowledge_dir,
+            history,
+        )
+    except Exception as e:
+        yield _sse_event("status", {"phase": "failed", "message": str(e)})
+        yield _sse_event("error", {"message": str(e)})
+        return
+
+    # 2. 调用 Hermes。Hermes 在后端提供的候选 Schema 和相关笔记内判断歧义与生成 SQL。
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
-    system_prompt = _build_system_prompt(ds.db_type, knowledge_dir)
-    prompt = _build_full_prompt(system_prompt, question)
+    system_prompt = _build_system_prompt(ds.db_type)
+    prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
 
     try:
         result = None
@@ -504,7 +634,7 @@ def ask_llm_stream(
                 yield _sse_event("hermes_trace", {"message": event.get("message", "")})
             elif event.get("type") == "result":
                 result = validate_llm_result(event.get("result") or {})
-                result = guard_sql_candidate_against_missing_semantics(result, knowledge_dir)
+                result = validate_and_guard_result(result, knowledge_dir, candidates)
                 next_hermes_session_id = event.get("session_id")
         if result is None:
             raise RuntimeError("Hermes 返回为空")
@@ -533,6 +663,11 @@ def ask_llm_stream(
         result["audit_log_id"] = log_id
     if next_hermes_session_id:
         result["hermes_session_id"] = next_hermes_session_id
+
+    if result.get("type") == "error":
+        yield _sse_event("status", {"phase": "failed", "message": result.get("message", "SQL 校验失败")})
+        yield _sse_event("error", result)
+        return
 
     # 5. 推送结果
     yield _sse_event("status", {"phase": "completed", "message": "已完成"})

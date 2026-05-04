@@ -12,6 +12,7 @@ import {
   compactResultForStorage,
   formatClarification,
   startNextProcessRound,
+  actorForWorkbenchPhase,
 } from "./workbenchState";
 import type { MessageHistoryEntry } from "./workbenchState";
 import { get, post, streamSse } from "../../services/request";
@@ -235,11 +236,6 @@ const startProgressiveRender = (fullSql: string) => {
   renderRafId = requestAnimationFrame(render);
 };
 
-const processActorForPhase = (phase: string): HermesStep["actor"] => {
-  if (phase === "searching_notes" || phase === "warning") return "system";
-  return "hermes";
-};
-
 // ---------------------------------------------------------------------------
 // SSE 流式问答
 // ---------------------------------------------------------------------------
@@ -304,7 +300,7 @@ const handleQuerySubmit = (question: string) => {
     }
     hermesSteps.value.push({
       phase: data.phase,
-      actor: processActorForPhase(data.phase),
+      actor: actorForWorkbenchPhase(data.phase),
       message: data.message,
       timestamp: Date.now(),
     });
@@ -312,28 +308,6 @@ const handleQuerySubmit = (question: string) => {
     // 当完成或失败时停止计时器
     if (data.phase === "completed" || data.phase === "failed") {
       hermesProcessRef.value?.stopTimer();
-    }
-  },
-
-  note_hit: (data) => {
-    const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
-
-    if (lastStep && lastStep.phase === "note_hit") {
-      // 合并逻辑：将新的表名和备注追加到现有步骤中
-      lastStep.message += `, ${data.note}`;
-      if (data.comment) {
-        lastStep.detail = lastStep.detail
-          ? `${lastStep.detail}; ${data.comment}`
-          : data.comment;
-      }
-    } else {
-      hermesSteps.value.push({
-        phase: "note_hit",
-        actor: "system",
-        message: `命中笔记: ${data.note}`,
-        detail: data.comment || undefined,
-        timestamp: Date.now(),
-      });
     }
   },
 
@@ -363,8 +337,6 @@ const handleQuerySubmit = (question: string) => {
   },
 
   result: (data) => {
-    console.log("SSE result:", data);
-
     if (data.audit_log_id) {
       currentAuditLogId.value = data.audit_log_id;
     }
@@ -449,7 +421,6 @@ const handleExecuteSql = async () => {
       sql: generatedSql.value,
       audit_log_id: currentAuditLogId.value,
     });
-    console.log("Execute result:", data);
     queryResult.value = data;
     hasExecutedSql.value = true;
 

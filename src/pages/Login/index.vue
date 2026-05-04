@@ -136,7 +136,7 @@ const handleLogin = async () => {
 .background-image {
   position: absolute;
   inset: 0;
-  background-image: url("https://lh3.googleusercontent.com/aida/ADBb0ujtQ-ns_BhnqvVP9x6ZjlYYTMOvwKd4MBn4qAXBDNpVLryPDIVcUVmghZv41-8YAqBNZNTzB2ERvQb7kPk9bv6s7wqy4sWLgIEGfix2a_UACg5mtqcADPbsgNGnLrFwGZpl00PzZSIfKvNgZEnOjjN333BqDb0vmZOoGr-wnponh3zMi9fT-dy8_nvnn0i4Srvyc9WsarH7TRDmjpnSq81kIkF3BOqYwGxrHjgM1hLMURqycg4QA1Qfr-mMZTLgoNJStFtAABl0pJ0");
+  background-image: url("../../assets/login-bg.png");
   background-size: cover;
   background-position: center;
 }

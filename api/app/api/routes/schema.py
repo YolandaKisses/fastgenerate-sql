@@ -83,49 +83,6 @@ def stream_knowledge_task_events(task_id: int):
     )
 
 
-@router.get("/knowledge/sync_stream/{datasource_id}", deprecated=True)
-def sync_knowledge_stream(
-    datasource_id: int,
-    session: Session = Depends(get_session),
-):
-    """[已废弃] 兼容旧入口：启动后台任务并用 SSE 订阅进度。
-
-    新流程请使用：
-      POST /schema/knowledge/sync/{datasource_id}  → 启动任务
-      GET  /schema/knowledge/tasks/{task_id}/events → 订阅进度
-    本接口将在下一版本移除。
-    """
-    try:
-        task = knowledge_service.create_knowledge_sync_task(session, datasource_id)
-    except ValueError as exc:
-        # 无法创建任务时，仍返回 SSE 流以保持协议一致
-        import json
-        def _error_stream():
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(
-            _error_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    if _is_pending_task(task):
-        threading.Thread(
-            target=knowledge_service.run_knowledge_sync_task,
-            args=(engine, task.id),
-            daemon=True,
-        ).start()
-
-    return StreamingResponse(
-        knowledge_service.run_knowledge_sync_stream(engine, task.id),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
 @router.get("/knowledge/tasks/{task_id}", response_model=KnowledgeSyncTask)
 def read_knowledge_task(task_id: int, session: Session = Depends(get_session)):
     task = session.get(KnowledgeSyncTask, task_id)

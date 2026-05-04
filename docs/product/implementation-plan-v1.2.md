@@ -2,11 +2,11 @@
 
 **版本**：Implementation Plan v1.2  
 **状态**：当前工程基线版  
-**更新时间**：2026-05-02
+**更新时间**：2026-05-04
 
-**Goal:** 交付一个企业内部可用的本地 Web SQL 问答 MVP，支持本地登录鉴权、`MySQL / PostgreSQL / Oracle`，采用本地 SQLite 存储、Obsidian 本地知识库、Hermes CLI 生成 SQL、澄清优先、永不自动执行 SQL。
+**Goal:** 交付一个企业内部可用的本地 Web SQL 问答 MVP，支持本地登录鉴权、`MySQL / PostgreSQL / Oracle`，采用本地 SQLite 存储和主检索、Obsidian 本地知识库补充业务说明、Hermes CLI 生成 SQL、澄清优先、永不自动执行 SQL。
 
-**Architecture:** 前端使用 `Vue + Naive UI` 构建 Web 应用；后端使用本地 `FastAPI` 服务承载登录鉴权、数据源连接、Schema 同步、知识库同步、Hermes 编排、SQL 校验、执行与日志；本地 `SQLite` 作为结构化主存储；Obsidian Markdown 作为 Hermes 可读取的知识库载体。
+**Architecture:** 前端使用 `Vue + Naive UI` 构建 Web 应用；后端使用本地 `FastAPI` 服务承载登录鉴权、数据源连接、Schema 同步、知识库同步、Schema 检索、Hermes 编排、SQL 校验、执行与日志；本地 `SQLite` 作为结构化主存储和问答主检索层；Obsidian Markdown 作为人类可读的知识库与 LLM 补充上下文。
 
 **Tech Stack:** `Vue 3`, `TypeScript`, `Naive UI`, `Vite`, `Vue Router`, `FastAPI`, `SQLModel`, `SQLite`, `cryptography`, `hmac/hashlib`, `WebCrypto`, `ReadableStream`, `Hermes CLI`, `Obsidian Markdown`
 
@@ -18,6 +18,7 @@
 - 组件库：`Naive UI`
 - 后端：`FastAPI`
 - 主存储：`SQLite`
+- 问答主检索：`SQLite Schema Context`
 - 知识库载体：`Obsidian Markdown`
 - SQL 生成入口：`Hermes CLI`
 - SQL 确认方式：`内联确认区`
@@ -42,8 +43,8 @@
 ### 2.1 任务目标
 
 - 冻结 PRD / Spec / Implementation Plan 当前口径。
-- 明确 Hermes / Obsidian 是当前主链路。
-- 明确 SQLite 与 Obsidian 的职责边界。
+- 明确 SQLite-first Schema 检索是当前问答主链路。
+- 明确 SQLite、Obsidian、Hermes 和 SQL 校验器的职责边界。
 
 ### 2.2 涉及文档
 
@@ -54,7 +55,7 @@
 ### 2.3 验证方式
 
 - 三份文档中不再出现 OpenAI 兼容模型作为首版主链路。
-- 三份文档中明确包含 Hermes CLI、Obsidian 知识库、本地运行设置、知识库部分成功、审计日志绑定。
+- 三份文档中明确包含 SQLite Schema 检索、Hermes CLI、Obsidian 知识库、本地运行设置、知识库部分成功、审计日志绑定。
 
 ## 3. 阶段 1：项目骨架与基础架构
 
@@ -188,7 +189,7 @@
 
 流式迁移：
 
-- 工作台问答从 `EventSource` 切换为 `streamSse`，保留 `status / note_hit / note_used / hermes_trace / result / error` 事件。
+- 工作台问答从 `EventSource` 切换为 `streamSse`，保留 `status / note_used / hermes_trace / result / error` 事件；`status.phase = retrieving_schema` 表示后端正在检索 SQLite Schema Context。
 - 知识库同步订阅从 `EventSource` 切换为 `streamSse`，保留“启动任务”和“订阅任务”分离。
 - 终态或组件卸载时调用 `AbortController.abort()`。
 
@@ -328,7 +329,9 @@
 
 ### 9.1 任务目标
 
-- 实现基于当前数据源 Obsidian 知识库的 Hermes 问答。
+- 实现基于当前数据源 SQLite Schema Context 的主检索链路。
+- 实现按相关表读取 Obsidian 表卡片作为补充上下文。
+- 实现由 Hermes 在受控上下文内完成澄清、关系补全和 SQL 生成的问答链路。
 - 实现 `clarification / sql_candidate` 输出契约。
 - 实现多轮澄清上下文。
 - 实现工作台。
@@ -346,9 +349,11 @@
 - 工作台只展示 `connection_ok + sync_success` 的数据源。
 - 当前数据源没有知识库时给出明确提示。
 - 知识库过期时给出提醒。
+- 提问后先发送 `retrieving_schema` 状态，并从 SQLite 检索相关 Schema Context。
+- 只读取相关表对应的 Obsidian Markdown 片段，不直接全量扫描 Obsidian。
 - Hermes CLI 不存在、超时、返回非 JSON 时给出明确错误。
 - 问题不清楚时先发澄清。
-- 澄清后携带上下文继续生成 SQL。
+- 澄清后携带最近对话上下文重新检索 Schema，避免用户短回复导致上下文丢失。
 - Hermes 输出结构不合法时被拦截。
 
 ## 10. 阶段 7：SQL 校验、内联确认与执行
@@ -371,6 +376,8 @@
 - 非只读 SQL 一律不可执行。
 - 禁止多语句。
 - 禁止写操作和有副作用调用。
+- SQL 引用不存在的限定表字段时必须阻断。
+- 无法确认的未限定字段候选降级为 warning。
 - 最大返回 500 行。
 - 最大执行 30 秒。
 - 未确认前绝不执行 SQL。
@@ -407,7 +414,7 @@
 
 ### 12.1 任务目标
 
-- 重建当前 Hermes 路线的测试集。
+- 重建当前 SQLite-first Schema 检索和 Hermes 编排路线的测试集。
 - 编写端到端验收清单。
 - 做跨模块回归。
 - 整理本地运行说明。
@@ -423,16 +430,16 @@
 - Schema：同步成功/空结果/失败。
 - 备注：表备注和字段备注保存。
 - 知识库：任务创建、无同步表拒绝、Markdown 渲染、文件名清洗、进度更新、全部成功、部分成功、全部失败、目录不存在、目录不可写、Hermes 超时、Hermes 非法输出、文件写入失败、刷新后重新订阅。
-- 问答：无知识库、知识库过期、澄清、SQL 候选、Hermes 非 JSON。
+- 问答：无知识库、知识库过期、SQLite Schema 检索、相关 Obsidian notes、澄清、澄清后上下文保留、SQL 候选、Hermes 非 JSON。
 - SQL：校验成功、校验失败、执行成功、空结果、执行失败。
 - 审计：生成与执行精确绑定。
 
 ### 12.3 验证命令
 
 - `npm run build`
-- `npm run test`
-- `cd api && PYTHONPATH=. ../.venv/bin/pytest tests -q`
-- `PYTHONPATH=api .venv/bin/python -m compileall -q api/app`
+- `npm test`
+- `cd api && ./venv/bin/python -m pytest tests -q`
+- `cd api && ./venv/bin/python -m compileall -q app`
 - 后续补充新的前后端自动化测试命令。
 
 ## 13. 风险与决策
@@ -442,7 +449,7 @@
 - 原生 `EventSource` 不能设置自定义请求头，无法满足“前端所有请求必须携带 Token”。改为 `fetch + ReadableStream` 后仍是长连接流式接收，不是轮询。
 - 当前项目使用 `create_all` 加手工 `ALTER TABLE` 的轻量迁移方式。新增表可由 `create_all` 创建；如后续用户表字段调整，需要在兼容迁移逻辑中补齐。
 - 知识库同步使用后端后台任务适合当前本地单用户场景；如果未来进入多进程或多人使用，需要演进为进程内任务队列或独立 worker。
-- 当表命名不清晰时，Hermes 可能会对关联关系做出不准确推断；Prompt 必须要求推测性内容显式标记不确定性。
+- 当表命名不清晰时，Hermes 可能会对关联关系做出不准确推断；Prompt 必须要求推测性内容显式标记不确定性，后端 SQL Schema 校验必须阻断明确不存在的限定字段。
 
 ## 14. Google Docs / Google Drive 发布计划
 

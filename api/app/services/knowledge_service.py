@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
 import threading
-import re
 
 from sqlmodel import Session, select
 
@@ -14,6 +13,7 @@ from app.models.knowledge import KnowledgeSyncTask, KnowledgeSyncTaskStatus
 from app.models.schema import SchemaField, SchemaTable
 from app.services.hermes_service import run_hermes_json
 from app.services import setting_service
+from app.services.path_utils import sanitize_path_segment
 
 STALE_RUNNING_TASK_AFTER = timedelta(minutes=8)
 
@@ -58,11 +58,6 @@ def _notify_task_updated(task_id: int | None) -> None:
 
 def get_obsidian_root_path(session: Session) -> str:
     return setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
-
-
-def sanitize_path_segment(value: str) -> str:
-    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
-    return cleaned or "untitled"
 
 
 def create_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask:
@@ -524,11 +519,6 @@ def stream_knowledge_task_events(engine, task_id: int) -> Generator[str, None, N
                 return
 
         last_version = _notifier.wait(task_id, last_version, timeout=5.0)
-
-
-def run_knowledge_sync_stream(engine, task_id: int) -> Generator[str, None, None]:
-    """兼容旧端点：订阅已有任务进度，不再由 SSE 驱动同步执行。"""
-    yield from stream_knowledge_task_events(engine, task_id)
 
 
 def _build_summary_prompt(

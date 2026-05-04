@@ -32,6 +32,11 @@ export type MessageHistoryEntry = {
 
 export const MESSAGE_HISTORY_STORAGE_LIMIT = 50
 
+export const actorForWorkbenchPhase = (phase: string): HermesProcessStepState['actor'] => {
+  if (phase === 'retrieving_schema' || phase === 'warning') return 'system'
+  return 'hermes'
+}
+
 export const formatClarification = (text: string) => {
   return text
     .replace(/\s+([A-Z]\))/g, '\n$1')

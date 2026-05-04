@@ -10,6 +10,8 @@ FastGenerate SQL 是一个本地运行的 SQL 工作台项目，前端使用 Vue
 ~/.fastgenerate_sql_data/fastgenerate.db
 ```
 
+生产或容器化部署时，必须设置固定的 `AUTH_TOKEN_SECRET`，并将 `DATA_DIR` 指向持久化卷，避免重启后登录态失效或本地 SQLite 数据丢失。
+
 后端启动流程会自动完成：
 
 - 创建本地数据目录

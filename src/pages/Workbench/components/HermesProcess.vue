@@ -51,8 +51,7 @@ const phaseIcon = (phase: string) => {
   const map: Record<string, string> = {
     user_question: "👤",
     started: "🚀",
-    searching_notes: "🔍",
-    note_hit: "📄",
+    retrieving_schema: "🗂️",
     note_used: "📚",
     clarification: "💬",
     calling_hermes: "🤖",
@@ -270,7 +269,6 @@ const shortSessionId = computed(() => {
               </div>
               <div
                 class="step-content"
-                :class="{ 'is-note-hit': step.phase === 'note_hit' }"
               >
                 <div class="step-main">
                   <span class="actor-badge" :class="actorClass(step)">
@@ -698,13 +696,6 @@ const shortSessionId = computed(() => {
   min-width: 0;
 }
 
-.step-content.is-note-hit {
-  flex-direction: row;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
 .step-main {
   display: flex;
   align-items: center;
@@ -777,10 +768,6 @@ const shortSessionId = computed(() => {
   color: #8c8ab0;
   line-height: 16px;
   margin-top: 5px;
-}
-
-.step-content.is-note-hit .step-detail {
-  line-height: 20px;
 }
 
 .step-spinner {

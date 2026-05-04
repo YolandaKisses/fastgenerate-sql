@@ -1,7 +1,6 @@
 import sqlalchemy
 from datetime import datetime
 from pathlib import Path
-import re
 from sqlmodel import Session, select
 from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.schema import SchemaTable, SchemaField
@@ -9,11 +8,7 @@ from fastapi import HTTPException
 from app.services.datasource_service import build_connect_args, build_database_url
 from app.services import setting_service
 from app.core.config import settings
-
-
-def sanitize_path_segment(value: str) -> str:
-    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
-    return cleaned or "untitled"
+from app.services.path_utils import sanitize_path_segment
 
 
 def delete_table_note_if_exists(session: Session, ds: DataSource, table_name: str) -> None:

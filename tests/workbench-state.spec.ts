@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendHermesClarification, compactMessageHistoryForStorage, compactResultForStorage, formatClarification, groupHermesProcessRounds, startNextProcessRound } from '../src/pages/Workbench/workbenchState'
+import { actorForWorkbenchPhase, appendHermesClarification, compactMessageHistoryForStorage, compactResultForStorage, formatClarification, groupHermesProcessRounds, startNextProcessRound } from '../src/pages/Workbench/workbenchState'
 
 describe('workbench state helpers', () => {
   it('formats A/B/C/D clarification options as compact lines', () => {
@@ -160,5 +160,11 @@ describe('workbench state helpers', () => {
     expect(compacted).toHaveLength(50)
     expect(compacted[0].content).toBe('message-6')
     expect(compacted[49].content).toBe('message-55')
+  })
+
+  it('classifies sqlite retrieval as a system process step', () => {
+    expect(actorForWorkbenchPhase('retrieving_schema')).toBe('system')
+    expect(actorForWorkbenchPhase('warning')).toBe('system')
+    expect(actorForWorkbenchPhase('calling_hermes')).toBe('hermes')
   })
 })

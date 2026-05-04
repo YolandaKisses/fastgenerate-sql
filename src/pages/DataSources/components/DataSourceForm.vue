@@ -117,8 +117,8 @@ const handleSave = async () => {
       delete (payload as Partial<typeof payload>).password;
     }
     emit("save", payload);
-  } catch (errors) {
-    console.debug("表单校验未通过", errors);
+  } catch {
+    // Naive UI 已在表单项内展示校验错误。
   }
 };
 </script>

@@ -1,13 +1,18 @@
 from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
+from app.models.schema import SchemaField, SchemaTable
 from app.models.setting import RuntimeSetting
 from app.services import workbench_service
 from app.api.routes.workbench import is_valid_hermes_session_id
 from app.services.hermes_service import hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
+    ask_llm,
     ask_llm_stream,
     can_ask_datasource,
+    build_schema_retrieval_question,
     normalize_note_name,
     note_used_payload,
+    read_relevant_table_notes,
+    validate_sql_against_schema,
     validate_sql_candidate,
 )
 from sqlmodel import SQLModel, Session, create_engine
@@ -29,6 +34,36 @@ def test_note_used_payload_reports_hermes_note_without_sqlite_lookup():
     payload = note_used_payload("tables/user_profiles.md")
 
     assert payload == {"note": "user_profiles", "comment": ""}
+
+
+def test_read_relevant_table_notes_truncates_on_line_boundary(tmp_path):
+    table = SchemaTable(id=1, datasource_id=1, name="large_table")
+    note_path = tmp_path / "large_table.md"
+    note_path.write_text("first line\n" + ("x" * 4100) + "\nthird line", encoding="utf-8")
+
+    text, used_notes = read_relevant_table_notes(
+        [{"table": table, "fields": []}],
+        tmp_path,
+    )
+
+    assert used_notes == ["large_table"]
+    assert text.endswith("\n（后续内容已裁剪）")
+    assert "third line" not in text
+
+
+def test_schema_retrieval_question_uses_recent_user_history_only():
+    history = [
+        {"role": "user", "content": f"用户问题 {idx}"}
+        for idx in range(1, 8)
+    ]
+    history.insert(3, {"role": "assistant", "content": "请选择：A) ..."})
+
+    retrieval_question = build_schema_retrieval_question("A", history)
+
+    assert "用户问题 1" not in retrieval_question
+    assert "用户问题 4" in retrieval_question
+    assert "用户问题 7" in retrieval_question
+    assert retrieval_question.endswith("A")
 
 
 def test_parse_hermes_session_id_ignores_status_text():
@@ -212,6 +247,209 @@ def test_schema_sync_success_alone_does_not_allow_asking():
             sync_status=SyncStatus.NEVER_SYNCED,
         )
     )
+
+
+def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+    (knowledge_dir / "user_register_log.md").write_text("register_time 表示完成注册时间", encoding="utf-8")
+    (knowledge_dir / "unrelated_orders.md").write_text("不相关订单知识", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run_hermes_session_json(prompt, *args, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            {
+                "type": "sql_candidate",
+                "sql": "SELECT COUNT(*) FROM user_register_log",
+                "explanation": "统计注册记录",
+                "used_notes": ["user_register_log"],
+            },
+            "hermes-session-1",
+        )
+
+    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+        session.refresh(ds)
+
+        table = SchemaTable(datasource_id=ds.id, name="user_register_log", original_comment="用户注册日志")
+        unrelated = SchemaTable(datasource_id=ds.id, name="unrelated_orders", original_comment="订单")
+        session.add(table)
+        session.add(unrelated)
+        session.commit()
+        session.refresh(table)
+        session.refresh(unrelated)
+        session.add(SchemaField(table_id=table.id, name="register_time", type="DATETIME", original_comment="注册时间"))
+        session.add(SchemaField(table_id=table.id, name="user_id", type="BIGINT", original_comment="用户ID"))
+        session.add(SchemaField(table_id=unrelated.id, name="order_id", type="BIGINT", original_comment="订单ID"))
+        session.commit()
+
+        result = ask_llm(session, ds.id, "统计注册用户")
+
+    assert result["type"] == "sql_candidate"
+    assert "Schema Context" in captured["prompt"]
+    assert "表: user_register_log" in captured["prompt"]
+    assert "register_time (DATETIME)" in captured["prompt"]
+    assert "Obsidian Notes" in captured["prompt"]
+    assert "register_time 表示完成注册时间" in captured["prompt"]
+    assert "不相关订单知识" not in captured["prompt"]
+    assert "唯一可信的表字段来源" in captured["prompt"]
+    assert "主要知识来源是 Obsidian" not in captured["prompt"]
+
+
+def test_ask_llm_rejects_sql_with_unknown_schema_field(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+    (knowledge_dir / "user_register_log.md").write_text("用户注册日志", encoding="utf-8")
+
+    def fake_run_hermes_session_json(*args, **kwargs):
+        return (
+                {
+                    "type": "sql_candidate",
+                    "sql": "SELECT user_register_log.missing_time FROM user_register_log",
+                    "explanation": "错误字段",
+                    "used_notes": ["user_register_log"],
+                },
+            "hermes-session-1",
+        )
+
+    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+        session.refresh(ds)
+
+        table = SchemaTable(datasource_id=ds.id, name="user_register_log", original_comment="用户注册日志")
+        session.add(table)
+        session.commit()
+        session.refresh(table)
+        session.add(SchemaField(table_id=table.id, name="register_time", type="DATETIME"))
+        session.commit()
+
+        result = ask_llm(session, ds.id, "统计注册用户")
+
+    assert result["type"] == "error"
+    assert "missing_time" in result["message"]
+    assert "不存在字段" in result["message"]
+
+
+def test_clarification_reply_uses_previous_user_question_for_schema_retrieval(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+
+    captured = {}
+
+    def fake_run_hermes_session_json(prompt, *args, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            {
+                "type": "sql_candidate",
+                "sql": "SELECT COUNT(*) FROM user_register_log",
+                "explanation": "按 A 选项统计注册用户",
+                "used_notes": ["user_register_log"],
+            },
+            "hermes-session-1",
+        )
+
+    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+        session.refresh(ds)
+
+        table = SchemaTable(datasource_id=ds.id, name="user_register_log", original_comment="用户注册日志")
+        unrelated = SchemaTable(datasource_id=ds.id, name="demo_accounts", original_comment="账户表")
+        session.add(table)
+        session.add(unrelated)
+        session.commit()
+        session.refresh(table)
+        session.refresh(unrelated)
+        session.add(SchemaField(table_id=table.id, name="user_id", type="BIGINT", original_comment="用户ID"))
+        session.add(SchemaField(table_id=unrelated.id, name="id", type="BIGINT", original_comment="账户ID"))
+        session.commit()
+
+        result = ask_llm(
+            session,
+            ds.id,
+            "A",
+            history=[
+                {"role": "user", "content": "统计注册用户"},
+                {"role": "assistant", "content": "请选择：\nA) 按注册日志\nB) 按账户表"},
+            ],
+            hermes_session_id="hermes-session-1",
+        )
+
+    assert result["type"] == "sql_candidate"
+    assert "表: user_register_log" in captured["prompt"]
+    assert "user_id (BIGINT)" in captured["prompt"]
+
+
+def test_unqualified_projection_alias_is_warning_not_invalid():
+    table = SchemaTable(id=1, datasource_id=1, name="user_register_log")
+    field = SchemaField(table_id=1, name="user_id", type="BIGINT")
+
+    result = validate_sql_against_schema(
+        "SELECT COUNT(*) AS total_users FROM user_register_log",
+        [{"table": table, "fields": [field]}],
+    )
+
+    assert result["status"] == "valid"
+    assert result["reasons"] == []
+    assert any("total_users" in warning for warning in result["warnings"])
 
 
 def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
@@ -412,7 +650,7 @@ def test_stream_converts_guessed_food_delivery_like_sql_to_clarification(tmp_pat
     assert "sql_candidate" not in stream
 
 
-def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path, monkeypatch):
+def test_clarification_choice_keeps_sqlite_context_and_reaches_hermes(tmp_path, monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
 
@@ -426,6 +664,8 @@ def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path,
         nonlocal called
         called = True
         assert "### 对话历史" not in prompt
+        assert "Schema Context" in prompt
+        assert "表: demo_accounts" in prompt
         assert kwargs.get("session_id") == "hermes-session-1"
         yield {
             "type": "result",
@@ -439,11 +679,6 @@ def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path,
         }
 
     monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
-    monkeypatch.setattr(
-        workbench_service,
-        "retrieve_relevant_schema",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Workbench must not query sqlite schema")),
-    )
 
     with Session(engine) as session:
         ds = DataSource(
@@ -460,6 +695,11 @@ def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path,
         session.add(ds)
         session.commit()
         session.refresh(ds)
+        table = SchemaTable(datasource_id=ds.id, name="demo_accounts", original_comment="账户表")
+        session.add(table)
+        session.commit()
+        session.refresh(table)
+        session.add(SchemaField(table_id=table.id, name="id", type="BIGINT", original_comment="账户ID"))
         session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
         session.commit()
 
@@ -473,5 +713,6 @@ def test_clarification_choice_skips_local_ambiguity_and_reaches_hermes(tmp_path,
     assert "需要澄清" not in stream
     assert "正在检索知识库" not in stream
     assert "event: note_hit" not in stream
+    assert "retrieving_schema" in stream
     assert "SELECT * FROM demo_accounts" in stream
     assert "hermes-session-1" in stream
