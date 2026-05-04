@@ -42,7 +42,7 @@ const handleLogin = async () => {
     const redirect =
       typeof route.query.redirect === "string"
         ? route.query.redirect
-        : "/data-sources";
+        : "/settings";
     router.replace(redirect);
   } catch (error: any) {
     message.error(error?.message || "登录失败");
