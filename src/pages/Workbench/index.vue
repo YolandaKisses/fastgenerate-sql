@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, onUnmounted } from "vue";
-import { NSelect, NButton, useMessage, useDialog } from "naive-ui";
+import { computed, ref, onMounted, watch, onUnmounted } from "vue";
+import { NSelect, NButton, NInput, useMessage, useDialog } from "naive-ui";
 import AiAssistant from "./components/AiAssistant.vue";
 import SqlEditor from "./components/SqlEditor.vue";
 import QueryResult from "./components/QueryResult.vue";
@@ -8,13 +8,23 @@ import HermesProcess from "./components/HermesProcess.vue";
 import type { HermesStep } from "./components/HermesProcess.vue";
 import {
   appendHermesClarification,
+  buildInitialWorkbenchWindows,
+  closeWorkbenchWindow,
   compactMessageHistoryForStorage,
-  compactResultForStorage,
+  createWorkbenchWindow,
   formatClarification,
+  generateWorkbenchWindowTitle,
+  isGeneratedWorkbenchWindowTitle,
+  normalizeWorkbenchWindowSnapshot,
+  resetWorkbenchWindowForDatasource,
   startNextProcessRound,
   actorForWorkbenchPhase,
 } from "./workbenchState";
-import type { MessageHistoryEntry } from "./workbenchState";
+import type {
+  MessageHistoryEntry,
+  WorkbenchWindowSnapshot,
+  WorkbenchWindowState,
+} from "./workbenchState";
 import { get, post, streamSse } from "../../services/request";
 
 const STORAGE_KEY = "workbench_state";
@@ -24,6 +34,10 @@ const dialog = useDialog();
 const loading = ref(false);
 const currentDatasource = ref<number | null>(null);
 const datasourceOptions = ref<{ label: string; value: number }[]>([]);
+const workbenchWindows = ref<WorkbenchWindowState[]>([]);
+const activeWindowId = ref("");
+const editingWindowId = ref<string | null>(null);
+const editingWindowTitle = ref("");
 
 const generatedSql = ref("");
 const displayedSql = ref("");
@@ -50,6 +64,93 @@ const canAskDatasource = (ds: any) => {
   return ds.status === "connection_ok" && ds.sync_status === "sync_success";
 };
 
+const activeWindow = computed(
+  () =>
+    workbenchWindows.value.find(
+      (window) => window.id === activeWindowId.value,
+    ) ?? workbenchWindows.value[0],
+);
+
+const currentSnapshot = (): WorkbenchWindowSnapshot =>
+  normalizeWorkbenchWindowSnapshot({
+    datasourceId: currentDatasource.value,
+    sql: generatedSql.value,
+    explanation: sqlExplanation.value,
+    clarification: clarification.value,
+    result: queryResult.value,
+    executed: hasExecutedSql.value,
+    history: messageHistory.value,
+    auditLogId: currentAuditLogId.value,
+    hermesSessionId: hermesSessionId.value,
+    hermesSteps: hermesSteps.value,
+  });
+
+const applySnapshot = (snapshot: WorkbenchWindowSnapshot) => {
+  currentDatasource.value = snapshot.datasourceId;
+  generatedSql.value = snapshot.sql;
+  displayedSql.value = snapshot.sql;
+  isRendering.value = false;
+  sqlExplanation.value = snapshot.explanation;
+  clarification.value = snapshot.clarification;
+  queryResult.value = snapshot.result;
+  hasExecutedSql.value = snapshot.executed;
+  messageHistory.value = snapshot.history;
+  currentAuditLogId.value = snapshot.auditLogId;
+  hermesSessionId.value = snapshot.hermesSessionId;
+  hermesSteps.value = snapshot.hermesSteps;
+};
+
+const persistActiveWindow = (touch = true) => {
+  if (!activeWindowId.value) return;
+  const snapshot = currentSnapshot();
+  const timestamp = Date.now();
+  workbenchWindows.value = workbenchWindows.value.map((window) =>
+    window.id === activeWindowId.value
+      ? {
+          ...window,
+          updatedAt: touch ? timestamp : window.updatedAt,
+          state: snapshot,
+        }
+      : window,
+  );
+};
+
+const writeWorkbenchWindowsToStorage = () => {
+  sessionStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      activeWindowId: activeWindowId.value,
+      windows: workbenchWindows.value,
+    }),
+  );
+};
+
+const updateActiveWindowTitleFromQuestion = (question: string) => {
+  const current = activeWindow.value;
+  if (!current || !isGeneratedWorkbenchWindowTitle(current.title)) return;
+  workbenchWindows.value = workbenchWindows.value.map((window) =>
+    window.id === current.id
+      ? {
+          ...window,
+          title: generateWorkbenchWindowTitle(question),
+          updatedAt: Date.now(),
+        }
+      : window,
+  );
+};
+
+const handleDatasourceChange = (datasourceId: number | null) => {
+  if (datasourceId === currentDatasource.value) return;
+  if (loading.value) {
+    message.warning("当前窗口正在生成中，请稍后再切换数据源");
+    return;
+  }
+  applySnapshot(
+    resetWorkbenchWindowForDatasource(currentSnapshot(), datasourceId),
+  );
+  saveState();
+};
+
 // 清除上下文
 const handleResetContext = () => {
   dialog.warning({
@@ -68,6 +169,8 @@ const handleResetContext = () => {
       hermesSteps.value = [];
       currentAuditLogId.value = null;
       hermesSessionId.value = null;
+      persistActiveWindow();
+      saveState();
       message.info("上下文已清除");
     },
   });
@@ -83,45 +186,26 @@ let renderRafId: number | null = null;
 const restoreState = () => {
   try {
     const saved = sessionStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const state = JSON.parse(saved);
-      currentDatasource.value = state.datasourceId ?? null;
-      generatedSql.value = state.sql ?? "";
-      sqlExplanation.value = state.explanation ?? "";
-      clarification.value = state.clarification ?? "";
-      queryResult.value = state.result ?? null;
-      hasExecutedSql.value = Boolean(state.executed ?? state.result);
-      messageHistory.value = compactMessageHistoryForStorage(
-        state.history ?? [],
-      );
-      currentAuditLogId.value = state.auditLogId ?? null;
-      hermesSessionId.value = state.hermesSessionId ?? null;
-      hermesSteps.value = state.hermesSteps ?? [];
-    }
+    const restored = buildInitialWorkbenchWindows(
+      saved ? JSON.parse(saved) : undefined,
+    );
+    workbenchWindows.value = restored.windows;
+    activeWindowId.value = restored.activeWindowId;
+    applySnapshot(activeWindow.value.state);
   } catch (error) {
     console.warn("恢复工作台状态失败", error);
+    const fallback = buildInitialWorkbenchWindows();
+    workbenchWindows.value = fallback.windows;
+    activeWindowId.value = fallback.activeWindowId;
+    applySnapshot(activeWindow.value.state);
   }
 };
 
 // 保存工作状态到 sessionStorage
 const saveState = () => {
   try {
-    sessionStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        datasourceId: currentDatasource.value,
-        sql: generatedSql.value,
-        explanation: sqlExplanation.value,
-        clarification: clarification.value,
-        result: compactResultForStorage(queryResult.value),
-        executed: hasExecutedSql.value,
-        // Hermes session 持有模型上下文；这里保留最近记录只用于 UI 展示和浏览器存储容量保护。
-        history: compactMessageHistoryForStorage(messageHistory.value),
-        auditLogId: currentAuditLogId.value,
-        hermesSessionId: hermesSessionId.value,
-        hermesSteps: hermesSteps.value,
-      }),
-    );
+    persistActiveWindow();
+    writeWorkbenchWindowsToStorage();
   } catch (error) {
     console.warn("保存工作台状态失败", error);
   }
@@ -168,12 +252,10 @@ onMounted(async () => {
 
   try {
     const data = await get("/datasources/");
-    datasourceOptions.value = data
-      .filter(canAskDatasource)
-      .map((ds: any) => ({
-        label: `${ds.name} (${ds.db_type})`,
-        value: ds.id,
-      }));
+    datasourceOptions.value = data.filter(canAskDatasource).map((ds: any) => ({
+      label: `${ds.name} (${ds.db_type})`,
+      value: ds.id,
+    }));
 
     // 校验恢复的状态是否依然有效
     if (
@@ -193,6 +275,77 @@ onMounted(async () => {
     message.error("无法加载数据源列表");
   }
 });
+
+const handleCreateWindow = () => {
+  if (loading.value) {
+    message.warning("当前窗口正在生成中，请稍后再新建窗口");
+    return;
+  }
+  persistActiveWindow();
+  const nextWindow = createWorkbenchWindow(workbenchWindows.value.length + 1);
+  workbenchWindows.value = [...workbenchWindows.value, nextWindow];
+  activeWindowId.value = nextWindow.id;
+  applySnapshot(nextWindow.state);
+  saveState();
+};
+
+const handleSwitchWindow = (windowId: string) => {
+  if (windowId === activeWindowId.value) return;
+  if (loading.value) {
+    message.warning("当前窗口正在生成中，请稍后再切换");
+    return;
+  }
+  persistActiveWindow();
+  const target = workbenchWindows.value.find(
+    (window) => window.id === windowId,
+  );
+  if (!target) return;
+  activeWindowId.value = target.id;
+  applySnapshot(target.state);
+  saveState();
+};
+
+const handleCloseWindow = (windowId: string) => {
+  if (loading.value) {
+    message.warning("当前窗口正在生成中，请稍后再关闭");
+    return;
+  }
+
+  if (windowId !== activeWindowId.value) {
+    persistActiveWindow();
+    workbenchWindows.value = workbenchWindows.value.filter(
+      (window) => window.id !== windowId,
+    );
+    writeWorkbenchWindowsToStorage();
+    return;
+  }
+
+  const result = closeWorkbenchWindow(workbenchWindows.value, windowId);
+  workbenchWindows.value = result.windows;
+  activeWindowId.value = result.activeWindowId;
+  applySnapshot(activeWindow.value.state);
+  writeWorkbenchWindowsToStorage();
+};
+
+const startRenameWindow = (window: WorkbenchWindowState) => {
+  editingWindowId.value = window.id;
+  editingWindowTitle.value = window.title;
+};
+
+const finishRenameWindow = () => {
+  if (!editingWindowId.value) return;
+  const title = editingWindowTitle.value.trim();
+  if (title) {
+    workbenchWindows.value = workbenchWindows.value.map((window) =>
+      window.id === editingWindowId.value
+        ? { ...window, title, updatedAt: Date.now() }
+        : window,
+    );
+  }
+  editingWindowId.value = null;
+  editingWindowTitle.value = "";
+  saveState();
+};
 
 onUnmounted(() => {
   // 清理活跃的流式请求
@@ -263,6 +416,7 @@ const handleQuerySubmit = (question: string) => {
   // 将当前问题存入本地历史记录（用于 UI 展示和审计；Hermes 上下文由 session 持有）
   messageHistory.value.push({ role: "user", content: question });
   messageHistory.value = compactMessageHistoryForStorage(messageHistory.value);
+  updateActiveWindowTitleFromQuestion(question);
 
   // 取消之前的流式请求 / 渲染
   if (activeStreamController) {
@@ -288,119 +442,128 @@ const handleQuerySubmit = (question: string) => {
   const controller = new AbortController();
   activeStreamController = controller;
 
-  streamSse(`/workbench/ask_stream?${params.toString()}`, {
-  status: (data) => {
-    const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
-    if (
-      data.phase === "failed" &&
-      lastStep?.phase === "failed" &&
-      lastStep.message === data.message
-    ) {
-      return;
-    }
-    hermesSteps.value.push({
-      phase: data.phase,
-      actor: actorForWorkbenchPhase(data.phase),
-      message: data.message,
-      timestamp: Date.now(),
-    });
-
-    // 当完成或失败时停止计时器
-    if (data.phase === "completed" || data.phase === "failed") {
-      hermesProcessRef.value?.stopTimer();
-    }
-  },
-
-  note_used: (data) => {
-    const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
-
-    if (lastStep && lastStep.phase === "note_used") {
-      lastStep.message += `, ${data.note}`;
-      if (data.comment) {
-        lastStep.detail = lastStep.detail
-          ? `${lastStep.detail}; ${data.comment}`
-          : data.comment;
-      }
-    } else {
-      hermesSteps.value.push({
-        phase: "note_used",
-        actor: "hermes",
-        message: `参考笔记: ${data.note}`,
-        detail: data.comment || undefined,
-        timestamp: Date.now(),
-      });
-    }
-  },
-
-  hermes_trace: (data) => {
-    if (!data.message) return;
-  },
-
-  result: (data) => {
-    if (data.audit_log_id) {
-      currentAuditLogId.value = data.audit_log_id;
-    }
-    if (data.hermes_session_id) {
-      hermesSessionId.value = data.hermes_session_id;
-    }
-
-    if (data.type === "sql_candidate") {
-      // 启动渐进渲染
-      sqlExplanation.value = data.explanation || "";
-      startProgressiveRender(data.sql);
-      message.success("SQL 生成成功，请确认后执行");
-
-      // 存入历史
-      messageHistory.value.push({
-        role: "assistant",
-        content: data.explanation || "已生成 SQL 候选语句。",
-      });
-      messageHistory.value = compactMessageHistoryForStorage(
-        messageHistory.value,
-      );
-    } else if (data.type === "clarification") {
-      clarification.value = data.message;
-      hermesSteps.value = appendHermesClarification(
-        hermesSteps.value,
-        data.message,
-      ) as HermesStep[];
-      message.info("AI 需要您进一步澄清问题");
-
-      // 存入历史
-      messageHistory.value.push({ role: "assistant", content: data.message });
-      messageHistory.value = compactMessageHistoryForStorage(
-        messageHistory.value,
-      );
-    }
-    if (data.warning) {
-      message.warning(data.warning);
-    }
-
-    controller.abort();
-    activeStreamController = null;
-    loading.value = false;
-  },
-
-  error: (data) => {
-    if (data.message) {
-      message.error(data.message);
-      const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
-      if (!(lastStep?.phase === "failed" && lastStep.message === data.message)) {
+  streamSse(
+    `/workbench/ask_stream?${params.toString()}`,
+    {
+      status: (data) => {
+        const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+        if (
+          data.phase === "failed" &&
+          lastStep?.phase === "failed" &&
+          lastStep.message === data.message
+        ) {
+          return;
+        }
         hermesSteps.value.push({
-          phase: "failed",
-          actor: "hermes",
+          phase: data.phase,
+          actor: actorForWorkbenchPhase(data.phase),
           message: data.message,
           timestamp: Date.now(),
         });
-      }
-    }
 
-    hermesProcessRef.value?.stopTimer();
-    controller.abort();
-    activeStreamController = null;
-    loading.value = false;
-  },
-  }, { signal: controller.signal }).catch((error) => {
+        // 当完成或失败时停止计时器
+        if (data.phase === "completed" || data.phase === "failed") {
+          hermesProcessRef.value?.stopTimer();
+        }
+      },
+
+      note_used: (data) => {
+        const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+
+        if (lastStep && lastStep.phase === "note_used") {
+          lastStep.message += `, ${data.note}`;
+          if (data.comment) {
+            lastStep.detail = lastStep.detail
+              ? `${lastStep.detail}; ${data.comment}`
+              : data.comment;
+          }
+        } else {
+          hermesSteps.value.push({
+            phase: "note_used",
+            actor: "hermes",
+            message: `参考笔记: ${data.note}`,
+            detail: data.comment || undefined,
+            timestamp: Date.now(),
+          });
+        }
+      },
+
+      hermes_trace: (data) => {
+        if (!data.message) return;
+      },
+
+      result: (data) => {
+        if (data.audit_log_id) {
+          currentAuditLogId.value = data.audit_log_id;
+        }
+        if (data.hermes_session_id) {
+          hermesSessionId.value = data.hermes_session_id;
+        }
+
+        if (data.type === "sql_candidate") {
+          // 启动渐进渲染
+          sqlExplanation.value = data.explanation || "";
+          startProgressiveRender(data.sql);
+          message.success("SQL 生成成功，请确认后执行");
+
+          // 存入历史
+          messageHistory.value.push({
+            role: "assistant",
+            content: data.explanation || "已生成 SQL 候选语句。",
+          });
+          messageHistory.value = compactMessageHistoryForStorage(
+            messageHistory.value,
+          );
+        } else if (data.type === "clarification") {
+          clarification.value = data.message;
+          hermesSteps.value = appendHermesClarification(
+            hermesSteps.value,
+            data.message,
+          ) as HermesStep[];
+          message.info("AI 需要您进一步澄清问题");
+
+          // 存入历史
+          messageHistory.value.push({
+            role: "assistant",
+            content: data.message,
+          });
+          messageHistory.value = compactMessageHistoryForStorage(
+            messageHistory.value,
+          );
+        }
+        if (data.warning) {
+          message.warning(data.warning);
+        }
+
+        controller.abort();
+        activeStreamController = null;
+        loading.value = false;
+      },
+
+      error: (data) => {
+        if (data.message) {
+          message.error(data.message);
+          const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+          if (
+            !(lastStep?.phase === "failed" && lastStep.message === data.message)
+          ) {
+            hermesSteps.value.push({
+              phase: "failed",
+              actor: "hermes",
+              message: data.message,
+              timestamp: Date.now(),
+            });
+          }
+        }
+
+        hermesProcessRef.value?.stopTimer();
+        controller.abort();
+        activeStreamController = null;
+        loading.value = false;
+      },
+    },
+    { signal: controller.signal },
+  ).catch((error) => {
     if (controller.signal.aborted) return;
     message.error(error?.message || "SSE 连接中断，请检查后端服务");
     hermesProcessRef.value?.stopTimer();
@@ -463,10 +626,11 @@ const handleExecuteSql = async () => {
           <div class="datasource-picker">
             <span class="picker-label">当前数据源</span>
             <n-select
-              v-model:value="currentDatasource"
+              :value="currentDatasource"
               :options="datasourceOptions"
               placeholder="请选择数据源"
               style="width: 300px"
+              @update:value="handleDatasourceChange"
             />
           </div>
         </div>
@@ -474,6 +638,45 @@ const handleExecuteSql = async () => {
     </div>
 
     <div class="page-content">
+      <div class="window-bar">
+        <div class="window-tabs" role="tablist" aria-label="工作窗口">
+          <button
+            v-for="window in workbenchWindows"
+            :key="window.id"
+            type="button"
+            class="window-tab"
+            :class="{ 'is-active': window.id === activeWindowId }"
+            @click="handleSwitchWindow(window.id)"
+            @dblclick="startRenameWindow(window)"
+          >
+            <n-input
+              v-if="editingWindowId === window.id"
+              v-model:value="editingWindowTitle"
+              size="tiny"
+              class="window-title-input"
+              @click.stop
+              @keydown.enter.prevent="finishRenameWindow"
+              @blur="finishRenameWindow"
+            />
+            <span v-else class="window-title">{{ window.title }}</span>
+            <span v-if="window.state.history.length > 0" class="window-count">
+              {{ Math.ceil(window.state.history.length / 2) }}
+            </span>
+            <button
+              type="button"
+              class="window-close"
+              title="关闭窗口"
+              @click.stop="handleCloseWindow(window.id)"
+            >
+              ×
+            </button>
+          </button>
+        </div>
+        <n-button size="small" tertiary @click="handleCreateWindow"
+          >新建窗口</n-button
+        >
+      </div>
+
       <AiAssistant
         :disabled="loading || !currentDatasource"
         @submit="handleQuerySubmit"
@@ -597,6 +800,98 @@ const handleExecuteSql = async () => {
   flex-direction: column;
   gap: 20px;
   width: 100%;
+}
+
+.window-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 10px;
+}
+
+.window-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.window-tab {
+  appearance: none;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #414753;
+  height: 34px;
+  min-width: 112px;
+  max-width: 220px;
+  border-radius: 8px 8px 0 0;
+  padding: 0 6px 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.window-tab:hover {
+  background: #fff;
+  border-color: #cbd5e1;
+}
+
+.window-tab.is-active {
+  background: #fff;
+  border-color: #2080f0;
+  color: #181c22;
+  font-weight: 600;
+}
+
+.window-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.window-title-input {
+  width: 120px;
+}
+
+.window-count {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #e8f2ff;
+  color: #2080f0;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.window-close {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  line-height: 16px;
+  padding: 0;
+}
+
+.window-close:hover {
+  background: #eef2f7;
+  color: #414753;
 }
 
 .workbench-grid {
