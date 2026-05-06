@@ -162,8 +162,8 @@ const roundStatusText = (roundSteps: HermesStep[]) => {
 
 const shortSessionId = computed(() => {
   if (!props.hermesSessionId) return "未建立";
-  return props.hermesSessionId.length > 16
-    ? `${props.hermesSessionId.slice(0, 8)}…${props.hermesSessionId.slice(-6)}`
+  return props.hermesSessionId.length > 12
+    ? `${props.hermesSessionId.slice(0, 6)}…${props.hermesSessionId.slice(-4)}`
     : props.hermesSessionId;
 });
 </script>
@@ -191,8 +191,8 @@ const shortSessionId = computed(() => {
       </div>
       <div class="process-actions">
         <div v-if="historyCount > 0" class="context-pill">
-          <span class="round-count">第 {{ roundCount }} 轮对话</span>
-          <i class="pill-divider"></i>
+          <!-- <span class="round-count">第 {{ roundCount }} 轮对话</span> -->
+          <!-- <i class="pill-divider"></i> -->
           <button class="clear-action" @click="$emit('reset')">清除历史</button>
         </div>
         <div class="session-meta">
@@ -200,7 +200,7 @@ const shortSessionId = computed(() => {
             class="meta-item"
             :title="hermesSessionId || 'Hermes session 尚未建立'"
           >
-            Session {{ shortSessionId }}
+            {{ shortSessionId }}
           </span>
         </div>
         <div class="process-timer">
@@ -378,6 +378,8 @@ const shortSessionId = computed(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 12px 20px;
   background: linear-gradient(90deg, #f0ecff 0%, #e8f0ff 100%);
   border-bottom: 1px solid #e8e5f0;
@@ -423,8 +425,7 @@ const shortSessionId = computed(() => {
 .process-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
   min-width: 0;
 }

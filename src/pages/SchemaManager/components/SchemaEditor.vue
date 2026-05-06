@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { NButton, NInput, NIcon, useMessage } from 'naive-ui'
 import { SyncOutline, BookOutline } from '@vicons/ionicons5'
 import { get, patch } from '../../../services/request'
@@ -12,6 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits(['sync', 'sync-knowledge'])
 const message = useMessage()
+const isKnowledgeSyncActive = computed(() => Boolean(props.knowledgeSyncing))
 
 const fields = ref<any[]>([])
 const tableRemark = ref('')
@@ -67,17 +68,23 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
         <span class="table-comment">{{ table.original_comment }}</span>
       </div>
       <div class="header-actions">
-        <n-button secondary size="small" @click="emit('sync')">
+        <n-button secondary size="small" :disabled="isKnowledgeSyncActive" @click="emit('sync')">
           <template #icon>
             <n-icon><SyncOutline /></n-icon>
           </template>
           重新同步该数据源
         </n-button>
-        <n-button type="primary" size="small" :loading="knowledgeSyncing" @click="emit('sync-knowledge')">
+        <n-button
+          type="primary"
+          size="small"
+          :loading="isKnowledgeSyncActive"
+          :disabled="isKnowledgeSyncActive"
+          @click="emit('sync-knowledge')"
+        >
           <template #icon>
             <n-icon><BookOutline /></n-icon>
           </template>
-          同步到知识库
+          {{ isKnowledgeSyncActive ? '同步中...' : '同步到知识库' }}
         </n-button>
       </div>
     </div>

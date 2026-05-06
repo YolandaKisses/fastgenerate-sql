@@ -46,6 +46,14 @@ const formatKnowledgeBanner = (task: any | null) => {
   return `知识库同步进行中 ${completed} / ${total}`
 }
 
+const knowledgeDetailMessage = (task: any | null) => {
+  if (!task) return ''
+  if (task.status === 'partial_success' || task.status === 'failed') {
+    return task.error_message || task.last_message || ''
+  }
+  return ''
+}
+
 const fetchSources = async () => {
   try {
     const data = await get('/datasources/')
@@ -232,7 +240,7 @@ const handleKnowledgeSync = async () => {
 
   dialog.warning({
     title: '确认同步知识库',
-    content: '同步知识库会将补充备注上传并重新建立 RAG 索引，耗时取决于表数量。确定继续吗？',
+    content: '是否已完成本地补充配置？确认后将开始知识库同步。',
     positiveText: '确认开始',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -273,6 +281,9 @@ const handleKnowledgeSync = async () => {
           ]">
             <span class="status-dot"></span>
             {{ formatKnowledgeBanner(knowledgeTask) }}
+          </div>
+          <div v-if="knowledgeDetailMessage(knowledgeTask)" class="knowledge-detail">
+            {{ knowledgeDetailMessage(knowledgeTask) }}
           </div>
           <div v-else class="knowledge-banner is-none">
             <span class="status-dot"></span>
@@ -350,6 +361,13 @@ const handleKnowledgeSync = async () => {
   font-size: 13px;
   font-weight: 500;
   gap: 8px;
+}
+
+.knowledge-detail {
+  max-width: 420px;
+  color: #8a4b0f;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .knowledge-banner.is-expired {

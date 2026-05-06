@@ -30,6 +30,13 @@ export type MessageHistoryEntry = {
   content: string
 }
 
+export type WorkbenchAskStreamParamsInput = {
+  datasourceId: number
+  question: string
+  history?: MessageHistoryEntry[]
+  hermesSessionId?: string | null
+}
+
 export type WorkbenchWindowSnapshot = {
   datasourceId: number | null
   sql: string
@@ -339,6 +346,24 @@ export const compactMessageHistoryForStorage = (
 ): MessageHistoryEntry[] => {
   if (history.length <= limit) return history
   return history.slice(-limit)
+}
+
+export const buildWorkbenchAskStreamParams = ({
+  datasourceId,
+  question,
+  history = [],
+  hermesSessionId,
+}: WorkbenchAskStreamParamsInput) => {
+  const params = new URLSearchParams()
+  params.set('datasource_id', String(datasourceId))
+  params.set('question', question)
+  if (history.length > 0) {
+    params.set('history', JSON.stringify(compactMessageHistoryForStorage(history)))
+  }
+  if (hermesSessionId) {
+    params.set('hermes_session_id', hermesSessionId)
+  }
+  return params
 }
 
 export const compactResultForStorage = (result: QueryResultState | null): QueryResultState | null => {

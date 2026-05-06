@@ -3,6 +3,7 @@ import {
   actorForWorkbenchPhase,
   appendHermesClarification,
   buildInitialWorkbenchWindows,
+  buildWorkbenchAskStreamParams,
   closeWorkbenchWindow,
   compactMessageHistoryForStorage,
   compactResultForStorage,
@@ -174,6 +175,26 @@ describe('workbench state helpers', () => {
     expect(compacted).toHaveLength(50)
     expect(compacted[0].content).toBe('message-6')
     expect(compacted[49].content).toBe('message-55')
+  })
+
+  it('serializes previous history for follow-up ask_stream requests without duplicating current question', () => {
+    const params = buildWorkbenchAskStreamParams({
+      datasourceId: 1,
+      question: 'A',
+      history: [
+        { role: 'user', content: '查询张三的工作单位' },
+        { role: 'assistant', content: '请澄清 A/B/C' },
+      ],
+      hermesSessionId: 'session-1',
+    })
+
+    expect(params.get('datasource_id')).toBe('1')
+    expect(params.get('question')).toBe('A')
+    expect(params.get('hermes_session_id')).toBe('session-1')
+    expect(params.get('history')).toBe(JSON.stringify([
+      { role: 'user', content: '查询张三的工作单位' },
+      { role: 'assistant', content: '请澄清 A/B/C' },
+    ]))
   })
 
   it('classifies sqlite retrieval as a system process step', () => {

@@ -16,6 +16,17 @@ from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
 
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
+SEMANTIC_TOKEN_ALIASES = {
+    "工作单位": ["公司", "公司名称", "单位"],
+    "单位": ["公司", "公司名称"],
+    "公司": ["公司名称", "工作单位"],
+    "公司名称": ["公司", "工作单位"],
+    "姓名": ["full_name", "名字"],
+    "名字": ["姓名", "full_name"],
+    "岗位": ["岗位名称", "job_title", "职位"],
+    "职位": ["岗位名称", "job_title"],
+    "工作岗位": ["岗位名称", "job_title"],
+}
 ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
 SQL_KEYWORDS = {
     "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "ON", "AS",
@@ -25,6 +36,7 @@ SQL_KEYWORDS = {
     "CASE", "WHEN", "THEN", "ELSE", "END", "DESC", "ASC", "WITH", "UNION", "ALL",
 }
 SCHEMA_RETRIEVAL_HISTORY_LIMIT = 4
+CLARIFICATION_OPTION_RE = re.compile(r"^[A-Da-d](?:[)\].、．:]|\s|$)?")
 
 
 def can_ask_datasource(ds: DataSource) -> bool:
@@ -58,7 +70,29 @@ def tokenize_question(question: str) -> list[str]:
                     token = part[idx:idx + size]
                     if token not in STOP_WORDS:
                         tokens.add(token)
-    return sorted(tokens, key=len, reverse=True)
+    expanded_tokens = set(tokens)
+    for token in list(tokens):
+        for alias in SEMANTIC_TOKEN_ALIASES.get(token, []):
+            expanded_tokens.add(alias.lower())
+    return sorted(expanded_tokens, key=len, reverse=True)
+
+
+def is_clarification_option_answer(question: str) -> bool:
+    normalized = (question or "").strip()
+    if not normalized:
+        return False
+    return bool(CLARIFICATION_OPTION_RE.fullmatch(normalized))
+
+
+def should_allow_schema_fallback(
+    question: str,
+    history: list[dict] | None = None,
+    hermes_session_id: str | None = None,
+) -> bool:
+    has_history = bool(history)
+    if hermes_session_id and has_history and is_clarification_option_answer(question):
+        return False
+    return True
 
 
 def collect_table_payload(session: Session, datasource_id: int) -> list[dict]:
@@ -74,7 +108,13 @@ def get_datasource_knowledge_dir(vault_root: str, datasource_name: str) -> Path:
     return Path(vault_root) / sanitize_path_segment(datasource_name) / "tables"
 
 
-def retrieve_relevant_schema(session: Session, datasource_id: int, question: str, limit: int = 6) -> list[dict]:
+def retrieve_relevant_schema(
+    session: Session,
+    datasource_id: int,
+    question: str,
+    limit: int = 6,
+    allow_fallback: bool = True,
+) -> list[dict]:
     tokens = tokenize_question(question)
     payload = collect_table_payload(session, datasource_id)
     if not payload:
@@ -111,10 +151,18 @@ def retrieve_relevant_schema(session: Session, datasource_id: int, question: str
             ranked.append({"score": score, "matched_terms": matched_terms, **item})
 
     if not ranked:
+        if not allow_fallback:
+            return []
         return payload[: min(limit, len(payload))]
 
     ranked.sort(key=lambda item: (item["score"], len(item["matched_terms"])), reverse=True)
-    return ranked[:limit]
+    top_score = ranked[0]["score"]
+    # 采用比例阈值代替固定差值，防止某一张表由于同义词别名命中过多（score畸高）而挤掉其他相关的表
+    narrowed = [
+        item for item in ranked
+        if item["score"] >= max(1, top_score * 0.25)
+    ]
+    return narrowed[:limit]
 
 
 def normalize_note_name(note: str) -> str:
@@ -437,9 +485,15 @@ def prepare_question_context(
     question: str,
     knowledge_dir: Path,
     history: list[dict] | None = None,
+    hermes_session_id: str | None = None,
 ) -> tuple[list[dict], str, str, list[str]]:
     retrieval_question = build_schema_retrieval_question(question, history)
-    candidates = retrieve_relevant_schema(session, datasource_id, retrieval_question)
+    candidates = retrieve_relevant_schema(
+        session,
+        datasource_id,
+        retrieval_question,
+        allow_fallback=should_allow_schema_fallback(question, history, hermes_session_id),
+    )
     schema_context = build_schema_context(candidates)
     obsidian_context, note_names = read_relevant_table_notes(candidates, knowledge_dir)
     return candidates, schema_context, obsidian_context, note_names
@@ -472,6 +526,42 @@ def validate_and_guard_result(result: dict, knowledge_dir: Path, candidates: lis
         schema_warning = "；".join(validation["warnings"])
         guarded["warning"] = f"{existing_warning}；{schema_warning}" if existing_warning else schema_warning
     return guarded
+
+
+def clarification_has_schema_contradiction(result: dict, candidates: list[dict]) -> bool:
+    if result.get("type") != "clarification":
+        return False
+
+    message = str(result.get("message") or "")
+    if not message or "schema" not in message.lower():
+        return False
+
+    contradiction_hints = ("补充", "缺少", "无法从当前可用表中获取")
+    if not any(hint in message for hint in contradiction_hints):
+        return False
+
+    candidate_tables = {item["table"].name for item in candidates if item.get("table")}
+    return any(table_name in message for table_name in candidate_tables)
+
+
+def build_clarification_retry_prompt(
+    system_prompt: str,
+    question: str,
+    schema_context: str,
+    obsidian_context: str,
+    candidates: list[dict],
+) -> str:
+    candidate_tables = "、".join(item["table"].name for item in candidates if item.get("table")) or "（无候选表）"
+    base_prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+    retry_lines = [
+        "",
+        "补充纠错要求：",
+        f"1. 当前 Schema Context 已经包含这些候选表：{candidate_tables}。",
+        "2. 禁止声称这些候选表缺少 schema 或不可用。",
+        "3. 如果当前表已经足够回答问题，请直接生成 SQL；如果仍需澄清，只能基于这些已提供的表和字段给出选项。",
+        "4. 严格返回 JSON，不要输出额外说明。",
+    ]
+    return "\n".join([base_prompt, *retry_lines])
 
 
 def _log_result(session: Session, datasource_id: int, ds_name: str,
@@ -537,6 +627,7 @@ def ask_llm(
             question,
             knowledge_dir,
             history,
+            hermes_session_id,
         )
         system_prompt = _build_system_prompt(ds.db_type)
         prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
@@ -548,6 +639,23 @@ def ask_llm(
         )
         result = validate_llm_result(raw_result)
         result = validate_and_guard_result(result, knowledge_dir, candidates)
+        if clarification_has_schema_contradiction(result, candidates):
+            retry_prompt = build_clarification_retry_prompt(
+                system_prompt,
+                question,
+                schema_context,
+                obsidian_context,
+                candidates,
+            )
+            retry_raw_result, retry_session_id = run_hermes_session_json(
+                retry_prompt,
+                cwd=str(knowledge_dir),
+                hermes_cli_path=hermes_cli_path,
+                session_id=next_hermes_session_id or hermes_session_id,
+            )
+            result = validate_llm_result(retry_raw_result)
+            result = validate_and_guard_result(result, knowledge_dir, candidates)
+            next_hermes_session_id = retry_session_id or next_hermes_session_id
         if result.get("type") == "error":
             return result
         if next_hermes_session_id:
@@ -609,6 +717,7 @@ def ask_llm_stream(
             question,
             knowledge_dir,
             history,
+            hermes_session_id,
         )
     except Exception as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
@@ -638,6 +747,23 @@ def ask_llm_stream(
                 next_hermes_session_id = event.get("session_id")
         if result is None:
             raise RuntimeError("Hermes 返回为空")
+        if clarification_has_schema_contradiction(result, candidates):
+            retry_prompt = build_clarification_retry_prompt(
+                system_prompt,
+                question,
+                schema_context,
+                obsidian_context,
+                candidates,
+            )
+            retry_raw_result, retry_session_id = run_hermes_session_json(
+                retry_prompt,
+                cwd=str(knowledge_dir),
+                hermes_cli_path=hermes_cli_path,
+                session_id=next_hermes_session_id or hermes_session_id,
+            )
+            result = validate_llm_result(retry_raw_result)
+            result = validate_and_guard_result(result, knowledge_dir, candidates)
+            next_hermes_session_id = retry_session_id or next_hermes_session_id
     except (ValueError, RuntimeError) as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
         yield _sse_event("error", {"message": str(e)})

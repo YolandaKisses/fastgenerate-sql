@@ -12,6 +12,8 @@ from app.services.workbench_service import (
     normalize_note_name,
     note_used_payload,
     read_relevant_table_notes,
+    retrieve_relevant_schema,
+    should_allow_schema_fallback,
     validate_sql_against_schema,
     validate_sql_candidate,
 )
@@ -317,6 +319,83 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
     assert "主要知识来源是 Obsidian" not in captured["prompt"]
 
 
+def test_ask_llm_retries_clarification_that_claims_present_schema_is_missing(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+    (knowledge_dir / "demo_users.md").write_text("company 对应工作单位", encoding="utf-8")
+
+    prompts: list[str] = []
+    calls = {"count": 0}
+
+    def fake_run_hermes_session_json(prompt, *args, **kwargs):
+        prompts.append(prompt)
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return (
+                {
+                    "type": "clarification",
+                    "message": "A) 最近登陆日期取 demo_users 表的 last_login_at；消费记录无法从当前可用表中获取，需补充 user_orders 表 schema",
+                    "used_notes": ["demo_users.md"],
+                },
+                "hermes-session-1",
+            )
+        return (
+            {
+                "type": "clarification",
+                "message": "A) 仅查询张三在 user_orders 中的最近消费记录\nB) 仅查询张三的工作单位\nC) 取消本次查询",
+                "used_notes": ["demo_users.md"],
+            },
+            "hermes-session-2",
+        )
+
+    monkeypatch.setattr(workbench_service, "run_hermes_session_json", fake_run_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+        session.refresh(ds)
+
+        demo_users = SchemaTable(datasource_id=ds.id, name="demo_users", original_comment="示例用户表")
+        user_orders = SchemaTable(
+            datasource_id=ds.id,
+            name="user_orders",
+            original_comment="用户订单表",
+            supplementary_comment="消费记录",
+        )
+        session.add(demo_users)
+        session.add(user_orders)
+        session.commit()
+        session.refresh(demo_users)
+        session.refresh(user_orders)
+        session.add(SchemaField(table_id=demo_users.id, name="full_name", type="VARCHAR(128)", original_comment="姓名"))
+        session.add(SchemaField(table_id=demo_users.id, name="company", type="VARCHAR(128)", original_comment="公司名称"))
+        session.add(SchemaField(table_id=user_orders.id, name="order_amount", type="DECIMAL(12,2)", original_comment="消费金额"))
+        session.commit()
+
+        result = ask_llm(session, ds.id, "查询张三的工作单位和最近消费记录")
+
+    assert calls["count"] == 2
+    assert result["type"] == "clarification"
+    assert "补充纠错要求" in prompts[1]
+    assert "user_orders" in prompts[1]
+
+
 def test_ask_llm_rejects_sql_with_unknown_schema_field(tmp_path, monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
@@ -500,6 +579,106 @@ def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
 
     assert "generating_sql" not in stream
     assert "Hermes 正在生成 SQL" not in stream
+
+
+def test_retrieve_relevant_schema_prefers_direct_business_synonyms_for_explicit_request():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+
+        demo_users = SchemaTable(datasource_id=ds.id, name="demo_users", original_comment="示例用户表")
+        user_login_logs = SchemaTable(datasource_id=ds.id, name="user_login_logs", original_comment="用户登录日志表")
+        user_orders = SchemaTable(datasource_id=ds.id, name="user_orders", original_comment="用户订单表")
+        user_profiles = SchemaTable(datasource_id=ds.id, name="user_profiles", original_comment="用户资料表")
+        session.add(demo_users)
+        session.add(user_login_logs)
+        session.add(user_orders)
+        session.add(user_profiles)
+        session.commit()
+        session.refresh(demo_users)
+        session.refresh(user_login_logs)
+        session.refresh(user_orders)
+        session.refresh(user_profiles)
+
+        session.add(SchemaField(table_id=demo_users.id, name="full_name", type="VARCHAR(128)", original_comment="姓名"))
+        session.add(SchemaField(table_id=demo_users.id, name="company", type="VARCHAR(128)", original_comment="公司名称"))
+        session.add(SchemaField(table_id=demo_users.id, name="job_title", type="VARCHAR(128)", original_comment="岗位名称"))
+        session.add(SchemaField(table_id=user_login_logs.id, name="login_ip", type="VARCHAR(64)", original_comment="登录IP"))
+        session.add(SchemaField(table_id=user_orders.id, name="order_amount", type="DECIMAL(12,2)", original_comment="订单金额"))
+        session.add(SchemaField(table_id=user_profiles.id, name="address", type="VARCHAR(255)", original_comment="联系地址"))
+        session.commit()
+
+        candidates = retrieve_relevant_schema(session, ds.id, "查询李四的工作单位")
+
+    assert [item["table"].name for item in candidates] == ["demo_users"]
+
+
+def test_schema_fallback_is_disabled_for_clarification_option_with_history():
+    assert not should_allow_schema_fallback(
+        "A",
+        history=[{"role": "user", "content": "查询张三的工作单位"}],
+        hermes_session_id="session-1",
+    )
+    assert not should_allow_schema_fallback(
+        "b",
+        history=[{"role": "user", "content": "查询用户信息"}],
+        hermes_session_id="session-1",
+    )
+    assert should_allow_schema_fallback(
+        "查询用户信息",
+        history=[{"role": "user", "content": "查询"}],
+        hermes_session_id="session-1",
+    )
+    assert should_allow_schema_fallback("A", history=[], hermes_session_id=None)
+
+
+def test_retrieve_relevant_schema_skips_fallback_for_clarification_option():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+
+        session.add(SchemaTable(datasource_id=ds.id, name="demo_users", original_comment="示例用户表"))
+        session.add(SchemaTable(datasource_id=ds.id, name="user_orders", original_comment="用户订单表"))
+        session.commit()
+
+        candidates = retrieve_relevant_schema(
+            session,
+            ds.id,
+            "查询张三的工作单位\nA",
+            allow_fallback=False,
+        )
+
+    assert candidates == []
 
 
 def test_stream_labels_hermes_used_notes_as_references_not_hits(tmp_path, monkeypatch):

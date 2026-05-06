@@ -9,6 +9,7 @@ import type { HermesStep } from "./components/HermesProcess.vue";
 import {
   appendHermesClarification,
   buildInitialWorkbenchWindows,
+  buildWorkbenchAskStreamParams,
   closeWorkbenchWindow,
   compactMessageHistoryForStorage,
   createWorkbenchWindow,
@@ -417,6 +418,8 @@ const handleQuerySubmit = (question: string) => {
   ) as HermesStep[];
   currentAuditLogId.value = null;
 
+  const retrievalHistory = compactMessageHistoryForStorage([...messageHistory.value]);
+
   // 将当前问题存入本地历史记录（用于 UI 展示和审计；Hermes 上下文由 session 持有）
   messageHistory.value.push({ role: "user", content: question });
   messageHistory.value = compactMessageHistoryForStorage(messageHistory.value);
@@ -436,12 +439,12 @@ const handleQuerySubmit = (question: string) => {
   hermesProcessRef.value?.startTimer();
 
   // 构建流式请求路径
-  const params = new URLSearchParams();
-  params.set("datasource_id", String(currentDatasource.value));
-  params.set("question", question);
-  if (hermesSessionId.value) {
-    params.set("hermes_session_id", hermesSessionId.value);
-  }
+  const params = buildWorkbenchAskStreamParams({
+    datasourceId: currentDatasource.value,
+    question,
+    history: retrievalHistory,
+    hermesSessionId: hermesSessionId.value,
+  });
 
   const controller = new AbortController();
   activeStreamController = controller;
@@ -663,9 +666,9 @@ const handleExecuteSql = async () => {
               @blur="finishRenameWindow"
             />
             <span v-else class="window-title">{{ window.title }}</span>
-            <span v-if="window.state.history.length > 0" class="window-count">
+            <!-- <span v-if="window.state.history.length > 0" class="window-count">
               {{ Math.ceil(window.state.history.length / 2) }}
-            </span>
+            </span> -->
             <button
               type="button"
               class="window-close"
@@ -687,6 +690,24 @@ const handleExecuteSql = async () => {
       />
 
       <div class="workbench-grid">
+        <div class="side-area" :class="{ 'is-active': hermesSteps.length > 0 }">
+          <!-- 调用追踪面板 -->
+          <HermesProcess
+            ref="hermesProcessRef"
+            :steps="hermesSteps"
+            :loading="loading"
+            :history-count="messageHistory.length"
+            :active-clarification="formatClarification(clarification)"
+            :hermes-session-id="hermesSessionId"
+            @reset="handleResetContext"
+          />
+
+          <div v-if="hermesSteps.length === 0" class="side-placeholder">
+            <div class="placeholder-icon">🤖</div>
+            <p>准备就绪。在这里将展示 Hermes 调用日志、参考笔记与执行结果。</p>
+          </div>
+        </div>
+
         <div class="main-area">
           <!-- 澄清提示 -->
           <div v-if="clarification" class="clarification-box">
@@ -726,24 +747,6 @@ const handleExecuteSql = async () => {
                 执行完成后，这里会展示结果表格或错误信息。
               </div>
             </section>
-          </div>
-        </div>
-
-        <div class="side-area" :class="{ 'is-active': hermesSteps.length > 0 }">
-          <!-- 调用追踪面板 -->
-          <HermesProcess
-            ref="hermesProcessRef"
-            :steps="hermesSteps"
-            :loading="loading"
-            :history-count="messageHistory.length"
-            :active-clarification="formatClarification(clarification)"
-            :hermes-session-id="hermesSessionId"
-            @reset="handleResetContext"
-          />
-
-          <div v-if="hermesSteps.length === 0" class="side-placeholder">
-            <div class="placeholder-icon">🤖</div>
-            <p>准备就绪。在这里将展示 Hermes 调用日志、参考笔记与执行结果。</p>
           </div>
         </div>
       </div>

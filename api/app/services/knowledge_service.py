@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+import re
 from typing import Generator
 import threading
 
@@ -321,7 +322,7 @@ def generate_table_summary(
     ).all()
     prompt = _build_summary_prompt(datasource, table, fields, sibling_tables)
     hermes_cli_path = setting_service.get_setting(session, "hermes_cli_path", settings.HERMES_CLI_PATH)
-    data = run_hermes_json(prompt, hermes_cli_path=hermes_cli_path)
+    data = _run_knowledge_summary_with_retry(prompt, hermes_cli_path=hermes_cli_path)
     return {
         "purpose": data.get("purpose", "暂无"),
         "core_fields": data.get("core_fields", "暂无"),
@@ -330,6 +331,30 @@ def generate_table_summary(
         "note_properties": data.get("note_properties", {}),
         "caveats": data.get("caveats", "暂无"),
     }
+
+
+def _run_knowledge_summary_with_retry(
+    prompt: str,
+    *,
+    hermes_cli_path: str | None = None,
+    max_attempts: int = 2,
+) -> dict:
+    last_error: RuntimeError | None = None
+    for _ in range(max_attempts):
+        try:
+            return run_hermes_json(prompt, hermes_cli_path=hermes_cli_path)
+        except RuntimeError as exc:
+            last_error = exc
+            if not _is_retryable_knowledge_summary_error(exc):
+                raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("知识摘要生成失败")
+
+
+def _is_retryable_knowledge_summary_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return "Hermes 返回了非 JSON 内容" in message or "Hermes 返回为空" in message
 
 
 
@@ -438,27 +463,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             index_markdown = render_datasource_index_markdown(datasource, task, tables)
             (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
             
-            if task.failed_tables > 0 and task.completed_tables == 0:
-                task.status = KnowledgeSyncTaskStatus.FAILED
-                task.error_message = "所有表均同步失败"
-                task.current_phase = "failed"
-                task.last_message = task.error_message
-                datasource.sync_status = SyncStatus.SYNC_FAILED
-                datasource.last_sync_message = task.error_message
-            elif task.failed_tables > 0:
-                task.status = KnowledgeSyncTaskStatus.PARTIAL_SUCCESS
-                task.error_message = f"部分完成：{task.failed_tables} 张表失败"
-                task.current_phase = "completed"
-                task.last_message = task.error_message
-                datasource.sync_status = SyncStatus.SYNC_PARTIAL_SUCCESS
-                datasource.last_sync_message = task.error_message
-            else:
-                task.status = KnowledgeSyncTaskStatus.COMPLETED
-                task.error_message = None
-                task.current_phase = "completed"
-                task.last_message = f"知识库同步完成，共处理 {len(tables)} 张表"
-                datasource.sync_status = SyncStatus.SYNC_SUCCESS
-                datasource.last_sync_message = task.last_message
+            finalize_knowledge_task_status(task, datasource, total_tables=len(tables))
             task.current_table = None
             datasource.status = DataSourceStatus.CONNECTION_OK
             datasource.last_synced_at = task.finished_at
@@ -519,6 +524,40 @@ def stream_knowledge_task_events(engine, task_id: int) -> Generator[str, None, N
                 return
 
         last_version = _notifier.wait(task_id, last_version, timeout=5.0)
+
+
+def finalize_knowledge_task_status(
+    task: KnowledgeSyncTask,
+    datasource: DataSource,
+    *,
+    total_tables: int,
+) -> None:
+    if task.failed_tables > 0 and task.completed_tables == 0:
+        task.status = KnowledgeSyncTaskStatus.FAILED
+        task.error_message = task.error_message or "所有表均同步失败"
+        task.current_phase = "failed"
+        task.last_message = task.error_message
+        datasource.sync_status = SyncStatus.SYNC_FAILED
+        datasource.last_sync_message = task.error_message
+        return
+
+    if task.failed_tables > 0:
+        task.status = KnowledgeSyncTaskStatus.PARTIAL_SUCCESS
+        detail = (task.error_message or "").strip()
+        summary = f"部分完成：{task.failed_tables} 张表失败"
+        task.error_message = f"{summary}；{detail}" if detail else summary
+        task.current_phase = "completed"
+        task.last_message = task.error_message
+        datasource.sync_status = SyncStatus.SYNC_PARTIAL_SUCCESS
+        datasource.last_sync_message = task.error_message
+        return
+
+    task.status = KnowledgeSyncTaskStatus.COMPLETED
+    task.error_message = None
+    task.current_phase = "completed"
+    task.last_message = f"知识库同步完成，共处理 {total_tables} 张表"
+    datasource.sync_status = SyncStatus.SYNC_SUCCESS
+    datasource.last_sync_message = task.last_message
 
 
 def _build_summary_prompt(
