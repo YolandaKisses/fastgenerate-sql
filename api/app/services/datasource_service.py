@@ -21,7 +21,16 @@ def build_database_url(ds: DataSource) -> str:
     if ds.db_type == "mysql":
         return f"mysql+pymysql://{username}:{password}@{ds.host}:{ds.port}/{ds.database}"
     if ds.db_type == "oracle":
-        return f"oracle+oracledb://{username}:{password}@{ds.host}:{ds.port}/?service_name={ds.database}"
+        # Oracle 支持两种连接方式：SID 和 Service Name
+        # 约定：如果数据库名以 ':' 开头，则按 SID 方式连接 (使用 ?sid= 参数)
+        # 否则按 Service Name 方式连接 (直接拼接在路径后，这是 DBeaver 等工具的常用格式)
+        if ds.database.startswith(":"):
+            sid = ds.database[1:].strip()
+            return f"oracle+oracledb://{username}:{password}@{ds.host}:{ds.port}/?sid={sid}"
+        
+        # 针对 orclpdb 这种 Service Name，显式使用 ?service_name= 参数
+        # 这能避免 Thick 模式下将路径误认为 SID (导致 ORA-12505)
+        return f"oracle+oracledb://{username}:{password}@{ds.host}:{ds.port}/?service_name={ds.database.strip()}"
     raise ValueError(f"Unsupported db_type: {ds.db_type}")
 
 
@@ -121,6 +130,12 @@ def classify_connection_error(error: Exception) -> dict:
     if ("permission denied" in lowered or "insufficient privilege" in lowered
             or "not authorized" in lowered or "ora-01031" in lowered):
         return {"success": False, "reason": "metadata_permission_denied", "message": "测试连接失败：缺少访问元数据所需权限"}
+    # 密码验证器版本过低 (Oracle 11g 或 DPY-3015)
+    if "dpy-3015" in lowered or "password verifier type" in lowered:
+        return {"success": False, "reason": "unsupported_verifier", "message": "测试连接失败：当前 Oracle 密码验证器版本过低(11g)，Python Thin 模式不支持。请重新设置用户密码以升级验证器，或安装 Oracle Instant Client 并开启 Thick 模式。"}
+    # 数据库版本过低 (Oracle 11g 或 DPY-3010)
+    if "dpy-3010" in lowered or "database server version are not supported" in lowered:
+        return {"success": False, "reason": "unsupported_version", "message": "测试连接失败：Oracle 数据库版本过低(11g或更老)，Python Thin 模式不支持。请安装 Oracle Instant Client 并开启 Thick 模式。"}
     return {"success": False, "reason": "unknown", "message": message}
 
 

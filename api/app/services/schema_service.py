@@ -141,6 +141,9 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
                         original_comment=c_comment
                     )
                     session.add(f_obj)
+            
+            # 每同步完一张表的字段，就提交一次，防止 SQLite 锁定时间过长或中途出错导致全盘丢失
+            session.commit()
 
         for table_name in changed_table_notes:
             delete_table_note_if_exists(session, ds, table_name)
@@ -158,6 +161,7 @@ def sync_schema_for_datasource(session: Session, ds: DataSource):
 
         return {"success": True, "message": ds.last_sync_message}
     except Exception as e:
+        session.rollback()
         ds.status = DataSourceStatus.SYNC_FAILED
         ds.sync_status = SyncStatus.SYNC_FAILED
         ds.last_sync_message = str(e)

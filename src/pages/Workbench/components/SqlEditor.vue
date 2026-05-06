@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NSpace, NText, NButton, NIcon } from 'naive-ui'
-import { FileTrayOutline, PlayOutline, InformationCircleOutline, HourglassOutline, CheckmarkCircleOutline, CloseCircleOutline } from '@vicons/ionicons5'
+import { ref, computed, watch, nextTick } from 'vue'
+import { NSpace, NButton, NIcon, NInput } from 'naive-ui'
+import { 
+  FileTrayOutline, PlayOutline, InformationCircleOutline, 
+  HourglassOutline, CheckmarkCircleOutline, CloseCircleOutline,
+  CreateOutline, SaveOutline
+} from '@vicons/ionicons5'
 
 const props = defineProps<{
   sql: string
@@ -14,14 +18,23 @@ const props = defineProps<{
   executionStatus?: string | null
 }>()
 
-const emit = defineEmits(['execute'])
+const emit = defineEmits(['execute', 'update:sql', 'revalidate'])
 
-// 展示用的 SQL：渐进渲染期间用 displayedSql，完成后用完整 sql
+const isEditing = ref(false)
+const internalSql = ref(props.sql)
+
+// 当外部 sql 变化（比如流式输出时），更新内部值
+watch(() => props.sql, (newVal) => {
+  if (!isEditing.value) {
+    internalSql.value = newVal
+  }
+})
+
 const visibleSql = computed(() => {
   if (props.isRendering && props.displayedSql !== undefined) {
     return props.displayedSql
   }
-  return props.sql
+  return isEditing.value ? internalSql.value : props.sql
 })
 
 const isExecuteDisabled = computed(() => {
@@ -34,19 +47,52 @@ const executeButtonText = computed(() => {
   if (props.executionStatus === 'empty') return '已执行，无结果'
   return '已执行'
 })
+
+const handleStartEdit = () => {
+  internalSql.value = props.sql
+  isEditing.value = true
+}
+
+const handleSaveEdit = () => {
+  isEditing.value = false
+  if (internalSql.value !== props.sql) {
+    emit('update:sql', internalSql.value)
+    emit('revalidate', internalSql.value)
+  }
+}
+
+const handleCancelEdit = () => {
+  internalSql.value = props.sql
+  isEditing.value = false
+}
 </script>
 
 <template>
-  <div class="sql-editor-container">
+  <div class="sql-editor-container" :class="{ 'is-editing-mode': isEditing }">
     <div class="editor-header">
       <n-space align="center" :size="8">
         <n-icon :component="FileTrayOutline" color="#717785" />
-        <span class="filename">AI 生成的 SQL</span>
-        <span class="status-dot" :class="{ 'dot-rendering': isRendering }"></span>
+        <span class="filename">{{ isEditing ? '编辑 SQL 语句' : 'AI 生成的 SQL' }}</span>
+        <span v-if="!isEditing" class="status-dot" :class="{ 'dot-rendering': isRendering }"></span>
       </n-space>
       
-      <n-space align="center" :size="16">
-        <n-button type="primary" size="tiny" :disabled="isExecuteDisabled" @click="emit('execute')">
+      <n-space align="center" :size="12">
+        <!-- 编辑/保存按钮 -->
+        <template v-if="!executed && !isRendering">
+          <n-button v-if="!isEditing" quaternary size="tiny" @click="handleStartEdit">
+            <template #icon><n-icon :component="CreateOutline" /></template>
+            修改
+          </n-button>
+          <template v-else>
+            <n-button quaternary size="tiny" @click="handleCancelEdit">取消</n-button>
+            <n-button type="primary" secondary size="tiny" @click="handleSaveEdit">
+              <template #icon><n-icon :component="SaveOutline" /></template>
+              保存修改
+            </n-button>
+          </template>
+        </template>
+
+        <n-button type="primary" size="tiny" :disabled="isExecuteDisabled || isEditing" @click="emit('execute')">
           <template #icon>
             <n-icon :component="executed ? CheckmarkCircleOutline : PlayOutline" />
           </template>
@@ -55,7 +101,7 @@ const executeButtonText = computed(() => {
       </n-space>
     </div>
     
-    <div v-if="explanation" class="explanation-bar">
+    <div v-if="explanation && !isEditing" class="explanation-bar">
       <n-icon :component="InformationCircleOutline" />
       <span>{{ explanation }}</span>
     </div>
@@ -68,7 +114,7 @@ const executeButtonText = computed(() => {
         <n-icon v-else :component="CloseCircleOutline" />
         <span class="validation-title">
           {{ validationState === 'validating' ? '正在进行安全与规范校验...' :
-             validationState === 'valid' ? '校验通过，允许执行' : '校验失败，存在安全风险或语法问题' }}
+             validationState === 'valid' ? '校验通过，允许执行' : '校验失败' }}
         </span>
       </div>
       <ul v-if="validationState === 'invalid' && validationReasons && validationReasons.length > 0" class="validation-reasons">
@@ -81,7 +127,15 @@ const executeButtonText = computed(() => {
         <span v-for="(_, idx) in visibleSql.split('\n')" :key="idx">{{ idx + 1 }}</span>
       </div>
       <div class="code-content">
-        <pre>{{ visibleSql }}<span v-if="isRendering" class="cursor-blink">▌</span></pre>
+        <template v-if="isEditing">
+          <textarea 
+            v-model="internalSql" 
+            class="sql-textarea" 
+            spellcheck="false"
+            placeholder="请输入 SQL 语句..."
+          ></textarea>
+        </template>
+        <pre v-else>{{ visibleSql }}<span v-if="isRendering" class="cursor-blink">▌</span></pre>
       </div>
     </div>
   </div>
@@ -95,6 +149,12 @@ const executeButtonText = computed(() => {
   border: 1px solid #efeff5;
   border-radius: 8px;
   overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.is-editing-mode {
+  border-color: #6b5fbf;
+  box-shadow: 0 0 0 2px rgba(107, 95, 191, 0.1);
 }
 
 .editor-header {
@@ -169,6 +229,23 @@ const executeButtonText = computed(() => {
 .code-content {
   flex: 1;
   overflow: auto;
+  position: relative;
+}
+
+.sql-textarea {
+  width: 100%;
+  height: 100%;
+  min-height: 100px;
+  border: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: #1f2225;
+  resize: none;
+  outline: none;
 }
 
 pre {
@@ -176,6 +253,7 @@ pre {
   font-family: inherit;
   white-space: pre-wrap;
   word-break: break-word;
+  color: #1f2225;
 }
 
 .cursor-blink {
@@ -219,27 +297,27 @@ pre {
 }
 
 .validation-bar.is-validating {
-  background-color: #fef9c3; /* tailwind yellow-100 */
-  color: #854d0e; /* tailwind yellow-800 */
-  border-bottom-color: #fef08a; /* tailwind yellow-200 */
+  background-color: #fef9c3;
+  color: #854d0e;
+  border-bottom-color: #fef08a;
 }
 
 .validation-bar.is-valid {
-  background-color: #dcfce7; /* tailwind green-100 */
-  color: #166534; /* tailwind green-800 */
-  border-bottom-color: #bbf7d0; /* tailwind green-200 */
+  background-color: #dcfce7;
+  color: #166534;
+  border-bottom-color: #bbf7d0;
 }
 
 .validation-bar.is-invalid {
-  background-color: #fee2e2; /* tailwind red-100 */
-  color: #991b1b; /* tailwind red-800 */
-  border-bottom-color: #fecaca; /* tailwind red-200 */
+  background-color: #fee2e2;
+  color: #991b1b;
+  border-bottom-color: #fecaca;
 }
 
 .validation-reasons {
   margin: 0;
   padding-left: 24px;
   list-style-type: disc;
-  color: #b91c1c; /* tailwind red-700 */
+  color: #b91c1c;
 }
 </style>

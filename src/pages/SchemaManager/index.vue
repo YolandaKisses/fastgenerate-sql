@@ -14,6 +14,7 @@ const selectedTable = ref<any | null>(null)
 const knowledgeTask = ref<any | null>(null)
 const actualTableCount = ref(0)
 const knowledgeSyncing = ref(false)
+const schemaSyncing = ref(false)
 
 // 当前活跃的知识库同步流式请求
 let activeKnowledgeController: AbortController | null = null
@@ -136,7 +137,7 @@ const handleSelectTable = (table: any) => {
 }
 
 const handleSync = async () => {
-  if (!currentSource.value) return
+  if (!currentSource.value || schemaSyncing.value) return
   const sourceId = currentSource.value
 
   dialog.info({
@@ -144,19 +145,24 @@ const handleSync = async () => {
     content: '将从数据库重新读取表和字段信息，确定继续吗？',
     positiveText: '开始同步',
     negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const data = await post(`/schema/sync/${sourceId}`)
-        if (data.success) {
-          message.success(data.message)
-          fetchTables(sourceId)
-          fetchLatestKnowledgeTask(sourceId)
-        } else {
-          message.error(data.message)
-        }
-      } catch (error) {
-        message.error('同步请求失败')
-      }
+    onPositiveClick: () => {
+      schemaSyncing.value = true
+      return post(`/schema/sync/${sourceId}`)
+        .then((data) => {
+          if (data.success) {
+            message.success(data.message)
+            fetchTables(sourceId)
+            fetchLatestKnowledgeTask(sourceId)
+          } else {
+            message.error(data.message)
+          }
+        })
+        .catch(() => {
+          message.error('同步请求失败')
+        })
+        .finally(() => {
+          schemaSyncing.value = false
+        })
     }
   })
 }
@@ -308,6 +314,7 @@ const handleKnowledgeSync = async () => {
           :table="selectedTable"
           :knowledge-task="knowledgeTask"
           :knowledge-syncing="knowledgeSyncing"
+          :schema-syncing="schemaSyncing"
           @sync="handleSync"
           @sync-knowledge="handleKnowledgeSync"
         />

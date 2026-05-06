@@ -619,6 +619,31 @@ const handleExecuteSql = async () => {
     loading.value = false;
   }
 };
+
+const handleRevalidateSql = async (sql: string) => {
+  if (!currentDatasource.value) return;
+
+  validationState.value = "validating";
+  validationReasons.value = [];
+
+  try {
+    const data = await post("/workbench/validate", {
+      sql,
+      datasource_id: currentDatasource.value,
+    });
+
+    if (data.status === "valid") {
+      validationState.value = "valid";
+      validationReasons.value = [];
+    } else {
+      validationState.value = "invalid";
+      validationReasons.value = data.reasons || ["未知校验错误"];
+    }
+  } catch (error: any) {
+    validationState.value = "invalid";
+    validationReasons.value = [error.message || "校验服务请求失败"];
+  }
+};
 </script>
 
 <template>
@@ -725,7 +750,7 @@ const handleExecuteSql = async () => {
               <h2 class="panel-title">SQL 候选</h2>
               <SqlEditor
                 v-if="generatedSql || isRendering"
-                :sql="generatedSql"
+                v-model:sql="generatedSql"
                 :displayed-sql="displayedSql"
                 :is-rendering="isRendering"
                 :explanation="sqlExplanation"
@@ -734,6 +759,7 @@ const handleExecuteSql = async () => {
                 :executed="hasExecutedSql"
                 :execution-status="queryResult?.status"
                 @execute="handleExecuteSql"
+                @revalidate="handleRevalidateSql"
               />
               <div v-else class="panel-placeholder">
                 生成 SQL 后会展示候选语句与解释说明。

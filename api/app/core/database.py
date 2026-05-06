@@ -5,7 +5,7 @@ from app.core.config import settings
 engine = create_engine(
     settings.DATABASE_URL, 
     echo=settings.DB_ECHO, 
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False, "timeout": 30}
 )
 
 import app.models.setting  # 确保 RuntimeSetting 被注册到 SQLModel.metadata

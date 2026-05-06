@@ -8,6 +8,7 @@ const props = defineProps<{
   table: any | null
   knowledgeTask?: any | null
   knowledgeSyncing?: boolean
+  schemaSyncing?: boolean
 }>()
 
 const emit = defineEmits(['sync', 'sync-knowledge'])
@@ -68,7 +69,13 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
         <span class="table-comment">{{ table.original_comment }}</span>
       </div>
       <div class="header-actions">
-        <n-button secondary size="small" :disabled="isKnowledgeSyncActive" @click="emit('sync')">
+        <n-button 
+          secondary 
+          size="small" 
+          :loading="schemaSyncing"
+          :disabled="isKnowledgeSyncActive || schemaSyncing" 
+          @click="emit('sync')"
+        >
           <template #icon>
             <n-icon><SyncOutline /></n-icon>
           </template>
@@ -138,7 +145,14 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
     <div class="empty-content">
       <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#d9dce8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
       <p>请在左侧选择要管理的表</p>
-      <n-button type="primary" size="large" style="margin-top: 16px;" @click="emit('sync')">
+      <n-button 
+        type="primary" 
+        size="large" 
+        style="margin-top: 16px;" 
+        :loading="schemaSyncing"
+        :disabled="schemaSyncing"
+        @click="emit('sync')"
+      >
         <template #icon>
           <n-icon><SyncOutline /></n-icon>
         </template>

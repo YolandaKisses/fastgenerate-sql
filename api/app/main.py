@@ -1,4 +1,20 @@
 from contextlib import asynccontextmanager
+import os
+import sys
+
+# Oracle Thick Mode 初始化 (必须在任何数据库连接之前调用)
+try:
+    import oracledb
+    # 优先从环境变量读取，如果没有则使用你刚安装的默认路径
+    oracle_client_path = os.getenv("ORACLE_CLIENT_PATH", "/Users/yolanda/opt/oracle/instantclient_23_26")
+    if oracle_client_path and os.path.exists(oracle_client_path):
+        oracledb.init_oracle_client(lib_dir=oracle_client_path)
+        print(f"✅ Oracle Thick Mode initialized using: {oracle_client_path}")
+    else:
+        print("ℹ️ Oracle running in Thin Mode (Default)")
+except Exception as e:
+    print(f"⚠️ Failed to initialize Oracle Thick Mode: {e}")
+
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware

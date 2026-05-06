@@ -36,6 +36,7 @@ class ExecuteRequest(BaseModel):
 
 class ValidateRequest(BaseModel):
     sql: str
+    datasource_id: int
 
 @router.post("/ask")
 def ask(req: AskRequest, session: Session = Depends(get_session)):
@@ -86,8 +87,11 @@ def ask_stream(
 
 
 @router.post("/validate")
-def validate(req: ValidateRequest):
-    return workbench_service.validate_sql_candidate(req.sql)
+def validate(req: ValidateRequest, session: Session = Depends(get_session)):
+    from app.models.datasource import DataSource
+    ds = session.get(DataSource, req.datasource_id)
+    db_type = ds.db_type if ds else None
+    return workbench_service.validate_sql_candidate(req.sql, db_type)
 
 @router.post("/execute")
 def execute(req: ExecuteRequest, session: Session = Depends(get_session)):

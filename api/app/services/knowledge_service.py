@@ -143,7 +143,7 @@ def mark_stale_knowledge_sync_tasks(
 
     stale_tasks = []
     for task in session.exec(statement).all():
-        reference_time = task.started_at or task.created_at
+        reference_time = task.updated_at or task.started_at or task.created_at
         if reference_time and reference_time < stale_before:
             stale_tasks.append(task)
 
@@ -173,6 +173,7 @@ def update_knowledge_task_progress(
     task.current_phase = phase
     task.last_message = message
     task.current_table = current_table
+    task.updated_at = datetime.now()
     session.add(task)
     session.commit()
     _notify_task_updated(task.id)
@@ -396,6 +397,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
         datasource.sync_status = SyncStatus.SYNCING
         datasource.last_sync_message = "知识库同步进行中"
         task.started_at = datetime.now()
+        task.updated_at = task.started_at
         task.total_tables = len(tables)
         task.current_phase = "started"
         task.last_message = "知识库同步任务已启动"
@@ -455,6 +457,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                 task.current_phase = "table_done"
                 task.last_message = f"{table.name} 处理完成"
                 task.current_table = None
+                task.updated_at = datetime.now()
                 session.add(task)
                 session.commit()
                 _notify_task_updated(task.id)
