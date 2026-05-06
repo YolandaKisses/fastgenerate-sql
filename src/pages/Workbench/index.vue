@@ -25,6 +25,7 @@ import type {
   WorkbenchWindowSnapshot,
   WorkbenchWindowState,
 } from "./workbenchState";
+import { getCurrentUser, getUserScopedSessionStorageKey } from "../../services/auth";
 import { get, post, streamSse } from "../../services/request";
 
 const STORAGE_KEY = "workbench_state";
@@ -59,6 +60,9 @@ const hermesProcessRef = ref<InstanceType<typeof HermesProcess> | null>(null);
 
 // 对话上下文历史 (用于多轮澄清)
 const messageHistory = ref<MessageHistoryEntry[]>([]);
+
+const getWorkbenchStorageKey = () =>
+  getUserScopedSessionStorageKey(STORAGE_KEY, getCurrentUser());
 
 const canAskDatasource = (ds: any) => {
   return ds.status === "connection_ok" && ds.sync_status === "sync_success";
@@ -117,7 +121,7 @@ const persistActiveWindow = (touch = true) => {
 
 const writeWorkbenchWindowsToStorage = () => {
   sessionStorage.setItem(
-    STORAGE_KEY,
+    getWorkbenchStorageKey(),
     JSON.stringify({
       activeWindowId: activeWindowId.value,
       windows: workbenchWindows.value,
@@ -185,7 +189,7 @@ let renderRafId: number | null = null;
 // 从 sessionStorage 恢复上次的工作状态
 const restoreState = () => {
   try {
-    const saved = sessionStorage.getItem(STORAGE_KEY);
+    const saved = sessionStorage.getItem(getWorkbenchStorageKey());
     const restored = buildInitialWorkbenchWindows(
       saved ? JSON.parse(saved) : undefined,
     );
