@@ -147,7 +147,8 @@ const handleSync = async () => {
     negativeText: '取消',
     onPositiveClick: () => {
       schemaSyncing.value = true
-      return post(`/schema/sync/${sourceId}`)
+      message.info('同步任务已在后台启动，请稍候...')
+      post(`/schema/sync/${sourceId}`)
         .then((data) => {
           if (data.success) {
             message.success(data.message)
@@ -163,6 +164,7 @@ const handleSync = async () => {
         .finally(() => {
           schemaSyncing.value = false
         })
+      // 不返回 Promise，让弹窗立即关闭
     }
   })
 }
