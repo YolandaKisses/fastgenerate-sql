@@ -23,13 +23,16 @@ def update_datasource(ds_id: int, ds_in: DataSourceUpdate, session: Session = De
 def delete_datasource(ds_id: int, session: Session = Depends(get_session)):
     return datasource_service.delete_datasource(session, ds_id)
 
+from fastapi.concurrency import run_in_threadpool
+
 @router.post("/{ds_id}/test", response_model=dict)
-def test_datasource(ds_id: int, session: Session = Depends(get_session)):
+async def test_datasource(ds_id: int, session: Session = Depends(get_session)):
     ds = session.get(DataSource, ds_id)
     if not ds:
         return {"success": False, "message": "DataSource not found"}
     
-    res = datasource_service.test_connection(ds)
+    # 将同步的测试连接操作放入线程池执行，防止超时阻塞主事件循环
+    res = await run_in_threadpool(datasource_service.test_connection, ds)
     if res["success"]:
         ds.status = DataSourceStatus.CONNECTION_OK
     else:
