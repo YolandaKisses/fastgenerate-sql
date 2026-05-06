@@ -14,27 +14,60 @@ from app.core.config import settings
 from app.services.hermes_service import iter_hermes_session_json, run_hermes_session_json
 from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
+import sqlglot
+from sqlglot import exp
+
+SQLGLOT_DIALECT_MAP = {
+    "mysql": "mysql",
+    "postgresql": "postgres",
+    "oracle": "oracle",
+}
 
 STOP_WORDS = {"查询", "多少", "什么", "哪些", "怎么", "一下", "数据", "统计", "上周", "本周", "昨天", "今天", "最近"}
-SEMANTIC_TOKEN_ALIASES = {
-    "工作单位": ["公司", "公司名称", "单位"],
-    "单位": ["公司", "公司名称"],
-    "公司": ["公司名称", "工作单位"],
-    "公司名称": ["公司", "工作单位"],
-    "姓名": ["full_name", "名字"],
-    "名字": ["姓名", "full_name"],
-    "岗位": ["岗位名称", "job_title", "职位"],
-    "职位": ["岗位名称", "job_title"],
-    "工作岗位": ["岗位名称", "job_title"],
-}
+
+
+def build_dynamic_aliases(payload: list[dict]) -> dict[str, list[str]]:
+    """从 Schema 的 name / original_comment / supplementary_comment 自动构建双向别名。
+
+    同一个实体（表或字段）的物理名、原始备注、补充备注天然互为别名，
+    例如字段 full_name (原始备注: 姓名, 补充备注: 员工全名) 会生成：
+      full_name -> [姓名, 员工全名]
+      姓名     -> [full_name, 员工全名]
+      员工全名  -> [full_name, 姓名]
+    """
+    aliases: dict[str, list[str]] = {}
+
+    for item in payload:
+        entities: list = [item["table"]]
+        entities.extend(item["fields"])
+
+        for entity in entities:
+            terms: set[str] = set()
+            for raw in [
+                entity.name,
+                getattr(entity, "original_comment", None),
+                getattr(entity, "supplementary_comment", None),
+            ]:
+                if not raw:
+                    continue
+                for token in re.findall(
+                    r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", raw.lower()
+                ):
+                    if token not in STOP_WORDS:
+                        terms.add(token)
+
+            term_list = list(terms)
+            for term in term_list:
+                existing = aliases.get(term, [])
+                for other in term_list:
+                    if other != term and other not in existing:
+                        existing.append(other)
+                if existing:
+                    aliases[term] = existing
+
+    return aliases
 ALLOWED_RESPONSE_TYPES = {"clarification", "sql_candidate"}
-SQL_KEYWORDS = {
-    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "ON", "AS",
-    "AND", "OR", "NOT", "NULL", "IS", "IN", "LIKE", "BETWEEN", "GROUP", "BY", "ORDER",
-    "HAVING", "LIMIT", "OFFSET", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "DATE",
-    "CURRENT_DATE", "CURDATE", "DATE_SUB", "INTERVAL", "DAY", "WEEK", "MONTH", "YEAR",
-    "CASE", "WHEN", "THEN", "ELSE", "END", "DESC", "ASC", "WITH", "UNION", "ALL",
-}
+
 SCHEMA_RETRIEVAL_HISTORY_LIMIT = 4
 CLARIFICATION_OPTION_RE = re.compile(r"^[A-Da-d](?:[)\].、．:]|\s|$)?")
 
@@ -58,7 +91,10 @@ def commit_with_warning(session: Session, warning_message: str) -> str | None:
         session.rollback()
         return warning_message
 
-def tokenize_question(question: str) -> list[str]:
+def tokenize_question(
+    question: str,
+    dynamic_aliases: dict[str, list[str]] | None = None,
+) -> list[str]:
     tokens = set()
     parts = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", question.lower())
     for part in parts:
@@ -71,8 +107,9 @@ def tokenize_question(question: str) -> list[str]:
                     if token not in STOP_WORDS:
                         tokens.add(token)
     expanded_tokens = set(tokens)
+    alias_source = dynamic_aliases or {}
     for token in list(tokens):
-        for alias in SEMANTIC_TOKEN_ALIASES.get(token, []):
+        for alias in alias_source.get(token, []):
             expanded_tokens.add(alias.lower())
     return sorted(expanded_tokens, key=len, reverse=True)
 
@@ -115,10 +152,11 @@ def retrieve_relevant_schema(
     limit: int = 6,
     allow_fallback: bool = True,
 ) -> list[dict]:
-    tokens = tokenize_question(question)
     payload = collect_table_payload(session, datasource_id)
     if not payload:
         return []
+    dynamic_aliases = build_dynamic_aliases(payload)
+    tokens = tokenize_question(question, dynamic_aliases)
 
     ranked = []
     for item in payload:
@@ -247,59 +285,70 @@ def schema_index_from_candidates(candidates: list[dict]) -> dict[str, set[str]]:
     return index
 
 
-def validate_sql_against_schema(sql: str, candidates: list[dict]) -> dict:
-    """基于本轮候选 Schema 做轻量表字段校验，防止 Hermes 使用上下文外字段。"""
-    base_validation = validate_sql_candidate(sql)
+def validate_sql_against_schema(sql: str, candidates: list[dict], db_type: str = None) -> dict:
+    """基于 sqlglot AST 解析做表字段校验，防止 Hermes 使用上下文外字段。"""
+    base_validation = validate_sql_candidate(sql, db_type)
     if base_validation["status"] == "invalid":
         return base_validation
 
     normalized_sql = base_validation["normalized_sql"]
     schema_index = schema_index_from_candidates(candidates)
     reasons = []
-    table_aliases: dict[str, str] = {}
-
-    table_matches = list(
-        re.finditer(
-            r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w.]*)(?:\s+(?:AS\s+)?([A-Za-z_][\w]*))?",
-            normalized_sql,
-            flags=re.I,
-        )
-    )
-    for match in table_matches:
-        raw_table = match.group(1)
-        table_name = raw_table.split(".")[-1]
-        table_key = table_name.lower()
-        if table_key not in schema_index:
-            reasons.append(f"SQL 引用了未在本轮 Schema Context 中提供的表 {table_name}")
-            continue
-        table_aliases[table_key] = table_key
-        alias = match.group(2)
-        if alias and alias.upper() not in SQL_KEYWORDS:
-            table_aliases[alias.lower()] = table_key
-
-    sql_without_strings = re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", normalized_sql)
     warnings = []
+    
+    # 建立字段到表名的反向映射（用于校验未限定字段）
+    all_available_fields = {}
+    for t_name, fields in schema_index.items():
+        for f in fields:
+            if f not in all_available_fields:
+                all_available_fields[f] = []
+            all_available_fields[f].append(t_name)
 
-    for alias, field in re.findall(r"\b([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\b", sql_without_strings):
-        alias_key = alias.lower()
-        field_key = field.lower()
-        table_key = table_aliases.get(alias_key)
-        if not table_key:
-            reasons.append(f"SQL 引用了未知表或别名 {alias}")
-            continue
-        if field_key not in schema_index.get(table_key, set()):
-            reasons.append(f"SQL 引用了不存在字段 {alias}.{field}")
+    try:
+        glot_dialect = SQLGLOT_DIALECT_MAP.get(db_type, db_type)
+        parsed = sqlglot.parse_one(normalized_sql, read=glot_dialect)
 
-    unqualified_fields = extract_unqualified_field_candidates(sql_without_strings)
-    if table_aliases and unqualified_fields:
-        available_fields = set()
-        for table_key in set(table_aliases.values()):
-            available_fields.update(schema_index.get(table_key, set()))
-        for field in unqualified_fields:
-            if field.lower() not in available_fields:
-                warnings.append(
-                    f"SQL 中的未限定标识符 {field} 未在候选字段中命中，可能是 SELECT 别名或方言标识"
-                )
+        # 1. 校验表
+        # 使用 set 避免重复错误消息
+        seen_tables = set()
+        for table in parsed.find_all(exp.Table):
+            t_name = table.name.lower()
+            if t_name not in schema_index and t_name not in seen_tables:
+                reasons.append(f"SQL 引用了未在本轮 Schema Context 中提供的表 {table.name}")
+                seen_tables.add(t_name)
+
+        # 2. 校验字段
+        for column in parsed.find_all(exp.Column):
+            col_name = column.name.lower()
+            table_alias = column.table.lower() if column.table else None
+            
+            if table_alias:
+                # 尝试解析别名对应的真实表名
+                real_table = None
+                # 在解析树中向上查找或遍历 Table 节点寻找别名定义
+                for table in parsed.find_all(exp.Table):
+                    if (table.alias or table.name).lower() == table_alias:
+                        real_table = table.name.lower()
+                        break
+                
+                if real_table:
+                    if real_table in schema_index:
+                        if col_name not in schema_index[real_table]:
+                            reasons.append(f"SQL 引用了表 {real_table} 中不存在的字段 {column.name}")
+                    else:
+                        # 表不在 context 中，已经在上面 Table 校验中处理了
+                        pass
+                else:
+                    # 可能是 CTE 别名或未识别的别名
+                    # sqlglot 在解析时通常能处理大多数情况，如果找不到则记录原因
+                    reasons.append(f"SQL 引用了无法识别的表别名或 CTE {column.table}")
+            else:
+                # 未限定字段：检查是否存在于任何候选表中
+                if col_name not in all_available_fields:
+                    # 可能是 SELECT 别名引用或特殊函数，记为 warning
+                    warnings.append(f"SQL 中的未限定标识符 {column.name} 未在候选字段中命中，可能是别名引用或方言特有语法")
+    except Exception as e:
+        reasons.append(f"SQL 语义分析失败: {str(e)}")
 
     return {
         "status": "invalid" if reasons else "valid",
@@ -309,18 +358,7 @@ def validate_sql_against_schema(sql: str, candidates: list[dict]) -> dict:
     }
 
 
-def extract_unqualified_field_candidates(sql: str) -> set[str]:
-    candidates = set()
-    cleaned = re.sub(r"\b[A-Za-z_][\w]*\s*\(", " ", sql)
-    cleaned = re.sub(r"\b[A-Za-z_][\w]*\.[A-Za-z_][\w]*\b", " ", cleaned)
-    cleaned = re.sub(r"\b(?:FROM|JOIN)\s+[A-Za-z_][\w.]*\s+(?:AS\s+)?[A-Za-z_][\w]*", " ", cleaned, flags=re.I)
-    cleaned = re.sub(r"\b(?:FROM|JOIN)\s+[A-Za-z_][\w.]*", " ", cleaned, flags=re.I)
-    for token in re.findall(r"\b[A-Za-z_][\w]*\b", cleaned):
-        upper = token.upper()
-        if upper in SQL_KEYWORDS:
-            continue
-        candidates.add(token)
-    return candidates
+
 
 
 def validate_llm_result(result: dict) -> dict:
@@ -407,25 +445,34 @@ def normalize_sql(sql: str) -> str:
     return collapsed.rstrip(";")
 
 
-def validate_sql_candidate(sql: str) -> dict:
+def validate_sql_candidate(sql: str, db_type: str = None) -> dict:
     normalized_sql = normalize_sql(sql)
     if not normalized_sql:
         return {"status": "invalid", "normalized_sql": normalized_sql, "reasons": ["SQL 为空"]}
 
-    sql_upper = normalized_sql.upper()
     reasons = []
-    # 如果剥离末尾分号后依然包含分号，说明存在多条语句
-    if ";" in normalized_sql:
-        reasons.append("禁止执行多条语句")
-
-    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE", "CALL", "EXEC"]
-    for keyword in forbidden:
-        if sql_upper.startswith(keyword) or f" {keyword} " in sql_upper:
-            reasons.append(f"禁止执行包含 {keyword} 的语句")
-            break
-
-    if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
-        reasons.append("仅允许 SELECT 或 WITH 开头的只读查询")
+    try:
+        glot_dialect = SQLGLOT_DIALECT_MAP.get(db_type, db_type)
+        # 尝试解析
+        expressions = sqlglot.parse(normalized_sql, read=glot_dialect)
+        if not expressions:
+            reasons.append("无法解析的 SQL 语句")
+        elif len(expressions) > 1:
+            reasons.append("禁止执行多条语句（检测到分号分隔的多条查询）")
+        else:
+            expression = expressions[0]
+            # 1. 检查只读操作
+            if not isinstance(expression, (exp.Select, exp.Union, exp.With)):
+                reasons.append("仅允许 SELECT 或 WITH 开头的只读查询")
+            
+            # 2. 深度遍历检查危险操作（防止在子查询中嵌套写操作）
+            forbidden_types = (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Alter, exp.Create)
+            for node in expression.walk():
+                if isinstance(node, forbidden_types):
+                    reasons.append(f"禁止执行包含 {node.key.upper()} 的写操作")
+                    break
+    except Exception as e:
+        reasons.append(f"SQL 语法错误: {str(e)}")
 
     return {
         "status": "invalid" if reasons else "valid",
@@ -509,12 +556,12 @@ def build_schema_retrieval_question(question: str, history: list[dict] | None = 
     return "\n".join(parts)
 
 
-def validate_and_guard_result(result: dict, knowledge_dir: Path, candidates: list[dict]) -> dict:
+def validate_and_guard_result(result: dict, knowledge_dir: Path, candidates: list[dict], db_type: str = None) -> dict:
     guarded = guard_sql_candidate_against_missing_semantics(result, knowledge_dir)
     if guarded.get("type") != "sql_candidate":
         return guarded
 
-    validation = validate_sql_against_schema(guarded.get("sql") or "", candidates)
+    validation = validate_sql_against_schema(guarded.get("sql") or "", candidates, db_type)
     if validation["status"] == "invalid":
         return {
             "type": "error",
@@ -638,7 +685,7 @@ def ask_llm(
             session_id=hermes_session_id,
         )
         result = validate_llm_result(raw_result)
-        result = validate_and_guard_result(result, knowledge_dir, candidates)
+        result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
         if clarification_has_schema_contradiction(result, candidates):
             retry_prompt = build_clarification_retry_prompt(
                 system_prompt,
@@ -654,7 +701,7 @@ def ask_llm(
                 session_id=next_hermes_session_id or hermes_session_id,
             )
             result = validate_llm_result(retry_raw_result)
-            result = validate_and_guard_result(result, knowledge_dir, candidates)
+            result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
             next_hermes_session_id = retry_session_id or next_hermes_session_id
         if result.get("type") == "error":
             return result
@@ -743,7 +790,7 @@ def ask_llm_stream(
                 yield _sse_event("hermes_trace", {"message": event.get("message", "")})
             elif event.get("type") == "result":
                 result = validate_llm_result(event.get("result") or {})
-                result = validate_and_guard_result(result, knowledge_dir, candidates)
+                result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
                 next_hermes_session_id = event.get("session_id")
         if result is None:
             raise RuntimeError("Hermes 返回为空")
@@ -762,7 +809,7 @@ def ask_llm_stream(
                 session_id=next_hermes_session_id or hermes_session_id,
             )
             result = validate_llm_result(retry_raw_result)
-            result = validate_and_guard_result(result, knowledge_dir, candidates)
+            result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
             next_hermes_session_id = retry_session_id or next_hermes_session_id
     except (ValueError, RuntimeError) as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
@@ -819,7 +866,7 @@ def execute_readonly_sql(session: Session, datasource_id: int, sql: str, audit_l
 
     # 只读校验
     normalized_sql = normalize_sql(sql)
-    validation = validate_sql_candidate(sql)
+    validation = validate_sql_candidate(sql, ds.db_type)
     if validation["status"] == "invalid":
         return {"status": "error", "message": "；".join(validation["reasons"])}
 

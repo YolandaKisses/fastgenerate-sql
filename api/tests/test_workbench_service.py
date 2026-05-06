@@ -259,7 +259,7 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
     knowledge_dir = knowledge_root / "demo" / "tables"
     knowledge_dir.mkdir(parents=True)
     (knowledge_dir / "user_register_log.md").write_text("register_time 表示完成注册时间", encoding="utf-8")
-    (knowledge_dir / "unrelated_orders.md").write_text("不相关订单知识", encoding="utf-8")
+    (knowledge_dir / "weather_forecast.md").write_text("unrelated weather data", encoding="utf-8")
 
     captured = {}
 
@@ -295,7 +295,7 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
         session.refresh(ds)
 
         table = SchemaTable(datasource_id=ds.id, name="user_register_log", original_comment="用户注册日志")
-        unrelated = SchemaTable(datasource_id=ds.id, name="unrelated_orders", original_comment="订单")
+        unrelated = SchemaTable(datasource_id=ds.id, name="weather_forecast", original_comment="weather data")
         session.add(table)
         session.add(unrelated)
         session.commit()
@@ -303,7 +303,7 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
         session.refresh(unrelated)
         session.add(SchemaField(table_id=table.id, name="register_time", type="DATETIME", original_comment="注册时间"))
         session.add(SchemaField(table_id=table.id, name="user_id", type="BIGINT", original_comment="用户ID"))
-        session.add(SchemaField(table_id=unrelated.id, name="order_id", type="BIGINT", original_comment="订单ID"))
+        session.add(SchemaField(table_id=unrelated.id, name="temperature", type="FLOAT", original_comment="celsius"))
         session.commit()
 
         result = ask_llm(session, ds.id, "统计注册用户")
@@ -314,7 +314,7 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
     assert "register_time (DATETIME)" in captured["prompt"]
     assert "Obsidian Notes" in captured["prompt"]
     assert "register_time 表示完成注册时间" in captured["prompt"]
-    assert "不相关订单知识" not in captured["prompt"]
+    assert "unrelated weather data" not in captured["prompt"]
     assert "唯一可信的表字段来源" in captured["prompt"]
     assert "主要知识来源是 Obsidian" not in captured["prompt"]
 
@@ -616,7 +616,7 @@ def test_retrieve_relevant_schema_prefers_direct_business_synonyms_for_explicit_
         session.refresh(user_profiles)
 
         session.add(SchemaField(table_id=demo_users.id, name="full_name", type="VARCHAR(128)", original_comment="姓名"))
-        session.add(SchemaField(table_id=demo_users.id, name="company", type="VARCHAR(128)", original_comment="公司名称"))
+        session.add(SchemaField(table_id=demo_users.id, name="company", type="VARCHAR(128)", original_comment="公司名称", supplementary_comment="工作单位"))
         session.add(SchemaField(table_id=demo_users.id, name="job_title", type="VARCHAR(128)", original_comment="岗位名称"))
         session.add(SchemaField(table_id=user_login_logs.id, name="login_ip", type="VARCHAR(64)", original_comment="登录IP"))
         session.add(SchemaField(table_id=user_orders.id, name="order_amount", type="DECIMAL(12,2)", original_comment="订单金额"))
