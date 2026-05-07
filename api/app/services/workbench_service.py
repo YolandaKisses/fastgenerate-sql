@@ -743,6 +743,101 @@ def _build_full_prompt(
     return "\n".join(prompt_lines)
 
 
+def should_use_incremental_prompt(
+    question: str,
+    history: list[dict] | None,
+    candidates: list[dict],
+    hermes_session_id: str | None
+) -> bool:
+    """判断当前轮次是否应该使用轻量级的增量 prompt"""
+    if not hermes_session_id or not history:
+        return False
+        
+    last_assistant_msg = next((msg for msg in reversed(history) if msg.get("role") == "assistant"), None)
+    if not last_assistant_msg:
+        return False
+        
+    # 如果上一轮是澄清（包含选项或提示），且用户的回答比较简短（像是选择选项或简单回答）
+    last_content = str(last_assistant_msg.get("content", ""))
+    if ("选择" in last_content or "澄清" in last_content or "歧义" in last_content) and len(question.strip()) <= 20:
+        return True
+        
+    return False
+
+
+def build_clarification_session_summary(history: list[dict] | None) -> str:
+    """从历史记录中提取上一轮的澄清摘要"""
+    if not history:
+        return "无"
+        
+    last_clarification = ""
+    for msg in reversed(history):
+        if msg.get("role") == "assistant":
+            last_clarification = str(msg.get("content", ""))
+            break
+            
+    if not last_clarification:
+        return "无"
+        
+    lines = ["- 上一轮澄清问题："]
+    for line in last_clarification.split("\n"):
+        if line.strip():
+            lines.append(f"  {line.strip()}")
+    return "\n".join(lines)
+
+
+def build_minimal_schema_context(candidates: list[dict]) -> str:
+    """构建极致压缩的 schema context，仅包含表名和字段名"""
+    tables = candidates or []
+    if not tables:
+        return "（该数据源暂无同步的表结构）"
+
+    lines = []
+    # 限制最多 3 张表，每张表最多 12 个字段
+    for item in tables[:3]:
+        t = item["table"]
+        lines.append(f"\n### 表: {t.name}")
+        for f in item["fields"][:12]:
+            lines.append(f"  - {f.name} ({f.type})")
+    return "\n".join(lines)
+
+
+def _build_incremental_prompt(
+    system_prompt: str,
+    question: str,
+    minimal_schema: str,
+    session_summary: str,
+    business_rules_context: str = "",
+) -> str:
+    """构建多轮澄清场景下的增量 prompt"""
+    prompt_lines = [
+        "你正在继续同一轮 SQL 澄清会话。",
+        "必须遵守：",
+        "1. 只返回 JSON",
+        "2. 只使用当前候选 Schema 中存在的表和字段",
+        "3. 如果信息仍不足，继续澄清，不要猜测",
+        "",
+        "### 会话摘要",
+        session_summary,
+        "",
+        "### 最小 Schema Context",
+        minimal_schema,
+    ]
+    if business_rules_context:
+        prompt_lines.extend([
+            "",
+            "### 关键补充规则",
+            business_rules_context
+        ])
+        
+    prompt_lines.extend([
+        "",
+        f"### 本轮用户回复：{question}"
+    ])
+    
+    return "\n".join(prompt_lines)
+
+
 def prepare_question_context(
     session: Session,
     datasource_id: int,
@@ -910,7 +1005,14 @@ def ask_llm(
             hermes_session_id=hermes_session_id,
         )
         system_prompt = _build_system_prompt(ds.db_type)
-        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, rules_context)
+        if should_use_incremental_prompt(question, history, candidates, hermes_session_id):
+            session_summary = build_clarification_session_summary(history)
+            minimal_schema = build_minimal_schema_context(candidates)
+            prompt = _build_incremental_prompt(
+                system_prompt, question, minimal_schema, session_summary, rules_context
+            )
+        else:
+            prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, rules_context)
         raw_result, next_hermes_session_id = run_hermes_session_json(
             prompt,
             cwd=str(knowledge_dir),
@@ -1011,7 +1113,14 @@ def ask_llm_stream(
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
     system_prompt = _build_system_prompt(ds.db_type)
-    prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, rules_context)
+    if should_use_incremental_prompt(question, history, candidates, hermes_session_id):
+        session_summary = build_clarification_session_summary(history)
+        minimal_schema = build_minimal_schema_context(candidates)
+        prompt = _build_incremental_prompt(
+            system_prompt, question, minimal_schema, session_summary, rules_context
+        )
+    else:
+        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, rules_context)
 
     try:
         result = None
