@@ -59,7 +59,7 @@ def test_generate_table_summary_retries_on_non_json_hermes_output(monkeypatch):
             password="secret",
             sync_status=SyncStatus.SYNC_SUCCESS,
         ),
-        table=type("Table", (), {"id": 1, "name": "users", "original_comment": "", "supplementary_comment": ""})(),
+        table=type("Table", (), {"id": 1, "name": "users", "original_comment": "", "supplementary_comment": "", "related_tables": None})(),
         fields=[],
     )
 
@@ -202,7 +202,7 @@ def test_generate_table_summary_basic_deduplicates_caveat_categories():
     table = type(
         "Table",
         (),
-        {"name": "orders", "original_comment": "", "supplementary_comment": ""},
+        {"name": "orders", "original_comment": "", "supplementary_comment": "", "related_tables": None},
     )()
     fields = [
         type("Field", (), {"name": "created_at", "original_comment": "", "supplementary_comment": ""})(),
@@ -219,7 +219,7 @@ def test_generate_table_summary_basic_does_not_treat_status_as_time_field():
     table = type(
         "Table",
         (),
-        {"name": "orders", "original_comment": "", "supplementary_comment": ""},
+        {"name": "orders", "original_comment": "", "supplementary_comment": "", "related_tables": None},
     )()
     fields = [
         type("Field", (), {"name": "status", "original_comment": "", "supplementary_comment": ""})(),

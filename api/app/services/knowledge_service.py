@@ -295,9 +295,11 @@ def render_table_markdown(
     generated_at = generated_at or datetime.now()
     note_properties = build_note_properties(datasource, table, summary, generated_at)
     frontmatter = render_frontmatter(note_properties)
-    related_links = note_properties.get("related") or []
     graph_links = summary.get("graph_links") or []
+    relationships = summary.get("relationships")
+    core_fields = summary.get("core_fields")
 
+    # --- 概述（合并：基础信息 + 用途说明） ---
     lines = [
         frontmatter,
         "",
@@ -305,40 +307,24 @@ def render_table_markdown(
         "",
         "[[../index|返回数据源总览]]",
         "",
-        "## 基础信息",
-        f"- 数据源: {datasource.name}",
-        f"- 原始备注: {table.original_comment or '无'}",
-        f"- 补充备注: {table.supplementary_comment or '无'}",
-        "",
-        "## 用途说明",
-        summary.get("purpose", "暂无"),
-        "",
-        "## 核心字段解读",
+        "## 概述",
+        f"- **数据源**: {datasource.name}",
+        f"- **业务说明**: {summary.get('purpose', '暂无')}",
     ]
 
-    lines.extend(format_bullet_section(summary.get("core_fields", "暂无")))
-    lines.extend(
-        [
-        "",
-        "## 关联笔记",
-        ]
-    )
+    # --- 表间关系（合并：关联表 + 关联笔记 + 常见关联关系） ---
+    lines.extend(["", "## 表间关系"])
+    has_relationship_content = False
 
-    if related_links:
-        for link in related_links:
-            lines.append(f"- {link}")
-    else:
-        lines.append("- 暂无")
+    # 用户配置的关联关系
+    if relationships:
+        lines.append(relationships)
+        has_relationship_content = True
 
-    lines.extend(
-        [
-        "",
-        "## 常见关联关系",
-        summary.get("relationships") or "暂无",
-        ]
-    )
+    # AI 推断的 graph_links（仅 AI 模式生成）
     if graph_links:
-        lines.append("")
+        if has_relationship_content:
+            lines.append("")
         for item in graph_links:
             target = item.get("target_table", "未知表")
             relation_type = item.get("relation_type", "可能关联")
@@ -348,34 +334,39 @@ def render_table_markdown(
             lines.append(
                 f"- [[{target}]] · {relation_type} · `{join_hint}` · 置信度：{confidence} · 依据：{reason}"
             )
+        has_relationship_content = True
 
-    lines.extend(
-        [
-            "",
-        "## 注意事项",
-        ]
-    )
+    if not has_relationship_content:
+        lines.append("暂无已配置的关联关系。")
+
+    # --- 核心字段解读（仅 AI 模式有内容时渲染） ---
+    if core_fields and core_fields not in ("暂无", "暂无字段业务说明。"):
+        lines.extend(["", "## 核心字段解读"])
+        lines.extend(format_bullet_section(core_fields))
+
+    # --- 注意事项 ---
+    lines.extend(["", "## 注意事项"])
     lines.extend(format_bullet_section(summary.get("caveats", "暂无")))
-    lines.extend(
-        [
+
+    # --- 字段明细 ---
+    lines.extend([
         "",
         "## 字段明细",
         "| 字段名 | 类型 | 原始备注 | 补充备注 |",
         "| --- | --- | --- | --- |",
-        ]
-    )
+    ])
+
+    # 预处理备注内容：处理换行符和管道符，避免破坏 Markdown 表格结构
+    def clean_comment(c: str | None) -> str:
+        if not c:
+            return ""
+        # 将换行符替换为 <br> 以在单元格内换行
+        c = c.replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
+        # 转义管道符 | 为 \|
+        c = c.replace("|", "\\|")
+        return c
 
     for field in fields:
-        # 预处理备注内容：处理换行符和管道符，避免破坏 Markdown 表格结构
-        def clean_comment(c: str | None) -> str:
-            if not c:
-                return ""
-            # 将换行符替换为 <br> 以在单元格内换行
-            c = c.replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
-            # 转义管道符 | 为 \|
-            c = c.replace("|", "\\|")
-            return c
-
         orig_c = clean_comment(field.original_comment)
         supp_c = clean_comment(field.supplementary_comment)
         lines.append(
@@ -388,6 +379,7 @@ def render_table_markdown(
 def generate_table_summary_basic(
     table: SchemaTable,
     fields: list[SchemaField],
+    session: Session = None,
 ) -> dict[str, str]:
     """基础模式：不调用 AI，仅根据备注和规则生成摘要内容。"""
 
@@ -400,20 +392,57 @@ def generate_table_summary_basic(
 
     purpose = " ".join(purpose_parts) if purpose_parts else "暂无业务用途说明，建议补充。"
 
-    # 2. 核心字段解读
-    core_field_lines = []
-    for f in fields:
-        parts = []
-        if f.original_comment:
-            parts.append(f.original_comment)
-        if f.supplementary_comment:
-            parts.append(f"[{f.supplementary_comment}]")
+    # 2. 核心字段解读 — 基础模式下与字段明细表完全重复，跳过
+    #    AI 模式由 generate_table_summary() 生成更丰富的业务解读
+    
+    # 2.5 关联表说明
+    related_tables_info = "暂无明确关联表信息。"
+    related_wiki_links = []  # 用于 note_properties.related
+    relationships_lines = []  # 用于正文 "常见关联关系" 部分
+    if table.related_tables and session:
+        import json
+        names = []
+        details_map = {}
+        try:
+            parsed = json.loads(table.related_tables)
+            if isinstance(parsed, dict):
+                names = list(parsed.keys())
+                details_map = parsed
+            else:
+                names = [i.strip() for i in table.related_tables.split(",") if i.strip()]
+        except:
+            try:
+                names = [i.strip() for i in table.related_tables.split(",") if i.strip()]
+            except:
+                pass
+        
+        if names:
+            related_table_objs = session.exec(
+                select(SchemaTable).where(
+                    SchemaTable.name.in_(names),
+                    SchemaTable.datasource_id == table.datasource_id
+                )
+            ).all()
+            if related_table_objs:
+                out_names = []
+                for t in related_table_objs:
+                    detail = details_map.get(t.name, "")
+                    detail_str = f" - 关系: {detail}" if detail else ""
+                    out_names.append(f"{t.name} ({t.original_comment or '无备注'}){detail_str}")
+                    # 构建 wiki link
+                    related_wiki_links.append(f"[[{t.name}]]")
+                    # 构建关联关系描述
+                    if detail:
+                        relationships_lines.append(
+                            f"- [[{t.name}]]（{t.original_comment or '无备注'}）：{detail}"
+                        )
+                    else:
+                        relationships_lines.append(
+                            f"- [[{t.name}]]（{t.original_comment or '无备注'}）"
+                        )
+                related_tables_info = "\n".join(out_names)
 
-        if parts:
-            combined = " ".join(parts)
-            core_field_lines.append(f"{f.name}: {combined}")
-
-    core_fields = "\n".join(core_field_lines) if core_field_lines else "暂无字段业务说明。"
+    relationships = "\n".join(relationships_lines) if relationships_lines else None
 
     # 3. 注意事项 (基于规则)
     has_delete_field = False
@@ -455,16 +484,16 @@ def generate_table_summary_basic(
 
     return {
         "purpose": purpose,
-        "core_fields": core_fields,
-        "relationships": "未检测到明显关联关系，建议开启 AI 分析或人工补充。",
-        "graph_links": [],
+        "related_tables": related_tables_info,
+        "relationships": relationships,
+        "caveats": caveats,
         "note_properties": {
             "type": "table-note",
             "status": "active",
             "summary": (purpose[:100] + "...") if len(purpose) > 100 else purpose,
             "keywords": [table.name],
-        },
-        "caveats": caveats
+            "related": related_wiki_links,
+        }
     }
 
 
@@ -514,6 +543,7 @@ def generate_table_summary(
     return {
         "purpose": data.get("purpose", "暂无"),
         "core_fields": data.get("core_fields", "暂无"),
+        "related_tables": data.get("related_tables") or data.get("relationships") or "暂无",
         "relationships": data.get("relationships", "暂无"),
         "graph_links": data.get("graph_links", []),
         "note_properties": data.get("note_properties", {}),
@@ -638,7 +668,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                         )
                         summary = generate_table_summary(session, datasource, table, fields)
                     else:
-                        summary = generate_table_summary_basic(table, fields)
+                        summary = generate_table_summary_basic(table, fields, session=session)
                     
                     markdown = render_table_markdown(datasource, table, fields, summary)
                     table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
@@ -764,18 +794,45 @@ def _build_summary_prompt(
     fields: list[SchemaField],
     sibling_tables: list[SchemaTable] | None = None,
 ) -> str:
+    # 提取用户显式标记的关联表 IDs 和关联详情
+    user_related_names = set()
+    user_related_details = {}
+    if table.related_tables:
+        import json
+        try:
+            parsed = json.loads(table.related_tables)
+            if isinstance(parsed, dict):
+                user_related_names = set(parsed.keys())
+                user_related_details = parsed
+            else:
+                user_related_names = {i.strip() for i in table.related_tables.split(",") if i.strip()}
+        except:
+            try:
+                user_related_names = {i.strip() for i in table.related_tables.split(",") if i.strip()}
+            except:
+                pass
+
     field_lines = []
     for field in fields:
         field_lines.append(
             f"- {field.name} ({field.type}) 原始备注: {field.original_comment or '无'}；补充备注: {field.supplementary_comment or '无'}"
         )
     joined_fields = "\n".join(field_lines) if field_lines else "- 无字段"
+    
     sibling_lines = []
+    user_related_lines = []
     for sibling in sibling_tables or []:
-        sibling_lines.append(
-            f"- {sibling.name} 原始备注: {sibling.original_comment or '无'}；补充备注: {sibling.supplementary_comment or '无'}"
-        )
+        detail = user_related_details.get(sibling.name, "")
+        detail_str = f"；自定义关系: {detail}" if detail else ""
+        info = f"- {sibling.name} 原始备注: {sibling.original_comment or '无'}；补充备注: {sibling.supplementary_comment or '无'}{detail_str}"
+        if sibling.name in user_related_names:
+            user_related_lines.append(info)
+        else:
+            sibling_lines.append(info)
+            
     joined_siblings = "\n".join(sibling_lines) if sibling_lines else "- 无可参考其他表"
+    joined_user_related = "\n".join(user_related_lines) if user_related_lines else "- 用户未手动标记关联表"
+
     return f"""根据下面的数据库元数据，为 Obsidian 生成一张表的结构化知识卡片。
 
 只允许返回一个合法 JSON 对象：
@@ -799,6 +856,9 @@ def _build_summary_prompt(
 
 同数据源其他表:
 {joined_siblings}
+
+用户标记的高强度关联表 (优先考虑):
+{joined_user_related}
 
 返回格式：
 

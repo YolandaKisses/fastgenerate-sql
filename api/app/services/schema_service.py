@@ -195,3 +195,13 @@ def update_field_remark(session: Session, field_id: int, remark: str):
     session.commit()
     session.refresh(field)
     return field
+
+def update_table_related_tables(session: Session, table_id: int, related_tables: str):
+    table = session.get(SchemaTable, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    table.related_tables = related_tables
+    session.add(table)
+    session.commit()
+    session.refresh(table)
+    return table

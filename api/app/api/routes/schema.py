@@ -16,6 +16,9 @@ router = APIRouter(prefix="/schema", tags=["schema"], dependencies=[Depends(get_
 class RemarkUpdate(BaseModel):
     remark: str
 
+class RelatedTablesUpdate(BaseModel):
+    related_tables: str
+
 class KnowledgeTaskStatusResponse(BaseModel):
     task: Optional[KnowledgeSyncTask] = None
     latest_datasource_task: Optional[KnowledgeSyncTask] = None
@@ -44,6 +47,10 @@ def read_tables(datasource_id: int, session: Session = Depends(get_session)):
 @router.patch("/tables/{table_id}/remark", response_model=SchemaTable)
 def update_table_remark(table_id: int, remark_data: RemarkUpdate, session: Session = Depends(get_session)):
     return schema_service.update_table_remark(session, table_id, remark_data.remark)
+
+@router.patch("/tables/{table_id}/related-tables", response_model=SchemaTable)
+def update_table_related_tables(table_id: int, data: RelatedTablesUpdate, session: Session = Depends(get_session)):
+    return schema_service.update_table_related_tables(session, table_id, data.related_tables)
 
 @router.get("/fields/{table_id}", response_model=list[SchemaField])
 def read_fields(table_id: int, session: Session = Depends(get_session)):

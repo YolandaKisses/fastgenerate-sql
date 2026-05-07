@@ -311,9 +311,10 @@ def clean_obsidian_note_text(text: str) -> str:
     # 3. 移除完全重复的“核心字段解读”模块及其下面所有的列表项，直到遇到下一个 H2 标题
     text = re.sub(r"## 核心字段解读\n.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
     
-    # 4. 移除“基础信息”和“用途说明”模块（因为表名和原始备注在 Schema Context 中已提供）
-    text = re.sub(r"## 基础信息\n.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
-    text = re.sub(r"## 用途说明\n.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
+    # 4. 移除概述类模块（因为表名和原始备注在 Schema Context 中已提供）
+    #    兼容新格式“概述”及旧格式“基础信息”/“用途说明”
+    for heading in ("概述", "基础信息", "用途说明"):
+        text = re.sub(rf"## {heading}\n.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
     
     # 5. 移除“字段明细”及其后面的所有表格内容
     marker = "## 字段明细"

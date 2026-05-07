@@ -54,6 +54,12 @@ def ensure_compatible_schema():
             ds_column_names = {row[1] for row in ds_columns}
             if "auth_type" not in ds_column_names:
                 conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN auth_type VARCHAR DEFAULT 'password'"))
+
+            # SchemaTable 迁移
+            table_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(schematable)")).fetchall()
+            table_column_names = {row[1] for row in table_columns}
+            if "related_tables" not in table_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE schematable ADD COLUMN related_tables VARCHAR"))
     except sqlalchemy.exc.OperationalError as exc:
         if _is_sqlite_readonly_error(exc):
             return

@@ -57,8 +57,9 @@ def test_clean_obsidian_note_text_removes_duplicate_schema_section():
     text = "\n".join([
         "# users",
         "",
-        "## 用途说明",
-        "用户基础信息",
+        "## 概述",
+        "- **数据源**: demo",
+        "- **业务说明**: 用户基础信息",
         "",
         "## 字段明细",
         "| 字段名 | 类型 |",
@@ -68,7 +69,7 @@ def test_clean_obsidian_note_text_removes_duplicate_schema_section():
 
     stripped = clean_obsidian_note_text(text)
 
-    assert "用户基础信息" in stripped
+    assert "用户基础信息" not in stripped
     assert "## 字段明细" not in stripped
     assert "| id | BIGINT |" not in stripped
 

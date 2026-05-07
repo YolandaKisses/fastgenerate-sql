@@ -413,6 +413,7 @@ const handleSingleTableSync = async (mode: 'basic' | 'ai_enhanced') => {
       <div class="main-panel">
         <SchemaEditor
           :table="selectedTable"
+          :all-tables="tables"
           :knowledge-task="knowledgeTask"
           :knowledge-syncing="knowledgeSyncing"
           :schema-syncing="schemaSyncing"

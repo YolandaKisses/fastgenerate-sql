@@ -6,6 +6,7 @@ class SchemaTableBase(SQLModel):
     name: str
     original_comment: Optional[str] = None
     supplementary_comment: Optional[str] = None
+    related_tables: Optional[str] = None
 
 class SchemaTable(SchemaTableBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
