@@ -18,6 +18,7 @@ class RemarkUpdate(BaseModel):
 
 class KnowledgeTaskStatusResponse(BaseModel):
     task: Optional[KnowledgeSyncTask] = None
+    latest_datasource_task: Optional[KnowledgeSyncTask] = None
     actual_table_count: int = 0
 
 
@@ -145,6 +146,9 @@ def read_knowledge_task(task_id: int, session: Session = Depends(get_session)):
 @router.get("/knowledge/status/{datasource_id}", response_model=KnowledgeTaskStatusResponse)
 def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(get_session)):
     task = knowledge_service.get_latest_knowledge_sync_task(session, datasource_id)
+    latest_ds_task = knowledge_service.get_latest_knowledge_sync_task(
+        session, datasource_id, scope="datasource"
+    )
     # 计算当前数据源下实际拥有的表数量
     from sqlalchemy import func
     actual_table_count = session.exec(
@@ -153,5 +157,6 @@ def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(ge
     
     return {
         "task": task,
+        "latest_datasource_task": latest_ds_task,
         "actual_table_count": actual_table_count
     }

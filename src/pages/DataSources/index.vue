@@ -99,6 +99,11 @@ const handleDelete = async (id: number | null) => {
         const data = await del(`/datasources/${id}`)
         if (data.success) {
           message.success('数据源已删除')
+          // 如果删除的是最后一次使用的数据源，清理缓存
+          const LS_KEY = 'fastgenerate_last_datasource_id'
+          if (localStorage.getItem(LS_KEY) === id.toString()) {
+            localStorage.removeItem(LS_KEY)
+          }
           selectedSource.value = null
           await fetchSources()
         } else {

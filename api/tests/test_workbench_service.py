@@ -5,16 +5,15 @@ from app.services import workbench_service
 from app.api.routes.workbench import is_valid_hermes_session_id
 from app.services.hermes_service import hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
-    _parse_frontmatter,
     _build_incremental_prompt,
     ask_llm,
     ask_llm_stream,
     can_ask_datasource,
     build_schema_retrieval_question,
+    clean_obsidian_note_text,
     normalize_note_name,
     note_used_payload,
     read_relevant_table_notes,
-    retrieve_relevant_business_rules,
     retrieve_relevant_schema,
     should_allow_schema_fallback,
     validate_sql_against_schema,
@@ -55,92 +54,24 @@ def test_read_relevant_table_notes_truncates_on_line_boundary(tmp_path):
     assert "third line" not in text
 
 
-def test_parse_frontmatter_supports_scalar_inline_list_and_quoted_values():
-    meta, body = _parse_frontmatter(
-        """---
-tables: orders
-keywords: ["用户", '订单:统计']
-summary: "订单: 聚合规则"
----
-正文内容
-""",
-    )
+def test_clean_obsidian_note_text_removes_duplicate_schema_section():
+    text = "\n".join([
+        "# users",
+        "",
+        "## 用途说明",
+        "用户基础信息",
+        "",
+        "## 字段明细",
+        "| 字段名 | 类型 |",
+        "| --- | --- |",
+        "| id | BIGINT |",
+    ])
 
-    assert meta == {
-        "tables": "orders",
-        "keywords": ["用户", "订单:统计"],
-        "summary": "订单: 聚合规则",
-    }
-    assert body == "正文内容"
+    stripped = clean_obsidian_note_text(text)
 
-
-def test_retrieve_relevant_business_rules_does_not_match_unrelated_index_refs(tmp_path):
-    rules_dir = tmp_path / "business_rules"
-    rules_dir.mkdir()
-    (rules_dir / "_index.md").write_text(
-        "\n".join([
-            "- [[orders_join_rule]] 订单与用户关联",
-            "- [[revenue_caliber]] 营收口径",
-        ]),
-        encoding="utf-8",
-    )
-    (rules_dir / "orders_join_rule.md").write_text(
-        """---
-tables: [orders, users]
-keywords: [下单, 用户]
-summary: 订单与用户关联
----
-orders.user_id = users.id
-""",
-        encoding="utf-8",
-    )
-    (rules_dir / "revenue_caliber.md").write_text(
-        """---
-tables: revenue
-keywords: [营收]
-summary: 营收口径
----
-排除退款单
-""",
-        encoding="utf-8",
-    )
-
-    context, used_rules = retrieve_relevant_business_rules(
-        "查询天气趋势",
-        ["weather_forecast"],
-        rules_dir,
-    )
-
-    assert context == ""
-    assert used_rules == []
-
-
-def test_retrieve_relevant_business_rules_uses_index_to_boost_related_rules(tmp_path):
-    rules_dir = tmp_path / "business_rules"
-    rules_dir.mkdir()
-    (rules_dir / "_index.md").write_text(
-        "- [[orders_join_rule]] 订单与用户关联\n",
-        encoding="utf-8",
-    )
-    (rules_dir / "orders_join_rule.md").write_text(
-        """---
-tables: orders
-summary: 订单关联规则
----
-orders.user_id = users.id
-""",
-        encoding="utf-8",
-    )
-
-    context, used_rules = retrieve_relevant_business_rules(
-        "查询订单数据",
-        ["orders"],
-        rules_dir,
-    )
-
-    assert "### Rule Index" in context
-    assert "### Rule: orders_join_rule" in context
-    assert used_rules == ["_index", "orders_join_rule"]
+    assert "用户基础信息" in stripped
+    assert "## 字段明细" not in stripped
+    assert "| id | BIGINT |" not in stripped
 
 
 def test_incremental_prompt_preserves_system_prompt_rules():
@@ -149,13 +80,11 @@ def test_incremental_prompt_preserves_system_prompt_rules():
         "A",
         "### 表: orders\n  - id (BIGINT)",
         "- 上一轮澄清问题：\n  A) 订单明细\n  B) 订单汇总",
-        "### Rule: orders_join_rule\norders.user_id = users.id",
     )
 
     assert prompt.startswith("SYSTEM RULES")
     assert "### 会话摘要" in prompt
     assert "### 最小 Schema Context" in prompt
-    assert "### 关键补充规则" in prompt
 
 
 def test_schema_retrieval_question_uses_recent_user_history_only():
@@ -292,7 +221,49 @@ Conversation completed after 3 OpenAI-compatible API call(s)
 
     assert result["type"] == "clarification"
     assert "SELECT ..." not in result.get("sql", "")
+    assert "当前问题还需要进一步澄清" in result["message"]
+    assert "不在当前数据库查询范围" not in result["message"]
+
+
+def test_parse_hermes_json_output_keeps_out_of_scope_message_only_for_explicit_signal():
+    output = """
+这个问题似乎不在当前数据库查询范围内，需要返回澄清选项。
+Conversation completed after 1 OpenAI-compatible API call(s)
+"""
+
+    result = parse_hermes_json_output(output)
+
+    assert result["type"] == "clarification"
     assert "不在当前数据库查询范围" in result["message"]
+
+
+def test_parse_hermes_json_output_extracts_json_like_final_clarification():
+    output = """
+思考过程：用户意图可能有多种，需要澄清。
+{"type": "clarification", "message": "问题存在歧义，请选择：\nA) 查用户角色\nB) 查用户菜单", "used_notes": ["sys_role", "sys_action"]}
+"""
+
+    result = parse_hermes_json_output(output)
+
+    assert result == {
+        "type": "clarification",
+        "message": "问题存在歧义，请选择：\nA) 查用户角色\nB) 查用户菜单",
+        "used_notes": ["sys_role", "sys_action"],
+    }
+
+
+def test_parse_hermes_json_output_extracts_curly_quote_clarification():
+    output = """
+{“type”: “clarification”, “message”: “问题存在歧义，请选择：\nA) 查用户角色\nB) 查用户菜单”, “used_notes”: [“sys_role”, “sys_action”]}
+"""
+
+    result = parse_hermes_json_output(output)
+
+    assert result == {
+        "type": "clarification",
+        "message": "问题存在歧义，请选择：\nA) 查用户角色\nB) 查用户菜单",
+        "used_notes": ["sys_role", "sys_action"],
+    }
 
 
 def test_hermes_trace_message_filters_noisy_verbose_lines():
@@ -731,6 +702,56 @@ def test_retrieve_relevant_schema_prefers_direct_business_synonyms_for_explicit_
         candidates = retrieve_relevant_schema(session, ds.id, "查询李四的工作单位")
 
     assert [item["table"].name for item in candidates] == ["demo_users"]
+
+
+def test_retrieve_relevant_schema_keeps_primary_entity_table_for_related_permission_request():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+
+        sys_user = SchemaTable(datasource_id=ds.id, name="sys_user", original_comment="系统用户表")
+        sys_user_role = SchemaTable(datasource_id=ds.id, name="sys_user_role", original_comment="用户角色关联")
+        sys_home_page = SchemaTable(datasource_id=ds.id, name="sys_home_page", original_comment="首页菜单配置")
+        sys_action = SchemaTable(datasource_id=ds.id, name="sys_action", original_comment="菜单定义")
+        session.add(sys_user)
+        session.add(sys_user_role)
+        session.add(sys_home_page)
+        session.add(sys_action)
+        session.commit()
+        session.refresh(sys_user)
+        session.refresh(sys_user_role)
+        session.refresh(sys_home_page)
+        session.refresh(sys_action)
+
+        session.add(SchemaField(table_id=sys_user.id, name="f_userid", type="BIGINT", original_comment="用户ID"))
+        session.add(SchemaField(table_id=sys_user.id, name="vc_loginname", type="VARCHAR(64)", original_comment="登录账号"))
+        session.add(SchemaField(table_id=sys_user_role.id, name="f_userid", type="BIGINT", original_comment="用户ID"))
+        session.add(SchemaField(table_id=sys_user_role.id, name="f_roleid", type="BIGINT", original_comment="角色ID"))
+        session.add(SchemaField(table_id=sys_home_page.id, name="f_userid", type="BIGINT", original_comment="用户ID"))
+        session.add(SchemaField(table_id=sys_home_page.id, name="f_actionid", type="BIGINT", original_comment="菜单ID"))
+        session.add(SchemaField(table_id=sys_action.id, name="vc_actionname", type="VARCHAR(128)", original_comment="菜单名称"))
+        session.commit()
+
+        candidates = retrieve_relevant_schema(session, ds.id, "帮我查询用户的菜单选项")
+
+    candidate_names = [item["table"].name for item in candidates]
+    assert "sys_user" in candidate_names
+    assert candidate_names.index("sys_user") < candidate_names.index("sys_user_role")
 
 
 def test_schema_fallback_is_disabled_for_clarification_option_with_history():

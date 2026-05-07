@@ -260,6 +260,9 @@ def parse_hermes_json_output(output: str) -> dict:
             candidate = _last_result_json_object(cleaned)
             if candidate is not None:
                 return candidate
+            extracted_clarification = _extract_json_like_clarification(cleaned)
+            if extracted_clarification is not None:
+                return extracted_clarification
             clarification = _clarification_from_text(cleaned)
             if clarification is not None:
                 return clarification
@@ -304,19 +307,75 @@ def _is_prompt_example_result(value: dict) -> bool:
     return False
 
 
+def _extract_json_like_clarification(text: str) -> dict | None:
+    """尽量从非严格 JSON 的 Hermes 最终澄清输出中提取真实 message。"""
+    normalized = (
+        text
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+    if '"type"' not in normalized or "clarification" not in normalized:
+        return None
+
+    message_match = re.search(
+        r'"message"\s*:\s*"(?P<message>.*?)"\s*,\s*"used_notes"\s*:',
+        normalized,
+        flags=re.S,
+    )
+    if not message_match:
+        return None
+
+    message = message_match.group("message")
+    message = message.replace('\\"', '"').replace("\\n", "\n").strip()
+    if not message:
+        return None
+
+    used_notes_match = re.search(
+        r'"used_notes"\s*:\s*\[(?P<notes>.*?)\]',
+        normalized,
+        flags=re.S,
+    )
+    used_notes: list[str] = []
+    if used_notes_match:
+        used_notes = re.findall(r'"([^"]+)"', used_notes_match.group("notes"))
+
+    return {
+        "type": "clarification",
+        "message": message,
+        "used_notes": used_notes,
+    }
+
+
 def _clarification_from_text(text: str) -> dict | None:
     if not re.search(r"澄清|无法与\s*SQL\s*生成关联|不在.*数据库.*范围|无关", text, flags=re.I):
         return None
 
-    return {
-        "type": "clarification",
-        "message": "\n".join([
+    explicit_out_of_scope = bool(
+        re.search(r"不在.*数据库.*范围|当前数据库查询范围", text, flags=re.I)
+    )
+
+    if explicit_out_of_scope:
+        message_lines = [
             "这个问题似乎不在当前数据库查询范围内，请选择最符合您需求的选项：",
             "A) 改为查询当前数据源中的业务数据",
             "B) 补充要查询的表、字段或业务对象",
             "C) 补充筛选条件、时间范围或统计口径",
             "D) 取消本次 SQL 生成",
-        ]),
+        ]
+    else:
+        message_lines = [
+            "当前问题还需要进一步澄清，请选择最符合您需求的选项：",
+            "A) 我补充要查询的表、字段或业务对象",
+            "B) 我补充筛选条件、时间范围或统计口径",
+            "C) 请基于当前候选 Schema 重新判断并继续生成",
+            "D) 取消本次 SQL 生成",
+        ]
+
+    return {
+        "type": "clarification",
+        "message": "\n".join(message_lines),
         "used_notes": [],
     }
 

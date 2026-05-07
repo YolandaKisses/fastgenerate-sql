@@ -86,7 +86,7 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
           <template #icon>
             <n-icon><SyncOutline /></n-icon>
           </template>
-          全量数据源同步
+          全量数据源重新同步
         </n-button>
         <n-button
           type="primary"

@@ -12,9 +12,11 @@ const sourceOptions = ref<{label: string, value: number}[]>([])
 const tables = ref<any[]>([])
 const selectedTable = ref<any | null>(null)
 const knowledgeTask = ref<any | null>(null)
+const latestDatasourceTask = ref<any | null>(null)
 const actualTableCount = ref(0)
 const knowledgeSyncing = ref(false)
 const schemaSyncing = ref(false)
+const LS_KEY = 'fastgenerate_last_datasource_id'
 
 // 当前活跃的知识库同步流式请求
 let activeKnowledgeController: AbortController | null = null
@@ -63,6 +65,15 @@ const fetchSources = async () => {
       value: ds.id
     }))
 
+    // 尝试从本地存储恢复上一次的选择
+    const lastId = localStorage.getItem(LS_KEY)
+    if (!currentSource.value && lastId) {
+      const id = parseInt(lastId)
+      if (sourceOptions.value.find(opt => opt.value === id)) {
+        currentSource.value = id
+      }
+    }
+
     // 校验当前选中项是否依然有效
     if (currentSource.value && !sourceOptions.value.find(opt => opt.value === currentSource.value)) {
       currentSource.value = null
@@ -93,6 +104,7 @@ const fetchLatestKnowledgeTask = async (dsId: number) => {
   try {
     const data = await get(`/schema/knowledge/status/${dsId}`)
     knowledgeTask.value = data.task
+    latestDatasourceTask.value = data.latest_datasource_task
     actualTableCount.value = data.actual_table_count
 
     if (data.task && (data.task.status === 'running' || data.task.status === 'pending')) {
@@ -116,9 +128,11 @@ const cleanupKnowledgeSSE = () => {
 
 watch(currentSource, (newVal) => {
   knowledgeTask.value = null
+  latestDatasourceTask.value = null
   knowledgeSyncing.value = false
   cleanupKnowledgeSSE()
   if (newVal) {
+    localStorage.setItem(LS_KEY, newVal.toString())
     fetchTables(newVal)
     fetchLatestKnowledgeTask(newVal)
   }
@@ -192,11 +206,12 @@ const subscribeKnowledgeTask = (taskId: number) => {
   status: (data) => {
     const status = data.status || 'running'
     
+    const currentScope = data.scope || knowledgeTask.value?.scope
     knowledgeTask.value = {
       ...knowledgeTask.value,
       id: data.task_id ?? knowledgeTask.value?.id,
       status,
-      scope: data.scope ?? knowledgeTask.value?.scope,
+      scope: currentScope,
       mode: data.mode ?? knowledgeTask.value?.mode,
       completed_tables: data.completed_tables ?? knowledgeTask.value?.completed_tables ?? 0,
       failed_tables: data.failed_tables ?? knowledgeTask.value?.failed_tables ?? 0,
@@ -205,24 +220,45 @@ const subscribeKnowledgeTask = (taskId: number) => {
       error_message: data.error_message ?? knowledgeTask.value?.error_message,
     }
 
+    if (currentScope !== 'table') {
+      latestDatasourceTask.value = knowledgeTask.value
+    }
+
     if (status === 'completed') {
       knowledgeSyncing.value = false
-      message.success(data.message || '知识库同步完成')
+      const currentScope = knowledgeTask.value?.scope
+      if (currentScope === 'table') {
+        message.success(data.message || '知识库同步完成', { duration: 0, closable: true })
+      } else {
+        message.success(data.message || '知识库同步完成')
+      }
       refreshAfterTerminal()
     } else if (status === 'partial_success') {
       knowledgeSyncing.value = false
-      message.warning(data.message || '知识库部分同步成功')
+      if (knowledgeTask.value?.scope === 'table') {
+        message.warning(data.message || '知识库部分同步成功', { duration: 0, closable: true })
+      } else {
+        message.warning(data.message || '知识库部分同步成功')
+      }
       refreshAfterTerminal()
     } else if (status === 'failed') {
       knowledgeSyncing.value = false
-      message.error(data.error_message || data.message || '知识库同步失败')
+      if (knowledgeTask.value?.scope === 'table') {
+        message.error(data.error_message || data.message || '知识库同步失败', { duration: 0, closable: true })
+      } else {
+        message.error(data.error_message || data.message || '知识库同步失败')
+      }
       refreshAfterTerminal()
     }
   },
 
   error: (data) => {
     if (data.message) {
-      message.error(data.message)
+      if (knowledgeTask.value?.scope === 'table') {
+        message.error(data.message, { duration: 0, closable: true })
+      } else {
+        message.error(data.message)
+      }
     }
     knowledgeSyncing.value = false
     controller.abort()
@@ -234,7 +270,11 @@ const subscribeKnowledgeTask = (taskId: number) => {
   },
   }, { signal: controller.signal }).catch((error) => {
     if (controller.signal.aborted) return
-    message.error(error?.message || '知识库同步 SSE 连接中断')
+    if (knowledgeTask.value?.scope === 'table') {
+      message.error(error?.message || '知识库同步 SSE 连接中断', { duration: 0, closable: true })
+    } else {
+      message.error(error?.message || '知识库同步 SSE 连接中断')
+    }
     knowledgeSyncing.value = false
     activeKnowledgeController = null
     if (currentSource.value) {
@@ -284,6 +324,7 @@ const handleSingleTableSync = async (mode: 'basic' | 'ai_enhanced') => {
   knowledgeSyncing.value = true
   knowledgeTask.value = {
     status: 'pending',
+    scope: 'table',
     completed_tables: 0,
     total_tables: 1,
     current_table: selectedTable.value.name
@@ -312,16 +353,18 @@ const handleSingleTableSync = async (mode: 'basic' | 'ai_enhanced') => {
           <p class="page-subtitle">管理数据库元数据，支持表级和字段级的本地补充备注，提升 AI 问答准确性。</p>
         </div>
         <div class="header-right">
-          <div v-if="knowledgeTask" class="knowledge-banner" :class="[
-            `is-${knowledgeTask.status}`,
-            { 'is-expired': knowledgeTask.status === 'completed' && actualTableCount > knowledgeTask.total_tables }
-          ]">
-            <span class="status-dot"></span>
-            {{ formatKnowledgeBanner(knowledgeTask) }}
-          </div>
-          <div v-if="knowledgeDetailMessage(knowledgeTask)" class="knowledge-detail">
-            {{ knowledgeDetailMessage(knowledgeTask) }}
-          </div>
+          <template v-if="latestDatasourceTask">
+            <div class="knowledge-banner" :class="[
+              `is-${latestDatasourceTask.status}`,
+              { 'is-expired': latestDatasourceTask.status === 'completed' && actualTableCount > latestDatasourceTask.total_tables }
+            ]">
+              <span class="status-dot"></span>
+              {{ formatKnowledgeBanner(latestDatasourceTask) }}
+            </div>
+            <div v-if="knowledgeDetailMessage(latestDatasourceTask)" class="knowledge-detail">
+              {{ knowledgeDetailMessage(latestDatasourceTask) }}
+            </div>
+          </template>
           <div v-else class="knowledge-banner is-none">
             <span class="status-dot"></span>
             尚未同步知识库

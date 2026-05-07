@@ -233,8 +233,8 @@ watch(
   { deep: true },
 );
 
-watch(generatedSql, async (newSql) => {
-  if (!newSql) {
+watch([generatedSql, currentDatasource], async ([newSql, datasourceId]) => {
+  if (!newSql || !datasourceId) {
     validationState.value = "idle";
     validationReasons.value = [];
     return;
@@ -243,7 +243,10 @@ watch(generatedSql, async (newSql) => {
   validationState.value = "validating";
   validationReasons.value = [];
   try {
-    const data = await post("/workbench/validate", { sql: newSql });
+    const data = await post("/workbench/validate", {
+      sql: newSql,
+      datasource_id: datasourceId,
+    });
     validationState.value = data.status === "valid" ? "valid" : "invalid";
     validationReasons.value = data.reasons || [];
   } catch {
@@ -490,21 +493,6 @@ const handleQuerySubmit = (question: string) => {
             actor: "hermes",
             message: `参考笔记: ${data.note}`,
             detail: data.comment || undefined,
-            timestamp: Date.now(),
-          });
-        }
-      },
-
-      rule_used: (data: any) => {
-        const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
-
-        if (lastStep && lastStep.phase === "rule_used") {
-          lastStep.message += `, ${data.rule}`;
-        } else {
-          hermesSteps.value.push({
-            phase: "rule_used",
-            actor: "system",
-            message: `命中业务规则: ${data.rule}`,
             timestamp: Date.now(),
           });
         }

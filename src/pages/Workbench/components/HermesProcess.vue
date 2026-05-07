@@ -53,7 +53,6 @@ const phaseIcon = (phase: string) => {
     started: "🚀",
     retrieving_schema: "🗂️",
     note_used: "📚",
-    rule_used: "📋",
     clarification: "💬",
     calling_hermes: "🤖",
     hermes_trace: "🔎",
