@@ -145,6 +145,211 @@ def get_datasource_knowledge_dir(vault_root: str, datasource_name: str) -> Path:
     return Path(vault_root) / sanitize_path_segment(datasource_name) / "tables"
 
 
+def get_business_rules_dir(vault_root: str, datasource_name: str) -> Path:
+    """获取数据源的 business_rules/ 目录路径。"""
+    return Path(vault_root) / sanitize_path_segment(datasource_name) / "business_rules"
+
+
+def _parse_frontmatter(content: str) -> tuple[dict, str]:
+    """解析 Markdown frontmatter。仅使用标准库，不依赖 PyYAML。
+
+    支持的格式：
+      - key: value                → str
+      - key: "value with: colon"  → str（去引号）
+      - key: [a, b, c]           → list[str]（内联数组）
+      - key:
+          - item1
+          - item2                 → list[str]（缩进列表）
+    """
+    stripped = content.strip()
+    if not stripped.startswith("---"):
+        return {}, content
+    try:
+        parts = stripped.split("---", 2)
+        if len(parts) < 3:
+            return {}, content
+        fm_text = parts[1].strip()
+        body = parts[2].strip()
+        meta: dict = {}
+        current_key: str | None = None
+        for line in fm_text.splitlines():
+            stripped_line = line.strip()
+            if not stripped_line or stripped_line.startswith("#"):
+                continue
+            if stripped_line.startswith("- ") and current_key is not None:
+                # list item under current_key
+                if not isinstance(meta.get(current_key), list):
+                    meta[current_key] = []
+                item = _unquote(stripped_line[2:].strip())
+                meta[current_key].append(item)
+            elif ":" in stripped_line:
+                key, _, val = stripped_line.partition(":")
+                key = key.strip()
+                val = val.strip()
+                current_key = key
+                if val:
+                    # 内联数组: [a, b, c]
+                    if val.startswith("[") and val.endswith("]"):
+                        items = [_unquote(v.strip()) for v in val[1:-1].split(",") if v.strip()]
+                        meta[key] = items
+                    else:
+                        meta[key] = _unquote(val)
+                # else: val is empty, might be followed by list items
+            else:
+                current_key = None
+        return meta, body
+    except Exception:
+        return {}, content
+
+
+def _unquote(s: str) -> str:
+    """移除字符串两侧的匹配引号。"""
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1]
+    return s
+
+
+def _parse_index_references(index_text: str) -> set[str]:
+    """从 _index.md 中提取引用的规则文件名（不含扩展名）。
+
+    识别模式：
+      - [[rule_name]]         Obsidian wiki-link
+      - [text](rule_name.md)  Markdown link
+      - `rule_name`           行内代码
+      - 以 - 或 * 开头的列表项中包含的 .md 文件名
+    """
+    import re
+    refs: set[str] = set()
+    # [[wiki-link]]
+    for m in re.finditer(r"\[\[([^\]]+)]]", index_text):
+        refs.add(m.group(1).split("|")[0].strip().removesuffix(".md"))
+    # [text](file.md)
+    for m in re.finditer(r"\]\(([^)]+\.md)\)", index_text):
+        refs.add(Path(m.group(1)).stem)
+    # `backtick_name`
+    for m in re.finditer(r"`([a-zA-Z0-9_\-]+)`", index_text):
+        refs.add(m.group(1).removesuffix(".md"))
+    return refs
+
+
+def _score_business_rule(
+    question: str,
+    candidate_table_names: list[str],
+    meta: dict,
+    filename_stem: str,
+) -> int:
+    """基于候选表名、frontmatter 元数据和问题关键词对规则文件打分。"""
+    score = 0
+    question_lower = question.lower()
+    filename_lower = filename_stem.lower()
+
+    def _as_string_list(value) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, str)]
+        return []
+
+    # 1. frontmatter.tables 与候选表名匹配
+    rule_tables = [t.lower() for t in _as_string_list(meta.get("tables"))]
+    candidate_lower = [t.lower() for t in candidate_table_names]
+    for rt in rule_tables:
+        if rt in candidate_lower:
+            score += 3
+
+    # 2. frontmatter.keywords 与问题匹配
+    for kw in _as_string_list(meta.get("keywords")):
+        if kw.lower() in question_lower:
+            score += 2
+
+    # 3. 文件名与问题或候选表名匹配
+    for part in filename_lower.replace("-", "_").split("_"):
+        if len(part) >= 2 and part in question_lower:
+            score += 1
+        for ct in candidate_lower:
+            if part in ct:
+                score += 1
+
+    # 4. priority 加分
+    priority = str(meta.get("priority", "")).lower()
+    if priority == "high":
+        score += 2
+    elif priority == "medium":
+        score += 1
+
+    return score
+
+
+def retrieve_relevant_business_rules(
+    question: str,
+    candidate_table_names: list[str],
+    rules_dir: Path,
+    limit: int = 3,
+    max_chars: int = 1500,
+) -> tuple[str, list[str]]:
+    """基于候选表名和问题关键词，从 business_rules/ 中检索最相关的规则文件。"""
+    if not rules_dir.exists():
+        return "", []
+
+    # 1. 解析 _index.md，提取引用的规则文件名作为额外候选加分
+    index_path = rules_dir / "_index.md"
+    index_text = ""
+    index_refs: set[str] = set()
+    if index_path.exists():
+        try:
+            index_text = index_path.read_text(encoding="utf-8", errors="ignore").strip()
+            if index_text:
+                index_refs = _parse_index_references(index_text)
+        except Exception:
+            pass
+
+    # 2. 对规则文件打分
+    scored = []
+    for md_file in rules_dir.glob("*.md"):
+        if md_file.name.startswith("_"):
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        meta, body = _parse_frontmatter(content)
+        file_score = _score_business_rule(question, candidate_table_names, meta, md_file.stem)
+        # _index.md 只能增强已有命中的规则，不能把完全无关的规则抬成候选
+        if file_score > 0 and md_file.stem in index_refs:
+            file_score += 2
+        if file_score > 0:
+            scored.append((file_score, md_file.stem, body, meta))
+
+    if not scored:
+        return "", []
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    sections = []
+    used_rules = []
+
+    # 3. 仅当有规则命中时，才注入 _index.md 作为索引上下文
+    if index_text:
+        index_snippet = index_text
+        if len(index_snippet) > 800:
+            index_snippet = truncate_text_on_line_boundary(index_snippet, 800)
+        sections.append(f"### Rule Index\n{index_snippet}")
+        used_rules.append("_index")
+
+    for _, name, body, meta in scored[:limit]:
+        snippet = body.strip()
+        if len(snippet) > max_chars:
+            snippet = truncate_text_on_line_boundary(snippet, max_chars)
+        summary = meta.get("summary", "")
+        header = f"### Rule: {name}"
+        if summary:
+            header += f"\n> {summary}"
+        sections.append(f"{header}\n{snippet}")
+        used_rules.append(name)
+
+    return "\n\n".join(sections), used_rules
+
+
 def retrieve_relevant_schema(
     session: Session,
     datasource_id: int,
@@ -500,11 +705,19 @@ def _build_system_prompt(db_type: str) -> str:
 9. 返回 JSON 格式，只允许以下两种：
    - 澄清：{{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}}
    - SQL：{{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}}
-10. 不要返回任何 JSON 以外的文字。
+10. Business Rules 是用户手工维护的高优先级业务知识，可用于 join 路径、过滤条件、统计口径判断。当 Business Rules 与 Obsidian Notes 冲突时，以 Business Rules 为准。
+11. Business Rules 不能覆盖 Schema Context 中不存在的表或字段。如果某个 join 路径只在 Business Rules 中出现但对应字段在 Schema Context 不存在，必须返回澄清或报错。
+12. 不要返回任何 JSON 以外的文字。
 """
 
 
-def _build_full_prompt(system_prompt: str, question: str, schema_context: str, obsidian_context: str) -> str:
+def _build_full_prompt(
+    system_prompt: str,
+    question: str,
+    schema_context: str,
+    obsidian_context: str,
+    business_rules_context: str = "",
+) -> str:
     """构建当前轮 prompt。多轮上下文交给 Hermes session 持有。"""
     prompt_lines = [system_prompt, ""]
 
@@ -517,11 +730,15 @@ def _build_full_prompt(system_prompt: str, question: str, schema_context: str, o
         "### Obsidian Notes",
         obsidian_context,
         "",
+        "### Business Rules",
+        business_rules_context or "（本轮未命中相关业务规则）",
+        "",
         "执行要求：",
         "1. 如果用户的问题是对之前澄清的回应，请结合上下文生成 SQL。",
         "2. 判断歧义和补全关系时只能在 Schema Context 提供的候选范围内进行。",
         "3. Obsidian Notes 只用于业务语义、口径、注意事项补充。",
-        "4. 严格返回 JSON 格式。",
+        "4. Business Rules 优先于 Obsidian Notes，可用于 join 路径、过滤条件和统计口径。",
+        "5. 严格返回 JSON 格式。",
     ])
     return "\n".join(prompt_lines)
 
@@ -531,9 +748,11 @@ def prepare_question_context(
     datasource_id: int,
     question: str,
     knowledge_dir: Path,
+    vault_root: str = "",
+    datasource_name: str = "",
     history: list[dict] | None = None,
     hermes_session_id: str | None = None,
-) -> tuple[list[dict], str, str, list[str]]:
+) -> tuple[list[dict], str, str, str, list[str], list[str]]:
     retrieval_question = build_schema_retrieval_question(question, history)
     candidates = retrieve_relevant_schema(
         session,
@@ -543,7 +762,18 @@ def prepare_question_context(
     )
     schema_context = build_schema_context(candidates)
     obsidian_context, note_names = read_relevant_table_notes(candidates, knowledge_dir)
-    return candidates, schema_context, obsidian_context, note_names
+
+    # 检索手维业务规则
+    rules_context = ""
+    rule_names: list[str] = []
+    if vault_root and datasource_name:
+        rules_dir = get_business_rules_dir(vault_root, datasource_name)
+        candidate_table_names = [item["table"].name for item in candidates]
+        rules_context, rule_names = retrieve_relevant_business_rules(
+            retrieval_question, candidate_table_names, rules_dir
+        )
+
+    return candidates, schema_context, obsidian_context, rules_context, note_names, rule_names
 
 
 def build_schema_retrieval_question(question: str, history: list[dict] | None = None) -> str:
@@ -597,9 +827,10 @@ def build_clarification_retry_prompt(
     schema_context: str,
     obsidian_context: str,
     candidates: list[dict],
+    business_rules_context: str = "",
 ) -> str:
     candidate_tables = "、".join(item["table"].name for item in candidates if item.get("table")) or "（无候选表）"
-    base_prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+    base_prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, business_rules_context)
     retry_lines = [
         "",
         "补充纠错要求：",
@@ -668,16 +899,18 @@ def ask_llm(
         return {"type": "error", "message": "当前数据源还没有可用知识库，请先完成同步到知识库后再问答"}
 
     try:
-        candidates, schema_context, obsidian_context, _note_names = prepare_question_context(
+        candidates, schema_context, obsidian_context, rules_context, _note_names, _rule_names = prepare_question_context(
             session,
             datasource_id,
             question,
             knowledge_dir,
-            history,
-            hermes_session_id,
+            vault_root=vault_root,
+            datasource_name=ds.name,
+            history=history,
+            hermes_session_id=hermes_session_id,
         )
         system_prompt = _build_system_prompt(ds.db_type)
-        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, rules_context)
         raw_result, next_hermes_session_id = run_hermes_session_json(
             prompt,
             cwd=str(knowledge_dir),
@@ -693,6 +926,7 @@ def ask_llm(
                 schema_context,
                 obsidian_context,
                 candidates,
+                rules_context,
             )
             retry_raw_result, retry_session_id = run_hermes_session_json(
                 retry_prompt,
@@ -758,13 +992,15 @@ def ask_llm_stream(
 
     yield _sse_event("status", {"phase": "retrieving_schema", "message": "正在从 SQLite 检索候选 Schema..."})
     try:
-        candidates, schema_context, obsidian_context, _note_names = prepare_question_context(
+        candidates, schema_context, obsidian_context, rules_context, _note_names, _rule_names = prepare_question_context(
             session,
             datasource_id,
             question,
             knowledge_dir,
-            history,
-            hermes_session_id,
+            vault_root=vault_root,
+            datasource_name=ds.name,
+            history=history,
+            hermes_session_id=hermes_session_id,
         )
     except Exception as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
@@ -775,7 +1011,7 @@ def ask_llm_stream(
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
     system_prompt = _build_system_prompt(ds.db_type)
-    prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+    prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context, rules_context)
 
     try:
         result = None
@@ -801,6 +1037,7 @@ def ask_llm_stream(
                 schema_context,
                 obsidian_context,
                 candidates,
+                rules_context,
             )
             retry_raw_result, retry_session_id = run_hermes_session_json(
                 retry_prompt,
@@ -827,6 +1064,10 @@ def ask_llm_stream(
             continue
         emitted_notes.add(note_name)
         yield _sse_event("note_used", note_used_payload(note_name))
+
+    # 3.5 推送本轮命中的业务规则文件
+    for rule_name in _rule_names:
+        yield _sse_event("rule_used", {"rule": rule_name})
 
     # 4. 记录审计日志并注入 audit_log_id
     warning, log_id = _log_result(session, datasource_id, ds.name, question, result)

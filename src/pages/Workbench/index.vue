@@ -495,6 +495,21 @@ const handleQuerySubmit = (question: string) => {
         }
       },
 
+      rule_used: (data: any) => {
+        const lastStep = hermesSteps.value[hermesSteps.value.length - 1];
+
+        if (lastStep && lastStep.phase === "rule_used") {
+          lastStep.message += `, ${data.rule}`;
+        } else {
+          hermesSteps.value.push({
+            phase: "rule_used",
+            actor: "system",
+            message: `命中业务规则: ${data.rule}`,
+            timestamp: Date.now(),
+          });
+        }
+      },
+
       hermes_trace: (data) => {
         if (!data.message) return;
       },

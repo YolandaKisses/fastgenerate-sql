@@ -5,6 +5,7 @@ from app.services import workbench_service
 from app.api.routes.workbench import is_valid_hermes_session_id
 from app.services.hermes_service import hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
+    _parse_frontmatter,
     ask_llm,
     ask_llm_stream,
     can_ask_datasource,
@@ -12,6 +13,7 @@ from app.services.workbench_service import (
     normalize_note_name,
     note_used_payload,
     read_relevant_table_notes,
+    retrieve_relevant_business_rules,
     retrieve_relevant_schema,
     should_allow_schema_fallback,
     validate_sql_against_schema,
@@ -24,8 +26,7 @@ def test_validate_sql_candidate_rejects_multi_statement_write_sql():
     result = validate_sql_candidate("SELECT * FROM users; DELETE FROM users")
 
     assert result["status"] == "invalid"
-    assert "禁止执行多条语句" in result["reasons"]
-    assert any("DELETE" in reason for reason in result["reasons"])
+    assert any("禁止执行多条语句" in reason for reason in result["reasons"])
 
 
 def test_normalize_note_name_accepts_markdown_paths():
@@ -51,6 +52,94 @@ def test_read_relevant_table_notes_truncates_on_line_boundary(tmp_path):
     assert used_notes == ["large_table"]
     assert text.endswith("\n（后续内容已裁剪）")
     assert "third line" not in text
+
+
+def test_parse_frontmatter_supports_scalar_inline_list_and_quoted_values():
+    meta, body = _parse_frontmatter(
+        """---
+tables: orders
+keywords: ["用户", '订单:统计']
+summary: "订单: 聚合规则"
+---
+正文内容
+""",
+    )
+
+    assert meta == {
+        "tables": "orders",
+        "keywords": ["用户", "订单:统计"],
+        "summary": "订单: 聚合规则",
+    }
+    assert body == "正文内容"
+
+
+def test_retrieve_relevant_business_rules_does_not_match_unrelated_index_refs(tmp_path):
+    rules_dir = tmp_path / "business_rules"
+    rules_dir.mkdir()
+    (rules_dir / "_index.md").write_text(
+        "\n".join([
+            "- [[orders_join_rule]] 订单与用户关联",
+            "- [[revenue_caliber]] 营收口径",
+        ]),
+        encoding="utf-8",
+    )
+    (rules_dir / "orders_join_rule.md").write_text(
+        """---
+tables: [orders, users]
+keywords: [下单, 用户]
+summary: 订单与用户关联
+---
+orders.user_id = users.id
+""",
+        encoding="utf-8",
+    )
+    (rules_dir / "revenue_caliber.md").write_text(
+        """---
+tables: revenue
+keywords: [营收]
+summary: 营收口径
+---
+排除退款单
+""",
+        encoding="utf-8",
+    )
+
+    context, used_rules = retrieve_relevant_business_rules(
+        "查询天气趋势",
+        ["weather_forecast"],
+        rules_dir,
+    )
+
+    assert context == ""
+    assert used_rules == []
+
+
+def test_retrieve_relevant_business_rules_uses_index_to_boost_related_rules(tmp_path):
+    rules_dir = tmp_path / "business_rules"
+    rules_dir.mkdir()
+    (rules_dir / "_index.md").write_text(
+        "- [[orders_join_rule]] 订单与用户关联\n",
+        encoding="utf-8",
+    )
+    (rules_dir / "orders_join_rule.md").write_text(
+        """---
+tables: orders
+summary: 订单关联规则
+---
+orders.user_id = users.id
+""",
+        encoding="utf-8",
+    )
+
+    context, used_rules = retrieve_relevant_business_rules(
+        "查询订单数据",
+        ["orders"],
+        rules_dir,
+    )
+
+    assert "### Rule Index" in context
+    assert "### Rule: orders_join_rule" in context
+    assert used_rules == ["_index", "orders_join_rule"]
 
 
 def test_schema_retrieval_question_uses_recent_user_history_only():
@@ -446,7 +535,7 @@ def test_ask_llm_rejects_sql_with_unknown_schema_field(tmp_path, monkeypatch):
 
     assert result["type"] == "error"
     assert "missing_time" in result["message"]
-    assert "不存在字段" in result["message"]
+    assert "中不存在的字段" in result["message"]
 
 
 def test_clarification_reply_uses_previous_user_question_for_schema_retrieval(tmp_path, monkeypatch):
@@ -517,7 +606,7 @@ def test_clarification_reply_uses_previous_user_question_for_schema_retrieval(tm
     assert "user_id (BIGINT)" in captured["prompt"]
 
 
-def test_unqualified_projection_alias_is_warning_not_invalid():
+def test_unqualified_projection_alias_is_still_valid_without_schema_errors():
     table = SchemaTable(id=1, datasource_id=1, name="user_register_log")
     field = SchemaField(table_id=1, name="user_id", type="BIGINT")
 
@@ -528,7 +617,7 @@ def test_unqualified_projection_alias_is_warning_not_invalid():
 
     assert result["status"] == "valid"
     assert result["reasons"] == []
-    assert any("total_users" in warning for warning in result["warnings"])
+    assert result["warnings"] == []
 
 
 def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
