@@ -385,56 +385,11 @@ def render_table_markdown(
     return "\n".join(lines)
 
 
-def _match_table_name(candidate: str, table_names: dict[str, str]) -> str | None:
-    """将候选名匹配到兄弟表名（处理单复数/大小写），返回实际表名或 None。"""
-    c = candidate.lower().strip("_")
-    # 直接匹配
-    if c in table_names:
-        return table_names[c]
-    # +s 复数
-    if c + "s" in table_names:
-        return table_names[c + "s"]
-    # -s 单数
-    if c.endswith("s") and c[:-1] in table_names:
-        return table_names[c[:-1]]
-    # +es
-    if c + "es" in table_names:
-        return table_names[c + "es"]
-    # -es
-    if c.endswith("es") and c[:-2] in table_names:
-        return table_names[c[:-2]]
-    # -ies → y
-    if c.endswith("ies") and c[:-3] + "y" in table_names:
-        return table_names[c[:-3] + "y"]
-    # 下划线分隔后取最后一段再试
-    parts = c.rsplit("_", 1)
-    if len(parts) == 2:
-        result = _match_table_name(parts[1], table_names)
-        if result is not None:
-            return result
-
-    # 词边界匹配：候选词作为表名的 _ 分隔片段出现（处理模块前缀如 act_hi_batch）
-    if len(c) >= 3:
-        segment_matches = []
-        for t_lower, t_original in table_names.items():
-            if c in set(t_lower.split("_")):
-                segment_matches.append(t_original)
-        if len(segment_matches) == 1:
-            return segment_matches[0]
-        if len(segment_matches) > 1:
-            return min(segment_matches, key=len)
-
-    return None
-
-
 def generate_table_summary_basic(
     table: SchemaTable,
     fields: list[SchemaField],
-    sibling_tables: list[SchemaTable] | None = None,
 ) -> dict[str, str]:
     """基础模式：不调用 AI，仅根据备注和规则生成摘要内容。"""
-    sibling_tables = sibling_tables or []
-    sibling_names = {t.name.lower(): t.name for t in sibling_tables}
 
     # 1. 用途说明
     purpose_parts = []
@@ -498,70 +453,11 @@ def generate_table_summary_basic(
 
     caveats = "\n".join(caveat_lines) if caveat_lines else "无特殊注意事项。"
 
-    # 4. 关联笔记 & 常见关联关系：基于规则推导
-    graph_links: list[dict] = []
-    relationship_lines: list[str] = []
-
-    # 规则 1：_id 后缀字段匹配兄弟表
-    id_fields = [f for f in fields if f.name.lower().endswith("_id")]
-    for f in id_fields:
-        matched = _match_table_name(f.name[:-3], sibling_names)  # 去掉 _id
-        if matched:
-            graph_links.append({
-                "target_table": matched,
-                "relation_type": "外键引用",
-                "join_hint": f"{table.name}.{f.name} = {matched}.id",
-                "confidence": "高",
-                "reason": f"字段 {f.name} 匹配表 {matched}",
-            })
-            relationship_lines.append(
-                f"字段 `{f.name}` 可能引用 [[{matched}]] 表 · 置信度：高 · 依据：外键字段名匹配"
-            )
-
-    # 规则 2：表名前缀共享（当前表名作为兄弟表名的前缀）
-    current_lower = table.name.lower()
-    for sib in sibling_tables:
-        sib_lower = sib.name.lower()
-        # 兄弟表以当前表名为前缀（如 order ↔ order_item）
-        if sib_lower.startswith(current_lower + "_") or current_lower.startswith(sib_lower + "_"):
-            already_matched = any(gl["target_table"] == sib.name for gl in graph_links)
-            if not already_matched:
-                graph_links.append({
-                    "target_table": sib.name,
-                    "relation_type": "主从或扩展关系",
-                    "join_hint": f"{table.name}.id = {sib.name}.{current_lower}_id" if sib_lower.startswith(current_lower + "_") else f"{sib.name}.id = {table.name}.{sib_lower}_id",
-                    "confidence": "中",
-                    "reason": f"表名共享前缀 '{current_lower}'",
-                })
-                relationship_lines.append(
-                    f"[[{sib.name}]] 可能与当前表存在主从或扩展关系 · 置信度：中 · 依据：表名共享前缀"
-                )
-
-    # 规则 3：非 _id 字段名与兄弟表名直接匹配（字典表引用）
-    already_matched_fields = {f.name.lower() for f in id_fields}
-    for f in fields:
-        if f.name.lower() in already_matched_fields:
-            continue
-        matched = _match_table_name(f.name, sibling_names)
-        if matched:
-            graph_links.append({
-                "target_table": matched,
-                "relation_type": "字典或配置引用",
-                "join_hint": f"{table.name}.{f.name} = {matched}.id",
-                "confidence": "中",
-                "reason": f"字段名 {f.name} 匹配表 {matched}",
-            })
-            relationship_lines.append(
-                f"字段 `{f.name}` 可能引用 [[{matched}]] 字典表 · 置信度：中 · 依据：字段名匹配表名"
-            )
-
-    relationships = "\n".join(relationship_lines) if relationship_lines else "未检测到明显关联关系，建议开启 AI 分析或人工补充。"
-
     return {
         "purpose": purpose,
         "core_fields": core_fields,
-        "relationships": relationships,
-        "graph_links": graph_links,
+        "relationships": "未检测到明显关联关系，建议开启 AI 分析或人工补充。",
+        "graph_links": [],
         "note_properties": {
             "type": "table-note",
             "status": "active",
@@ -712,7 +608,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             session.commit()
             _notify_task_updated(task.id)
 
-            # 预加载全量表列表，供 basic 模式生成关联关系
+            # 预加载全量表列表，供后续生成 index.md 使用
             all_tables = session.exec(
                 select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
             ).all()
@@ -742,8 +638,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                         )
                         summary = generate_table_summary(session, datasource, table, fields)
                     else:
-                        siblings = [t for t in all_tables if t.id != table.id]
-                        summary = generate_table_summary_basic(table, fields, siblings)
+                        summary = generate_table_summary_basic(table, fields)
                     
                     markdown = render_table_markdown(datasource, table, fields, summary)
                     table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"

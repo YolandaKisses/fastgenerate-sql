@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { NSelect, useMessage, useDialog } from 'naive-ui'
+import { NSelect, NButton, NIcon, useMessage, useDialog } from 'naive-ui'
+import { SyncOutline, BookOutline } from "@vicons/ionicons5";
 import TableList from './components/TableList.vue'
 import SchemaEditor from './components/SchemaEditor.vue'
 import { get, post, streamSse } from '../../services/request'
@@ -369,11 +370,37 @@ const handleSingleTableSync = async (mode: 'basic' | 'ai_enhanced') => {
             <span class="status-dot"></span>
             尚未同步知识库
           </div>
+          <div class="header-actions-global">
+            <n-button
+              secondary
+              size="small"
+              :loading="schemaSyncing"
+              :disabled="knowledgeSyncing || schemaSyncing"
+              @click="handleSync"
+            >
+              <template #icon>
+                <n-icon><SyncOutline /></n-icon>
+              </template>
+              全量数据源重新同步
+            </n-button>
+            <n-button
+              type="primary"
+              size="small"
+              :loading="knowledgeSyncing && knowledgeTask?.scope !== 'table'"
+              :disabled="knowledgeSyncing || schemaSyncing"
+              @click="handleKnowledgeSync"
+            >
+              <template #icon>
+                <n-icon><BookOutline /></n-icon>
+              </template>
+              {{ (knowledgeSyncing && knowledgeTask?.scope !== 'table') ? "同步中..." : "全量知识库同步" }}
+            </n-button>
+          </div>
           <n-select 
             v-model:value="currentSource" 
             :options="sourceOptions" 
             placeholder="选择数据源" 
-            style="width: 260px;"
+            style="width: 200px;"
           />
         </div>
       </div>
@@ -416,7 +443,12 @@ const handleSingleTableSync = async (mode: 'basic' | 'ai_enhanced') => {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 20px;
+}
+
+.header-actions-global {
+  display: flex;
+  gap: 12px;
 }
 
 .page-title {

@@ -79,30 +79,6 @@ const handleRemarkChange = (fieldId: number, remark: string) => {
         <n-button
           secondary
           size="small"
-          :loading="schemaSyncing"
-          :disabled="isKnowledgeSyncActive || schemaSyncing"
-          @click="emit('sync')"
-        >
-          <template #icon>
-            <n-icon><SyncOutline /></n-icon>
-          </template>
-          全量数据源重新同步
-        </n-button>
-        <n-button
-          type="primary"
-          size="small"
-          :loading="isDatasourceKnowledgeSyncActive"
-          :disabled="isKnowledgeSyncActive || schemaSyncing"
-          @click="emit('sync-knowledge')"
-        >
-          <template #icon>
-            <n-icon><BookOutline /></n-icon>
-          </template>
-          {{ isDatasourceKnowledgeSyncActive ? "同步中..." : "全量知识库同步" }}
-        </n-button>
-        <n-button
-          secondary
-          size="small"
           :loading="
             isKnowledgeSyncActive &&
             knowledgeTask?.scope === 'table' &&

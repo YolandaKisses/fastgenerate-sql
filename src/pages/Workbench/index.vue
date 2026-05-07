@@ -541,6 +541,15 @@ const handleQuerySubmit = (question: string) => {
             messageHistory.value,
           );
         }
+        if (data.system_error) {
+          message.error(data.system_error);
+          hermesSteps.value.push({
+            phase: "failed",
+            actor: "hermes",
+            message: data.system_error,
+            timestamp: Date.now(),
+          });
+        }
         if (data.warning) {
           message.warning(data.warning);
         }

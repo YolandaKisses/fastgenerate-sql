@@ -3,9 +3,8 @@ from app.models.schema import SchemaField, SchemaTable
 from app.models.setting import RuntimeSetting
 from app.services import workbench_service
 from app.api.routes.workbench import is_valid_hermes_session_id
-from app.services.hermes_service import hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
+from app.services.hermes_service import extract_raw_hermes_result, hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
-    _build_incremental_prompt,
     ask_llm,
     ask_llm_stream,
     can_ask_datasource,
@@ -74,19 +73,6 @@ def test_clean_obsidian_note_text_removes_duplicate_schema_section():
     assert "| id | BIGINT |" not in stripped
 
 
-def test_incremental_prompt_preserves_system_prompt_rules():
-    prompt = _build_incremental_prompt(
-        "SYSTEM RULES",
-        "A",
-        "### 表: orders\n  - id (BIGINT)",
-        "- 上一轮澄清问题：\n  A) 订单明细\n  B) 订单汇总",
-    )
-
-    assert prompt.startswith("SYSTEM RULES")
-    assert "### 会话摘要" in prompt
-    assert "### 最小 Schema Context" in prompt
-
-
 def test_schema_retrieval_question_uses_recent_user_history_only():
     history = [
         {"role": "user", "content": f"用户问题 {idx}"}
@@ -99,6 +85,21 @@ def test_schema_retrieval_question_uses_recent_user_history_only():
     assert "用户问题 1" not in retrieval_question
     assert "用户问题 4" in retrieval_question
     assert "用户问题 7" in retrieval_question
+    assert retrieval_question.endswith("A")
+
+
+def test_schema_retrieval_question_includes_last_assistant_clarification_for_option_reply():
+    history = [
+        {"role": "user", "content": "帮我查询用户信息"},
+        {"role": "assistant", "content": "请选择：\nA) 查首页菜单\nB) 查角色菜单"},
+        {"role": "user", "content": "查询用户的菜单权限"},
+    ]
+
+    retrieval_question = build_schema_retrieval_question("A", history)
+
+    assert "帮我查询用户信息" in retrieval_question
+    assert "查询用户的菜单权限" in retrieval_question
+    assert "请选择：\nA) 查首页菜单\nB) 查角色菜单" in retrieval_question
     assert retrieval_question.endswith("A")
 
 
@@ -263,6 +264,43 @@ def test_parse_hermes_json_output_extracts_curly_quote_clarification():
         "type": "clarification",
         "message": "问题存在歧义，请选择：\nA) 查用户角色\nB) 查用户菜单",
         "used_notes": ["sys_role", "sys_action"],
+    }
+
+
+def test_parse_hermes_json_output_prefers_last_real_clarification_over_prompt_example():
+    output = """
+返回 JSON 格式，只允许以下两种：
+{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}
+{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}
+{“type”: “clarification”, “message”: “问题存在歧义，请选择最符合您需求的选项：\nA) 查询首页菜单\nB) 查询角色菜单”, “used_notes”: [“sys_home_page”, “sys_role”]}
+"""
+
+    result = parse_hermes_json_output(output)
+    raw = extract_raw_hermes_result(output)
+
+    assert result == {
+        "type": "clarification",
+        "message": "问题存在歧义，请选择最符合您需求的选项：\nA) 查询首页菜单\nB) 查询角色菜单",
+        "used_notes": ["sys_home_page", "sys_role"],
+    }
+    assert raw == result
+
+
+def test_extract_raw_hermes_result_prefers_last_real_sql_candidate_over_prompt_example():
+    output = """
+返回 JSON 格式，只允许以下两种：
+{"type": "clarification", "message": "问题存在歧义，请选择最符合您需求的选项：\nA) ...\nB) ...", "used_notes": ["已读取的笔记文件名"]}
+{"type": "sql_candidate", "sql": "SELECT ...", "explanation": "SQL 含义说明", "used_notes": ["已读取的笔记文件名"]}
+{"type": "sql_candidate", "sql": "SELECT * FROM sys_user", "explanation": "查询用户信息", "used_notes": ["sys_user"]}
+"""
+
+    raw = extract_raw_hermes_result(output)
+
+    assert raw == {
+        "type": "sql_candidate",
+        "sql": "SELECT * FROM sys_user",
+        "explanation": "查询用户信息",
+        "used_notes": ["sys_user"],
     }
 
 
@@ -752,6 +790,63 @@ def test_retrieve_relevant_schema_keeps_primary_entity_table_for_related_permiss
     candidate_names = [item["table"].name for item in candidates]
     assert "sys_user" in candidate_names
     assert candidate_names.index("sys_user") < candidate_names.index("sys_user_role")
+
+
+def test_retrieve_relevant_schema_recovers_clarification_option_path_from_assistant_history():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+
+        sys_user = SchemaTable(datasource_id=ds.id, name="sys_user", original_comment="用户信息表")
+        sys_home_page = SchemaTable(datasource_id=ds.id, name="sys_home_page", original_comment="用户首页配置")
+        sys_action = SchemaTable(datasource_id=ds.id, name="sys_action", original_comment="菜单信息表")
+        sys_role = SchemaTable(datasource_id=ds.id, name="sys_role", original_comment="角色信息表")
+        session.add(sys_user)
+        session.add(sys_home_page)
+        session.add(sys_action)
+        session.add(sys_role)
+        session.commit()
+        session.refresh(sys_user)
+        session.refresh(sys_home_page)
+        session.refresh(sys_action)
+        session.refresh(sys_role)
+
+        session.add(SchemaField(table_id=sys_user.id, name="vc_username", type="VARCHAR(100)", original_comment="姓名"))
+        session.add(SchemaField(table_id=sys_home_page.id, name="f_userid", type="BIGINT", original_comment="用户ID"))
+        session.add(SchemaField(table_id=sys_home_page.id, name="f_actionid", type="BIGINT", original_comment="菜单ID"))
+        session.add(SchemaField(table_id=sys_action.id, name="vc_actionname", type="VARCHAR(128)", original_comment="菜单名称"))
+        session.add(SchemaField(table_id=sys_role.id, name="vc_actionflag", type="VARCHAR(2)", original_comment="菜单权限"))
+        session.commit()
+
+        retrieval_question = build_schema_retrieval_question(
+            "A",
+            history=[
+                {"role": "user", "content": "帮我查询用户信息"},
+                {"role": "assistant", "content": "请选择：\nA) 查询用户首页配置的菜单\nB) 查询角色菜单权限"},
+                {"role": "user", "content": "查询用户的菜单权限"},
+            ],
+        )
+        candidates = retrieve_relevant_schema(session, ds.id, retrieval_question, allow_fallback=False)
+
+    candidate_names = [item["table"].name for item in candidates]
+    assert "sys_home_page" in candidate_names
+    assert "sys_user" in candidate_names
+    assert "sys_action" in candidate_names
 
 
 def test_schema_fallback_is_disabled_for_clarification_option_with_history():

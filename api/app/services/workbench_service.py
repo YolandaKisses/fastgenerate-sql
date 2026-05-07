@@ -666,8 +666,8 @@ def build_minimal_schema_context(candidates: list[dict]) -> str:
         return "（该数据源暂无同步的表结构）"
 
     lines = []
-    # 限制最多 3 张表，每张表最多 12 个字段
-    for item in tables[:3]:
+    # 限制最多 10 张表，每张表最多 12 个字段
+    for item in tables[:10]:
         t = item["table"]
         lines.append(f"\n### 表: {t.name}")
         for f in item["fields"][:12]:
@@ -733,6 +733,19 @@ def build_schema_retrieval_question(question: str, history: list[dict] | None = 
     for item in history or []:
         if item.get("role") == "user" and item.get("content"):
             history_parts.append(str(item["content"]))
+
+    if is_clarification_option_answer(question):
+        last_assistant_content = next(
+            (
+                str(item.get("content"))
+                for item in reversed(history or [])
+                if item.get("role") == "assistant" and item.get("content")
+            ),
+            "",
+        )
+        if last_assistant_content:
+            history_parts.append(last_assistant_content)
+
     parts = history_parts[-SCHEMA_RETRIEVAL_HISTORY_LIMIT:]
     parts.append(question)
     return "\n".join(parts)
@@ -814,6 +827,26 @@ def _log_result(session: Session, datasource_id: int, ds_name: str,
     return warning, None
 
 
+def build_display_result(
+    raw_hermes_result: dict | None,
+    processed_result: dict,
+    audit_log_id: int | None = None,
+    hermes_session_id: str | None = None,
+    warning: str | None = None,
+) -> dict:
+    display_result = dict(raw_hermes_result or processed_result)
+    if audit_log_id:
+        display_result["audit_log_id"] = audit_log_id
+    if hermes_session_id:
+        display_result["hermes_session_id"] = hermes_session_id
+    if warning:
+        display_result["warning"] = warning
+    if processed_result.get("type") == "error":
+        display_result["system_error"] = processed_result.get("message", "系统校验未通过")
+        display_result["processed_result_type"] = "error"
+    return display_result
+
+
 # ---------------------------------------------------------------------------
 # SSE 辅助
 # ---------------------------------------------------------------------------
@@ -861,20 +894,18 @@ def ask_llm(
             hermes_session_id=hermes_session_id,
         )
         system_prompt = _build_system_prompt(ds.db_type)
-        if should_use_incremental_prompt(question, history, candidates, hermes_session_id):
-            session_summary = build_clarification_session_summary(history)
-            minimal_schema = build_minimal_schema_context(candidates)
-            prompt = _build_incremental_prompt(
-                system_prompt, question, minimal_schema, session_summary
-            )
-        else:
-            prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
-        raw_result, next_hermes_session_id = run_hermes_session_json(
+        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+        hermes_response = run_hermes_session_json(
             prompt,
             cwd=str(knowledge_dir),
             hermes_cli_path=hermes_cli_path,
             session_id=hermes_session_id,
         )
+        if len(hermes_response) == 3:
+            raw_result, raw_hermes_result, next_hermes_session_id = hermes_response
+        else:
+            raw_result, next_hermes_session_id = hermes_response
+            raw_hermes_result = raw_result
         result = validate_llm_result(raw_result)
         result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
         if clarification_has_schema_contradiction(result, candidates):
@@ -885,26 +916,33 @@ def ask_llm(
                 obsidian_context,
                 candidates,
             )
-            retry_raw_result, retry_session_id = run_hermes_session_json(
+            retry_response = run_hermes_session_json(
                 retry_prompt,
                 cwd=str(knowledge_dir),
                 hermes_cli_path=hermes_cli_path,
                 session_id=next_hermes_session_id or hermes_session_id,
             )
+            if len(retry_response) == 3:
+                retry_raw_result, retry_raw_hermes_result, retry_session_id = retry_response
+            else:
+                retry_raw_result, retry_session_id = retry_response
+                retry_raw_hermes_result = retry_raw_result
             result = validate_llm_result(retry_raw_result)
             result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
+            raw_hermes_result = retry_raw_hermes_result or raw_hermes_result
             next_hermes_session_id = retry_session_id or next_hermes_session_id
-        if result.get("type") == "error":
-            return result
-        if next_hermes_session_id:
-            result["hermes_session_id"] = next_hermes_session_id
 
         warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
-        if warning:
-            result["warning"] = warning
-        if log_id:
-            result["audit_log_id"] = log_id
-        return result
+        display_result = build_display_result(
+            raw_hermes_result,
+            result,
+            audit_log_id=log_id,
+            hermes_session_id=next_hermes_session_id,
+            warning=warning,
+        )
+        if result.get("type") == "error" and raw_hermes_result is None:
+            return result
+        return display_result
     except ValueError as e:
         return {"type": "error", "message": str(e)}
     except Exception as e:
@@ -968,17 +1006,11 @@ def ask_llm_stream(
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
     system_prompt = _build_system_prompt(ds.db_type)
-    if should_use_incremental_prompt(question, history, candidates, hermes_session_id):
-        session_summary = build_clarification_session_summary(history)
-        minimal_schema = build_minimal_schema_context(candidates)
-        prompt = _build_incremental_prompt(
-            system_prompt, question, minimal_schema, session_summary
-        )
-    else:
-        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+    prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
 
     try:
         result = None
+        raw_hermes_result = None
         next_hermes_session_id = None
         for event in iter_hermes_session_json(
             prompt,
@@ -989,6 +1021,7 @@ def ask_llm_stream(
             if event.get("type") == "trace":
                 yield _sse_event("hermes_trace", {"message": event.get("message", "")})
             elif event.get("type") == "result":
+                raw_hermes_result = event.get("raw_result") or raw_hermes_result
                 result = validate_llm_result(event.get("result") or {})
                 result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
                 next_hermes_session_id = event.get("session_id")
@@ -1002,14 +1035,20 @@ def ask_llm_stream(
                 obsidian_context,
                 candidates,
             )
-            retry_raw_result, retry_session_id = run_hermes_session_json(
+            retry_response = run_hermes_session_json(
                 retry_prompt,
                 cwd=str(knowledge_dir),
                 hermes_cli_path=hermes_cli_path,
                 session_id=next_hermes_session_id or hermes_session_id,
             )
+            if len(retry_response) == 3:
+                retry_raw_result, retry_raw_hermes_result, retry_session_id = retry_response
+            else:
+                retry_raw_result, retry_session_id = retry_response
+                retry_raw_hermes_result = retry_raw_result
             result = validate_llm_result(retry_raw_result)
             result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
+            raw_hermes_result = retry_raw_hermes_result or raw_hermes_result
             next_hermes_session_id = retry_session_id or next_hermes_session_id
     except (ValueError, RuntimeError) as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
@@ -1021,7 +1060,9 @@ def ask_llm_stream(
         return
 
     # 3. 推送 Hermes 最终使用的 Obsidian 笔记
-    for note in result.get("used_notes", []) or []:
+    display_result = build_display_result(raw_hermes_result, result)
+
+    for note in display_result.get("used_notes", []) or []:
         note_name = normalize_note_name(note)
         if note_name in emitted_notes:
             continue
@@ -1030,21 +1071,25 @@ def ask_llm_stream(
 
     # 4. 记录审计日志并注入 audit_log_id
     warning, log_id = _log_result(session, datasource_id, ds.name, question, result)
-    if warning:
-        result["warning"] = warning
-    if log_id:
-        result["audit_log_id"] = log_id
-    if next_hermes_session_id:
-        result["hermes_session_id"] = next_hermes_session_id
+    display_result = build_display_result(
+        raw_hermes_result,
+        result,
+        audit_log_id=log_id,
+        hermes_session_id=next_hermes_session_id,
+        warning=warning,
+    )
 
-    if result.get("type") == "error":
+    if result.get("type") == "error" and raw_hermes_result is None:
         yield _sse_event("status", {"phase": "failed", "message": result.get("message", "SQL 校验失败")})
         yield _sse_event("error", result)
         return
+    if result.get("type") == "error":
+        yield _sse_event("status", {"phase": "failed", "message": result.get("message", "SQL 校验失败")})
 
     # 5. 推送结果
-    yield _sse_event("status", {"phase": "completed", "message": "已完成"})
-    yield _sse_event("result", result)
+    if result.get("type") != "error":
+        yield _sse_event("status", {"phase": "completed", "message": "已完成"})
+    yield _sse_event("result", display_result)
 
 
 def apply_query_limits(conn, db_type: str, timeout_ms: int = 30000):

@@ -56,7 +56,7 @@ def run_hermes_session_json(
     cwd: str | None = None,
     hermes_cli_path: str | None = None,
     session_id: str | None = None,
-) -> tuple[dict, str | None]:
+) -> tuple[dict, dict | None, str | None]:
     cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
     previous_session_ids = _list_hermes_session_ids(cli_path) if not session_id else set()
     command = [
@@ -78,7 +78,7 @@ def run_hermes_session_json(
     next_session_id = parse_hermes_session_id(output)
     if not next_session_id:
         next_session_id = session_id or _find_new_hermes_session_id(cli_path, previous_session_ids)
-    return parse_hermes_json_output(output), next_session_id
+    return parse_hermes_json_output(output), extract_raw_hermes_result(output), next_session_id
 
 
 def iter_hermes_session_json(
@@ -143,6 +143,7 @@ def iter_hermes_session_json(
     yield {
         "type": "result",
         "result": parse_hermes_json_output(output),
+        "raw_result": extract_raw_hermes_result(output),
         "session_id": next_session_id,
     }
 
@@ -260,13 +261,63 @@ def parse_hermes_json_output(output: str) -> dict:
             candidate = _last_result_json_object(cleaned)
             if candidate is not None:
                 return candidate
-            extracted_clarification = _extract_json_like_clarification(cleaned)
-            if extracted_clarification is not None:
-                return extracted_clarification
+            normalized = _normalize_json_like_text(cleaned)
+            candidate = _last_result_json_object(normalized)
+            if candidate is not None:
+                return candidate
+            extracted_result = _extract_json_like_result(cleaned)
+            if extracted_result is not None:
+                return extracted_result
             clarification = _clarification_from_text(cleaned)
             if clarification is not None:
                 return clarification
             raise RuntimeError(f"Hermes 返回了非 JSON 内容: {cleaned[:500]}")
+
+
+def extract_raw_hermes_result(output: str) -> dict | None:
+    cleaned = output.strip()
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+
+    try:
+        value = json.loads(cleaned)
+        if (
+            isinstance(value, dict)
+            and value.get("type") in {"clarification", "sql_candidate"}
+            and not _is_prompt_example_result(value)
+        ):
+            return value
+    except json.JSONDecodeError:
+        pass
+
+    repaired = _escape_newlines_inside_strings(cleaned)
+    try:
+        value = json.loads(repaired)
+        if (
+            isinstance(value, dict)
+            and value.get("type") in {"clarification", "sql_candidate"}
+            and not _is_prompt_example_result(value)
+        ):
+            return value
+    except json.JSONDecodeError:
+        pass
+
+    candidate = _last_result_json_object(cleaned)
+    if candidate is not None:
+        return candidate
+
+    normalized = _normalize_json_like_text(cleaned)
+    candidate = _last_result_json_object(normalized)
+    if candidate is not None:
+        return candidate
+
+    return _extract_json_like_result(cleaned)
 
 
 def _last_result_json_object(text: str) -> dict | None:
@@ -307,45 +358,54 @@ def _is_prompt_example_result(value: dict) -> bool:
     return False
 
 
-def _extract_json_like_clarification(text: str) -> dict | None:
-    """尽量从非严格 JSON 的 Hermes 最终澄清输出中提取真实 message。"""
-    normalized = (
+def _normalize_json_like_text(text: str) -> str:
+    return (
         text
         .replace("“", '"')
         .replace("”", '"')
         .replace("‘", "'")
         .replace("’", "'")
     )
-    if '"type"' not in normalized or "clarification" not in normalized:
-        return None
 
-    message_match = re.search(
-        r'"message"\s*:\s*"(?P<message>.*?)"\s*,\s*"used_notes"\s*:',
-        normalized,
+
+def _extract_json_like_result(text: str) -> dict | None:
+    """从非严格 JSON 的输出中提取最后一条真实结果，跳过 prompt 示例。"""
+    normalized = _normalize_json_like_text(text)
+    candidates: list[dict] = []
+
+    clarification_pattern = re.compile(
+        r'"type"\s*:\s*"clarification".*?"message"\s*:\s*"(?P<message>.*?)"\s*,\s*"used_notes"\s*:\s*\[(?P<notes>.*?)\]',
         flags=re.S,
     )
-    if not message_match:
-        return None
+    for match in clarification_pattern.finditer(normalized):
+        message = match.group("message").replace('\\"', '"').replace("\\n", "\n").strip()
+        used_notes = re.findall(r'"([^"]+)"', match.group("notes"))
+        candidate = {
+            "type": "clarification",
+            "message": message,
+            "used_notes": used_notes,
+        }
+        if message and not _is_prompt_example_result(candidate):
+            candidates.append(candidate)
 
-    message = message_match.group("message")
-    message = message.replace('\\"', '"').replace("\\n", "\n").strip()
-    if not message:
-        return None
-
-    used_notes_match = re.search(
-        r'"used_notes"\s*:\s*\[(?P<notes>.*?)\]',
-        normalized,
+    sql_pattern = re.compile(
+        r'"type"\s*:\s*"sql_candidate".*?"sql"\s*:\s*"(?P<sql>.*?)"\s*,\s*"explanation"\s*:\s*"(?P<explanation>.*?)"\s*,\s*"used_notes"\s*:\s*\[(?P<notes>.*?)\]',
         flags=re.S,
     )
-    used_notes: list[str] = []
-    if used_notes_match:
-        used_notes = re.findall(r'"([^"]+)"', used_notes_match.group("notes"))
+    for match in sql_pattern.finditer(normalized):
+        sql = match.group("sql").replace('\\"', '"').replace("\\n", "\n").strip()
+        explanation = match.group("explanation").replace('\\"', '"').replace("\\n", "\n").strip()
+        used_notes = re.findall(r'"([^"]+)"', match.group("notes"))
+        candidate = {
+            "type": "sql_candidate",
+            "sql": sql,
+            "explanation": explanation,
+            "used_notes": used_notes,
+        }
+        if sql and not _is_prompt_example_result(candidate):
+            candidates.append(candidate)
 
-    return {
-        "type": "clarification",
-        "message": message,
-        "used_notes": used_notes,
-    }
+    return candidates[-1] if candidates else None
 
 
 def _clarification_from_text(text: str) -> dict | None:
