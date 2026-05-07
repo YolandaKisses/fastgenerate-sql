@@ -33,6 +33,16 @@ def ensure_compatible_schema():
             conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN current_phase VARCHAR"))
         if "last_message" not in sync_task_column_names:
             conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN last_message VARCHAR"))
+        if "scope" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN scope VARCHAR DEFAULT 'datasource'"))
+        if "mode" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN mode VARCHAR DEFAULT 'basic'"))
+        if "target_table_id" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN target_table_id INTEGER"))
+        if "target_table_name" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN target_table_name VARCHAR"))
+        if "updated_at" not in sync_task_column_names:
+            conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN updated_at DATETIME"))
 
         ds_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(datasource)")).fetchall()
         ds_column_names = {row[1] for row in ds_columns}

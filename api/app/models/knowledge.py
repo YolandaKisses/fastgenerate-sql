@@ -13,15 +13,29 @@ class KnowledgeSyncTaskStatus(str, Enum):
     FAILED = "failed"
 
 
+class KnowledgeSyncScope(str, Enum):
+    DATASOURCE = "datasource"
+    TABLE = "table"
+
+
+class KnowledgeSyncMode(str, Enum):
+    BASIC = "basic"
+    AI_ENHANCED = "ai_enhanced"
+
+
 class KnowledgeSyncTaskBase(SQLModel):
     datasource_id: int = Field(index=True)
     datasource_name: str
     status: KnowledgeSyncTaskStatus = Field(default=KnowledgeSyncTaskStatus.PENDING)
+    scope: str = Field(default=KnowledgeSyncScope.DATASOURCE)
+    mode: str = Field(default=KnowledgeSyncMode.BASIC)
     total_tables: int = 0
     completed_tables: int = 0
     failed_tables: int = 0
     output_root: str
     output_dir: str
+    target_table_id: Optional[int] = None
+    target_table_name: Optional[str] = None
     current_table: Optional[str] = None
     current_phase: Optional[str] = None
     last_message: Optional[str] = None

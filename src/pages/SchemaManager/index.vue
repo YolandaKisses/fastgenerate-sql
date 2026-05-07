@@ -182,6 +182,7 @@ const subscribeKnowledgeTask = (taskId: number) => {
     controller.abort()
     activeKnowledgeController = null
     if (currentSource.value) {
+      fetchTables(currentSource.value)
       fetchLatestKnowledgeTask(currentSource.value)
       fetchSources()
     }
@@ -195,6 +196,8 @@ const subscribeKnowledgeTask = (taskId: number) => {
       ...knowledgeTask.value,
       id: data.task_id ?? knowledgeTask.value?.id,
       status,
+      scope: data.scope ?? knowledgeTask.value?.scope,
+      mode: data.mode ?? knowledgeTask.value?.mode,
       completed_tables: data.completed_tables ?? knowledgeTask.value?.completed_tables ?? 0,
       failed_tables: data.failed_tables ?? knowledgeTask.value?.failed_tables ?? 0,
       total_tables: data.total_tables ?? knowledgeTask.value?.total_tables ?? 0,
@@ -261,7 +264,7 @@ const handleKnowledgeSync = async () => {
       }
 
       try {
-        const task = await post(`/schema/knowledge/sync/${sourceId}`)
+        const task = await post(`/schema/knowledge/sync/${sourceId}`, { mode: 'basic' })
         knowledgeTask.value = task
         fetchSources()
         subscribeKnowledgeTask(task.id)
@@ -271,6 +274,32 @@ const handleKnowledgeSync = async () => {
       }
     }
   })
+}
+
+const handleSingleTableSync = async (mode: 'basic' | 'ai_enhanced') => {
+  if (!selectedTable.value || knowledgeSyncing.value) return
+  const tableId = selectedTable.value.id
+  
+  cleanupKnowledgeSSE()
+  knowledgeSyncing.value = true
+  knowledgeTask.value = {
+    status: 'pending',
+    completed_tables: 0,
+    total_tables: 1,
+    current_table: selectedTable.value.name
+  }
+
+  try {
+    const task = await post(`/schema/knowledge/sync-table/${tableId}`, { mode })
+    knowledgeTask.value = task
+    subscribeKnowledgeTask(task.id)
+    if (mode === 'ai_enhanced') {
+      message.info('正在执行 AI 深度分析，请稍候...')
+    }
+  } catch (error: any) {
+    knowledgeSyncing.value = false
+    message.error(error?.message || '启动单表同步失败')
+  }
 }
 </script>
 
@@ -319,6 +348,7 @@ const handleKnowledgeSync = async () => {
           :schema-syncing="schemaSyncing"
           @sync="handleSync"
           @sync-knowledge="handleKnowledgeSync"
+          @sync-table="handleSingleTableSync"
         />
       </div>
     </div>

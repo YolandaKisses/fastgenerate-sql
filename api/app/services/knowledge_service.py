@@ -10,7 +10,12 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
-from app.models.knowledge import KnowledgeSyncTask, KnowledgeSyncTaskStatus
+from app.models.knowledge import (
+    KnowledgeSyncTask, 
+    KnowledgeSyncTaskStatus,
+    KnowledgeSyncScope,
+    KnowledgeSyncMode
+)
 from app.models.schema import SchemaField, SchemaTable
 from app.services.hermes_service import run_hermes_json
 from app.services import setting_service
@@ -61,10 +66,52 @@ def get_obsidian_root_path(session: Session) -> str:
     return setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
 
 
-def create_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask:
+def validate_sync_mode(mode: str) -> KnowledgeSyncMode:
+    try:
+        return KnowledgeSyncMode(mode)
+    except ValueError as exc:
+        raise ValueError(f"不支持的同步模式: {mode}") from exc
+
+
+def reuse_or_reject_active_task(
+    active_task: KnowledgeSyncTask | None,
+    *,
+    scope: KnowledgeSyncScope,
+    mode: KnowledgeSyncMode,
+    target_table_id: int | None,
+) -> KnowledgeSyncTask | None:
+    if not active_task:
+        return None
+
+    active_scope = KnowledgeSyncScope(getattr(active_task, "scope", KnowledgeSyncScope.DATASOURCE))
+    active_mode = KnowledgeSyncMode(getattr(active_task, "mode", KnowledgeSyncMode.BASIC))
+    active_target_table_id = getattr(active_task, "target_table_id", None)
+
+    if (
+        active_scope == scope
+        and active_mode == mode
+        and active_target_table_id == target_table_id
+    ):
+        return active_task
+
+    raise ValueError("当前数据源已有知识库同步任务进行中，请稍后再试")
+
+
+def create_knowledge_sync_task(
+    session: Session, 
+    datasource_id: int, 
+    scope: KnowledgeSyncScope = KnowledgeSyncScope.DATASOURCE,
+    mode: KnowledgeSyncMode = KnowledgeSyncMode.BASIC,
+    target_table_id: int | None = None
+) -> KnowledgeSyncTask:
     mark_stale_knowledge_sync_tasks(session, datasource_id=datasource_id)
 
-    active_task = get_active_knowledge_sync_task(session, datasource_id)
+    active_task = reuse_or_reject_active_task(
+        get_active_knowledge_sync_task(session, datasource_id),
+        scope=scope,
+        mode=mode,
+        target_table_id=target_table_id,
+    )
     if active_task:
         return active_task
 
@@ -72,25 +119,40 @@ def create_knowledge_sync_task(session: Session, datasource_id: int) -> Knowledg
     if not datasource:
         raise ValueError("数据源不存在")
 
-    tables = session.exec(
-        select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)
-    ).all()
-    if not tables:
-        raise ValueError("未找到已同步表，无法同步到知识库")
+    target_table_name = None
+    if scope == KnowledgeSyncScope.TABLE:
+        if not target_table_id:
+            raise ValueError("单表同步必须提供 table_id")
+        table = session.get(SchemaTable, target_table_id)
+        if not table:
+            raise ValueError("目标表不存在")
+        target_table_name = table.name
+        total_tables = 1
+    else:
+        tables = session.exec(
+            select(SchemaTable).where(SchemaTable.datasource_id == datasource_id)
+        ).all()
+        if not tables:
+            raise ValueError("未找到已同步表，无法同步到知识库")
+        total_tables = len(tables)
 
     output_root = get_obsidian_root_path(session)
     output_dir = str(Path(output_root) / sanitize_path_segment(datasource.name))
     task = KnowledgeSyncTask(
         datasource_id=datasource.id,
         datasource_name=datasource.name,
-        total_tables=len(tables),
+        scope=scope,
+        mode=mode,
+        target_table_id=target_table_id,
+        target_table_name=target_table_name,
+        total_tables=total_tables,
         output_root=output_root,
         output_dir=output_dir,
     )
     session.add(task)
     datasource.status = DataSourceStatus.CONNECTION_OK
     datasource.sync_status = SyncStatus.SYNCING
-    datasource.last_sync_message = "知识库同步任务已创建"
+    datasource.last_sync_message = f"知识库同步任务({scope}/{mode})已创建"
     session.add(datasource)
     session.commit()
     session.refresh(task)
@@ -183,6 +245,8 @@ def knowledge_task_payload(task: KnowledgeSyncTask) -> dict:
     return {
         "task_id": task.id,
         "status": task.status.value if isinstance(task.status, KnowledgeSyncTaskStatus) else task.status,
+        "scope": task.scope,
+        "mode": task.mode,
         "phase": task.current_phase,
         "message": task.last_message,
         "completed_tables": task.completed_tables,
@@ -279,6 +343,61 @@ def render_table_markdown(
         )
 
     return "\n".join(lines)
+
+
+def generate_table_summary_basic(
+    table: SchemaTable,
+    fields: list[SchemaField],
+) -> dict[str, str]:
+    """基础模式：不调用 AI，仅根据备注和规则生成摘要内容。"""
+    # 1. 用途说明
+    purpose = table.supplementary_comment or table.original_comment or "暂无业务用途说明，建议补充。"
+    
+    # 2. 核心字段解读
+    core_field_lines = []
+    for f in fields:
+        comment = f.supplementary_comment or f.original_comment
+        if comment:
+            core_field_lines.append(f"{f.name}: {comment}")
+    
+    core_fields = "\n".join(core_field_lines) if core_field_lines else "暂无字段业务说明。"
+
+    # 3. 注意事项 (基于规则)
+    has_delete_field = False
+    has_status_field = False
+    has_time_field = False
+    for f in fields:
+        name_low = f.name.lower()
+        if any(kw in name_low for kw in ["delete", "del", "is_del"]):
+            has_delete_field = True
+        if any(kw in name_low for kw in ["status", "state", "type"]):
+            has_status_field = True
+        if any(kw in name_low for kw in ["time", "date", "at", "dt"]):
+            has_time_field = True
+
+    caveat_lines = []
+    if has_delete_field:
+        caveat_lines.append("表中疑似包含逻辑删除标记字段，查询时请确认是否需要过滤已删除数据。")
+    if has_status_field:
+        caveat_lines.append("表中包含状态或类型字段，使用前请明确状态口径和枚举含义。")
+    if has_time_field:
+        caveat_lines.append("表中包含时间相关字段，请确认统计口径、时区以及应使用的业务时间字段。")
+
+    caveats = "\n".join(caveat_lines) if caveat_lines else "无特殊注意事项。"
+
+    return {
+        "purpose": purpose,
+        "core_fields": core_fields,
+        "relationships": "未开启 AI 分析，暂无自动关联总结。",
+        "graph_links": [],
+        "note_properties": {
+            "type": "table-note",
+            "status": "active",
+            "summary": (purpose[:100] + "...") if len(purpose) > 100 else purpose,
+            "keywords": [table.name]
+        },
+        "caveats": caveats
+    }
 
 
 def render_datasource_index_markdown(
@@ -388,17 +507,12 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             _notify_task_updated(task.id)
             return
 
-        tables = session.exec(
-            select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
-        ).all()
-
         task.status = KnowledgeSyncTaskStatus.RUNNING
         datasource.status = DataSourceStatus.CONNECTION_OK
         datasource.sync_status = SyncStatus.SYNCING
         datasource.last_sync_message = "知识库同步进行中"
         task.started_at = datetime.now()
         task.updated_at = task.started_at
-        task.total_tables = len(tables)
         task.current_phase = "started"
         task.last_message = "知识库同步任务已启动"
         task.current_table = None
@@ -410,24 +524,28 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
         try:
             output_dir = Path(task.output_dir)
             tables_dir = output_dir / "tables"
-            
-            try:
-                tables_dir.mkdir(parents=True, exist_ok=True)
-                # 测试写权限
-                test_file = tables_dir / ".write_test"
-                test_file.write_text("test")
-                test_file.unlink()
-            except PermissionError as exc:
-                raise RuntimeError(f"目录不可写，请检查权限: {output_dir}") from exc
-            except OSError as exc:
-                raise RuntimeError(f"创建目录失败: {output_dir}") from exc
+            tables_dir.mkdir(parents=True, exist_ok=True)
 
-            for idx, table in enumerate(tables):
+            # 确定待处理的表列表
+            if task.scope == KnowledgeSyncScope.TABLE:
+                tables_to_sync = session.exec(
+                    select(SchemaTable).where(SchemaTable.id == task.target_table_id)
+                ).all()
+            else:
+                tables_to_sync = session.exec(
+                    select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
+                ).all()
+            task.total_tables = len(tables_to_sync)
+            session.add(task)
+            session.commit()
+            _notify_task_updated(task.id)
+
+            for idx, table in enumerate(tables_to_sync):
                 update_knowledge_task_progress(
                     session,
                     task,
                     "table_start",
-                    f"开始处理 {table.name}",
+                    f"正在处理: {table.name} ({idx + 1}/{len(tables_to_sync)})",
                     table.name,
                 )
 
@@ -436,15 +554,19 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                         select(SchemaField).where(SchemaField.table_id == table.id)
                     ).all()
 
-                    update_knowledge_task_progress(
-                        session,
-                        task,
-                        "generating_summary",
-                        f"正在为 {table.name} 生成知识卡片...",
-                        table.name,
-                    )
-
-                    summary = generate_table_summary(session, datasource, table, fields)
+                    # 根据模式生成摘要
+                    if task.mode == KnowledgeSyncMode.AI_ENHANCED:
+                        update_knowledge_task_progress(
+                            session,
+                            task,
+                            "generating_summary",
+                            f"正在为 {table.name} 执行 AI 分析...",
+                            table.name,
+                        )
+                        summary = generate_table_summary(session, datasource, table, fields)
+                    else:
+                        summary = generate_table_summary_basic(table, fields)
+                    
                     markdown = render_table_markdown(datasource, table, fields, summary)
                     table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
                     table_path.write_text(markdown, encoding="utf-8")
@@ -452,21 +574,25 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                     task.completed_tables += 1
                 except Exception as table_exc:
                     task.failed_tables += 1
-                    task.error_message = f"表 {table.name} 生成失败: {str(table_exc)[:100]}"
+                    error_detail = str(table_exc)[:100]
+                    task.error_message = f"表 {table.name} 同步失败: {error_detail}"
 
-                task.current_phase = "table_done"
-                task.last_message = f"{table.name} 处理完成"
-                task.current_table = None
                 task.updated_at = datetime.now()
                 session.add(task)
                 session.commit()
                 _notify_task_updated(task.id)
 
             task.finished_at = datetime.now()
-            index_markdown = render_datasource_index_markdown(datasource, task, tables)
+            
+            # 如果是全量同步，或者需要刷新 index，则刷新 index.md
+            # 即使是单表同步，也刷新一下 index.md 保证目录完整（可选）
+            all_tables = session.exec(
+                select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
+            ).all()
+            index_markdown = render_datasource_index_markdown(datasource, task, all_tables)
             (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
             
-            finalize_knowledge_task_status(task, datasource, total_tables=len(tables))
+            finalize_knowledge_task_status(task, datasource, total_tables=len(tables_to_sync))
             task.current_table = None
             datasource.status = DataSourceStatus.CONNECTION_OK
             datasource.last_synced_at = task.finished_at

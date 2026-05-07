@@ -21,6 +21,10 @@ class KnowledgeTaskStatusResponse(BaseModel):
     actual_table_count: int = 0
 
 
+class SyncRequest(BaseModel):
+    mode: str = "basic"
+
+
 def _is_pending_task(task: KnowledgeSyncTask) -> bool:
     status = getattr(task.status, "value", task.status)
     return status == "pending"
@@ -52,11 +56,58 @@ def update_field_remark(field_id: int, remark_data: RemarkUpdate, session: Sessi
 @router.post("/knowledge/sync/{datasource_id}", response_model=KnowledgeSyncTask)
 def start_knowledge_sync(
     datasource_id: int,
+    request_data: SyncRequest,
     session: Session = Depends(get_session),
 ):
-    """启动后台知识库同步任务。刷新页面不会中断任务。"""
+    """启动数据源级后台知识库同步任务。"""
+    from app.models.knowledge import KnowledgeSyncScope, KnowledgeSyncMode
+
     try:
-        task = knowledge_service.create_knowledge_sync_task(session, datasource_id)
+        mode = knowledge_service.validate_sync_mode(request_data.mode)
+        if mode == KnowledgeSyncMode.AI_ENHANCED:
+            raise HTTPException(status_code=400, detail="当前版本不支持整库 AI 增强，请改用单表 AI 分析")
+        task = knowledge_service.create_knowledge_sync_task(
+            session, 
+            datasource_id, 
+            scope=KnowledgeSyncScope.DATASOURCE,
+            mode=mode
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if _is_pending_task(task):
+        threading.Thread(
+            target=knowledge_service.run_knowledge_sync_task,
+            args=(engine, task.id),
+            daemon=True,
+        ).start()
+    return task
+
+
+@router.post("/knowledge/sync-table/{table_id}", response_model=KnowledgeSyncTask)
+def start_table_knowledge_sync(
+    table_id: int,
+    request_data: SyncRequest,
+    session: Session = Depends(get_session),
+):
+    """启动单表后台知识库同步任务。"""
+    from app.models.knowledge import KnowledgeSyncScope, KnowledgeSyncMode
+    
+    table = session.get(SchemaTable, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+        
+    try:
+        mode = knowledge_service.validate_sync_mode(request_data.mode)
+        task = knowledge_service.create_knowledge_sync_task(
+            session, 
+            table.datasource_id, 
+            scope=KnowledgeSyncScope.TABLE,
+            mode=mode,
+            target_table_id=table_id
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

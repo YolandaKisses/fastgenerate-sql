@@ -22,3 +22,15 @@ def test_deprecated_knowledge_sync_stream_route_is_removed():
         )
 
     assert response.status_code == 404
+
+
+def test_knowledge_sync_rejects_invalid_mode():
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/schema/knowledge/sync/1",
+            headers=auth_headers(client),
+            json={"mode": "invalid_mode"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "不支持的同步模式: invalid_mode"

@@ -115,7 +115,7 @@ describe('Schema 管理页面', () => {
       expect(getAllByText('users').length).toBeGreaterThan(0)
     })
 
-    getByText('同步到知识库').click()
+    getByText('全量知识库同步').click()
     const confirm = dialogState.warning.mock.calls[0][0]
 
     await waitFor(() => {
@@ -125,7 +125,7 @@ describe('Schema 管理页面', () => {
 
     await confirm.onPositiveClick()
 
-    expect(post).toHaveBeenCalledWith('/schema/knowledge/sync/1')
+    expect(post).toHaveBeenCalledWith('/schema/knowledge/sync/1', { mode: 'basic' })
   })
 
   it('知识库同步前会提示确认本地补充配置是否已完成', async () => {
@@ -135,7 +135,7 @@ describe('Schema 管理页面', () => {
       expect(getAllByText('users').length).toBeGreaterThan(0)
     })
 
-    getByText('同步到知识库').click()
+    getByText('全量知识库同步').click()
 
     expect(dialogState.warning).toHaveBeenCalledWith(expect.objectContaining({
       title: '确认同步知识库',
