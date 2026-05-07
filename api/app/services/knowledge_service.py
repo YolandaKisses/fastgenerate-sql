@@ -6,6 +6,7 @@ import re
 from typing import Generator
 import threading
 
+import sqlalchemy
 from sqlmodel import Session, select
 
 from app.core.config import settings
@@ -60,6 +61,14 @@ _notifier = _TaskNotifier()
 def _notify_task_updated(task_id: int | None) -> None:
     if task_id is not None:
         _notifier.notify(task_id)
+
+
+def _is_missing_knowledge_task_column_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "no such column" in message
+        and "knowledgesynctask." in message
+    )
 
 
 def get_obsidian_root_path(session: Session) -> str:
@@ -173,7 +182,12 @@ def get_active_knowledge_sync_task(session: Session, datasource_id: int) -> Know
         .order_by(KnowledgeSyncTask.id.desc())
         .limit(1)
     )
-    return session.exec(statement).first()
+    try:
+        return session.exec(statement).first()
+    except sqlalchemy.exc.OperationalError as exc:
+        if _is_missing_knowledge_task_column_error(exc):
+            return None
+        raise
 
 
 def get_latest_knowledge_sync_task(session: Session, datasource_id: int) -> KnowledgeSyncTask | None:
@@ -185,7 +199,12 @@ def get_latest_knowledge_sync_task(session: Session, datasource_id: int) -> Know
         .order_by(KnowledgeSyncTask.id.desc())
         .limit(1)
     )
-    return session.exec(statement).first()
+    try:
+        return session.exec(statement).first()
+    except sqlalchemy.exc.OperationalError as exc:
+        if _is_missing_knowledge_task_column_error(exc):
+            return None
+        raise
 
 
 def mark_stale_knowledge_sync_tasks(
@@ -204,7 +223,14 @@ def mark_stale_knowledge_sync_tasks(
         statement = statement.where(KnowledgeSyncTask.datasource_id == datasource_id)
 
     stale_tasks = []
-    for task in session.exec(statement).all():
+    try:
+        running_tasks = session.exec(statement).all()
+    except sqlalchemy.exc.OperationalError as exc:
+        if _is_missing_knowledge_task_column_error(exc):
+            return 0
+        raise
+
+    for task in running_tasks:
         reference_time = task.updated_at or task.started_at or task.created_at
         if reference_time and reference_time < stale_before:
             stale_tasks.append(task)
@@ -366,13 +392,28 @@ def generate_table_summary_basic(
     has_delete_field = False
     has_status_field = False
     has_time_field = False
+    time_field_patterns = (
+        "_time",
+        "_date",
+        "_at",
+        "_dt",
+        "time_",
+        "date_",
+        "dt_",
+    )
     for f in fields:
         name_low = f.name.lower()
         if any(kw in name_low for kw in ["delete", "del", "is_del"]):
             has_delete_field = True
         if any(kw in name_low for kw in ["status", "state", "type"]):
             has_status_field = True
-        if any(kw in name_low for kw in ["time", "date", "at", "dt"]):
+        if (
+            "time" in name_low
+            or "date" in name_low
+            or name_low.endswith(time_field_patterns)
+            or name_low.startswith(time_field_patterns)
+            or name_low in {"dt", "at"}
+        ):
             has_time_field = True
 
     caveat_lines = []

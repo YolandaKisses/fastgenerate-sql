@@ -811,6 +811,8 @@ def _build_incremental_prompt(
 ) -> str:
     """构建多轮澄清场景下的增量 prompt"""
     prompt_lines = [
+        system_prompt,
+        "",
         "你正在继续同一轮 SQL 澄清会话。",
         "必须遵守：",
         "1. 只返回 JSON",

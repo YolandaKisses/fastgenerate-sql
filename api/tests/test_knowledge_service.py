@@ -213,3 +213,21 @@ def test_generate_table_summary_basic_deduplicates_caveat_categories():
     summary = knowledge_service.generate_table_summary_basic(table, fields)
 
     assert summary["caveats"] == "表中包含时间相关字段，请确认统计口径、时区以及应使用的业务时间字段。"
+
+
+def test_generate_table_summary_basic_does_not_treat_status_as_time_field():
+    table = type(
+        "Table",
+        (),
+        {"name": "orders", "original_comment": "", "supplementary_comment": ""},
+    )()
+    fields = [
+        type("Field", (), {"name": "status", "original_comment": "", "supplementary_comment": ""})(),
+        type("Field", (), {"name": "category", "original_comment": "", "supplementary_comment": ""})(),
+        type("Field", (), {"name": "platform", "original_comment": "", "supplementary_comment": ""})(),
+    ]
+
+    summary = knowledge_service.generate_table_summary_basic(table, fields)
+
+    assert "时间相关字段" not in summary["caveats"]
+    assert "状态或类型字段" in summary["caveats"]

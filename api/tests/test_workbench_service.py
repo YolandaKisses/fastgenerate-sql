@@ -6,6 +6,7 @@ from app.api.routes.workbench import is_valid_hermes_session_id
 from app.services.hermes_service import hermes_trace_message_from_line, iter_hermes_session_json, parse_hermes_json_output, parse_hermes_session_id, run_hermes_session_json
 from app.services.workbench_service import (
     _parse_frontmatter,
+    _build_incremental_prompt,
     ask_llm,
     ask_llm_stream,
     can_ask_datasource,
@@ -140,6 +141,21 @@ orders.user_id = users.id
     assert "### Rule Index" in context
     assert "### Rule: orders_join_rule" in context
     assert used_rules == ["_index", "orders_join_rule"]
+
+
+def test_incremental_prompt_preserves_system_prompt_rules():
+    prompt = _build_incremental_prompt(
+        "SYSTEM RULES",
+        "A",
+        "### 表: orders\n  - id (BIGINT)",
+        "- 上一轮澄清问题：\n  A) 订单明细\n  B) 订单汇总",
+        "### Rule: orders_join_rule\norders.user_id = users.id",
+    )
+
+    assert prompt.startswith("SYSTEM RULES")
+    assert "### 会话摘要" in prompt
+    assert "### 最小 Schema Context" in prompt
+    assert "### 关键补充规则" in prompt
 
 
 def test_schema_retrieval_question_uses_recent_user_history_only():
