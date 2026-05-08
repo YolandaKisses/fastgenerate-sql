@@ -39,7 +39,12 @@ class ValidateRequest(BaseModel):
     datasource_id: int
 
 @router.post("/ask")
-def ask(req: AskRequest, session: Session = Depends(get_session)):
+def ask(req: AskRequest, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    from app.models.datasource import DataSource
+    ds = session.get(DataSource, req.datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+
     validate_optional_hermes_session_id(req.hermes_session_id)
     return workbench_service.ask_llm(
         session,
@@ -57,8 +62,14 @@ def ask_stream(
     history: Optional[str] = Query(None),
     hermes_session_id: Optional[str] = Query(None),
     session: Session = Depends(get_session),
+    current_user = Depends(get_current_user)
 ):
     """SSE 流式问答：实时推送 Hermes 调用过程"""
+    from app.models.datasource import DataSource
+    ds = session.get(DataSource, datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+
     validate_optional_hermes_session_id(hermes_session_id)
 
     # 解析 history JSON 字符串
@@ -87,12 +98,20 @@ def ask_stream(
 
 
 @router.post("/validate")
-def validate(req: ValidateRequest, session: Session = Depends(get_session)):
+def validate(req: ValidateRequest, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
     from app.models.datasource import DataSource
     ds = session.get(DataSource, req.datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+    
     db_type = ds.db_type if ds else None
     return workbench_service.validate_sql_candidate(req.sql, db_type)
 
 @router.post("/execute")
-def execute(req: ExecuteRequest, session: Session = Depends(get_session)):
+def execute(req: ExecuteRequest, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    from app.models.datasource import DataSource
+    ds = session.get(DataSource, req.datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+        
     return workbench_service.execute_readonly_sql(session, req.datasource_id, req.sql, req.audit_log_id)

@@ -29,9 +29,11 @@ class DataSourceBase(SQLModel):
     status: DataSourceStatus = Field(default=DataSourceStatus.DRAFT)
     sync_status: SyncStatus = Field(default=SyncStatus.NEVER_SYNCED)
     last_sync_message: Optional[str] = None
+    user_id: Optional[str] = Field(default=None, index=True)
 
 class DataSource(DataSourceBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)  # Override to make it required in DB
     password: str
     last_synced_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.now)
@@ -42,6 +44,7 @@ class DataSourceCreate(DataSourceBase):
 
 class DataSourceRead(DataSourceBase):
     id: int
+    user_id: str
     last_synced_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime

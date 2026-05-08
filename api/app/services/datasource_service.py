@@ -42,16 +42,17 @@ def build_connect_args(ds: DataSource, timeout_seconds: int) -> dict:
     return {}
 
 
-def create_datasource(session: Session, ds_in: DataSourceCreate) -> DataSource:
+def create_datasource(session: Session, ds_in: DataSourceCreate, user_id: str) -> DataSource:
     ds = DataSource.model_validate(ds_in)
+    ds.user_id = user_id
     ds.password = encrypt_datasource_password(ds.password)
     session.add(ds)
     session.commit()
     session.refresh(ds)
     return ds
 
-def get_datasources(session: Session) -> list[DataSource]:
-    return session.exec(select(DataSource)).all()
+def get_datasources(session: Session, user_id: str) -> list[DataSource]:
+    return session.exec(select(DataSource).where(DataSource.user_id == user_id)).all()
 
 
 def encrypt_existing_datasource_passwords(session: Session) -> int:
@@ -67,9 +68,9 @@ def encrypt_existing_datasource_passwords(session: Session) -> int:
         session.commit()
     return migrated_count
 
-def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate) -> DataSource:
+def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate, user_id: str) -> DataSource:
     ds = session.get(DataSource, ds_id)
-    if not ds:
+    if not ds or ds.user_id != user_id:
         raise HTTPException(status_code=404, detail="DataSource not found")
 
     ds_data = ds_in.model_dump(exclude_unset=True)
@@ -139,9 +140,9 @@ def classify_connection_error(error: Exception) -> dict:
     return {"success": False, "reason": "unknown", "message": message}
 
 
-def delete_datasource(session: Session, ds_id: int) -> dict:
+def delete_datasource(session: Session, ds_id: int, user_id: str) -> dict:
     ds = session.get(DataSource, ds_id)
-    if not ds:
+    if not ds or ds.user_id != user_id:
         raise HTTPException(status_code=404, detail="DataSource not found")
 
     tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == ds_id)).all()
