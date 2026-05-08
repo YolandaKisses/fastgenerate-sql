@@ -460,22 +460,22 @@ def validate_llm_result(result: dict) -> dict:
         raise ValueError("LLM 返回的 used_notes 必须是数组")
     return result
 
-
-FOOD_DELIVERY_TERMS = ["餐饮", "外卖", "美食", "快餐", "餐厅", "食品"]
-CLASSIFICATION_FIELD_TERMS = [
-    "category",
-    "type",
-    "biz_type",
-    "product_type",
-    "order_type",
-    "merchant_category",
-    "merchant_type",
-    "分类",
-    "品类",
-    "类目",
-    "餐饮分类",
-    "商品分类",
-]
+CLARIFICATION_TEMPLATES = {
+    "out_of_scope": (
+        "这个问题似乎不在当前数据库查询范围内，请选择最符合您需求的选项：\n"
+        "A) 改为查询当前数据源中的业务数据\n"
+        "B) 补充要查询的表、字段或业务对象\n"
+        "C) 补充筛选条件、时间范围或统计口径\n"
+        "D) 取消本次 SQL 生成"
+    ),
+    "ambiguous": (
+        "当前问题还需要进一步澄清，请选择最符合您需求的选项：\n"
+        "A) 我补充要查询的表、字段或业务对象\n"
+        "B) 我补充筛选条件、时间范围或统计口径\n"
+        "C) 请基于当前候选 Schema 重新判断并继续生成\n"
+        "D) 取消本次 SQL 生成"
+    ),
+}
 
 
 def guard_sql_candidate_against_missing_semantics(result: dict, knowledge_dir: Path) -> dict:
@@ -505,7 +505,7 @@ def guard_sql_candidate_against_missing_semantics(result: dict, knowledge_dir: P
 
 def _uses_food_delivery_name_guess(sql: str) -> bool:
     normalized = sql.lower()
-    return "product_name" in normalized and " like " in normalized and any(term in sql for term in FOOD_DELIVERY_TERMS)
+    return "product_name" in normalized and " like " in normalized
 
 
 def _read_used_notes_text(used_notes: list, knowledge_dir: Path) -> str:
@@ -518,9 +518,19 @@ def _read_used_notes_text(used_notes: list, knowledge_dir: Path) -> str:
     return "\n".join(parts)
 
 
+CLASSIFICATION_KEYWORDS = {
+    "分类", "类别", "品类", "类型", "种类", "归属",
+    "餐饮", "外卖", "食品", "饮料", "酒水", "甜品", "小吃",
+    "商品分类", "产品分类", "菜品分类", "订单分类", "业务分类",
+    "category", "type", "class", "kind", "group",
+}
+
 def _has_classification_semantics(text: str) -> bool:
+    """检查笔记文本中是否包含分类/品类相关语义。"""
+    if not text:
+        return False
     lowered = text.lower()
-    return any(term.lower() in lowered for term in CLASSIFICATION_FIELD_TERMS)
+    return any(kw.lower() in lowered for kw in CLASSIFICATION_KEYWORDS)
 
 
 def normalize_sql(sql: str) -> str:
@@ -590,31 +600,54 @@ def _build_system_prompt(db_type: str) -> str:
 """
 
 
-def _build_full_prompt(
-    system_prompt: str,
+def build_conversation_prompt(
+    *,
+    db_type: str,
     question: str,
     schema_context: str,
-    obsidian_context: str,
+    obsidian_context: str = "",
+    session_summary: str = "",
+    is_retry: bool = False,
+    candidate_table_names: str = "",
 ) -> str:
-    """构建当前轮 prompt。多轮上下文交给 Hermes session 持有。"""
-    prompt_lines = [system_prompt, ""]
+    """统一的对话 prompt，覆盖首轮/多轮澄清/纠错重试三种场景。"""
+    system_prompt = _build_system_prompt(db_type)
+    parts: list[str] = [system_prompt, ""]
 
-    prompt_lines.extend([
-        f"### 用户当前问题：{question}",
+    if session_summary:
+        parts.extend([
+            "### 会话摘要",
+            "你正在继续同一轮 SQL 澄清会话。",
+            session_summary,
+            "",
+        ])
+
+    parts.append(f"### 用户当前问题：{question}")
+
+    parts.extend([
         "",
         "### Schema Context",
         schema_context,
-        "",
-        "### Obsidian Notes",
-        obsidian_context,
-        "",
-        "执行要求：",
-        "1. 如果用户的问题是对之前澄清的回应，请结合上下文生成 SQL。",
-        "2. 判断歧义和补全关系时只能在 Schema Context 提供的候选范围内进行。",
-        "3. Obsidian Notes 只用于业务语义、口径、注意事项补充。",
-        "4. 严格返回 JSON 格式。",
     ])
-    return "\n".join(prompt_lines)
+
+    if obsidian_context:
+        parts.extend([
+            "",
+            "### Obsidian Notes",
+            obsidian_context,
+        ])
+
+    if is_retry and candidate_table_names:
+        parts.extend([
+            "",
+            "### 补充纠错要求",
+            f"1. 当前 Schema Context 已经包含这些候选表：{candidate_table_names}。",
+            "2. 禁止声称这些候选表缺少 schema 或不可用。",
+            "3. 如果当前表已经足够回答问题，请直接生成 SQL；如果仍需澄清，只能基于这些已提供的表和字段给出选项。",
+            "4. 严格返回 JSON，不要输出额外说明。",
+        ])
+
+    return "\n".join(parts)
 
 
 def should_use_incremental_prompt(
@@ -676,34 +709,6 @@ def build_minimal_schema_context(candidates: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_incremental_prompt(
-    system_prompt: str,
-    question: str,
-    minimal_schema: str,
-    session_summary: str,
-) -> str:
-    """构建多轮澄清场景下的增量 prompt"""
-    prompt_lines = [
-        system_prompt,
-        "",
-        "你正在继续同一轮 SQL 澄清会话。",
-        "必须遵守：",
-        "1. 只返回 JSON",
-        "2. 只使用当前候选 Schema 中存在的表和字段",
-        "3. 如果信息仍不足，继续澄清，不要猜测",
-        "",
-        "### 会话摘要",
-        session_summary,
-        "",
-        "### 最小 Schema Context",
-        minimal_schema,
-    ]
-    prompt_lines.extend([
-        "",
-        f"### 本轮用户回复：{question}"
-    ])
-    
-    return "\n".join(prompt_lines)
 
 
 def prepare_question_context(
@@ -787,24 +792,6 @@ def clarification_has_schema_contradiction(result: dict, candidates: list[dict])
     return any(table_name in message for table_name in candidate_tables)
 
 
-def build_clarification_retry_prompt(
-    system_prompt: str,
-    question: str,
-    schema_context: str,
-    obsidian_context: str,
-    candidates: list[dict],
-) -> str:
-    candidate_tables = "、".join(item["table"].name for item in candidates if item.get("table")) or "（无候选表）"
-    base_prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
-    retry_lines = [
-        "",
-        "补充纠错要求：",
-        f"1. 当前 Schema Context 已经包含这些候选表：{candidate_tables}。",
-        "2. 禁止声称这些候选表缺少 schema 或不可用。",
-        "3. 如果当前表已经足够回答问题，请直接生成 SQL；如果仍需澄清，只能基于这些已提供的表和字段给出选项。",
-        "4. 严格返回 JSON，不要输出额外说明。",
-    ]
-    return "\n".join([base_prompt, *retry_lines])
 
 
 def _log_result(session: Session, datasource_id: int, ds_name: str,
@@ -894,8 +881,18 @@ def ask_llm(
             history=history,
             hermes_session_id=hermes_session_id,
         )
-        system_prompt = _build_system_prompt(ds.db_type)
-        prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+        use_incremental = should_use_incremental_prompt(question, history, candidates, hermes_session_id)
+        session_summary = build_clarification_session_summary(history) if use_incremental else ""
+        minimal_schema = build_minimal_schema_context(candidates) if use_incremental else schema_context
+        obsidian_for_prompt = "" if use_incremental else obsidian_context
+
+        prompt = build_conversation_prompt(
+            db_type=ds.db_type,
+            question=question,
+            schema_context=minimal_schema,
+            obsidian_context=obsidian_for_prompt,
+            session_summary=session_summary,
+        )
         hermes_response = run_hermes_session_json(
             prompt,
             cwd=str(knowledge_dir),
@@ -910,12 +907,16 @@ def ask_llm(
         result = validate_llm_result(raw_result)
         result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
         if clarification_has_schema_contradiction(result, candidates):
-            retry_prompt = build_clarification_retry_prompt(
-                system_prompt,
-                question,
-                schema_context,
-                obsidian_context,
-                candidates,
+            retry_tables = "、".join(
+                item["table"].name for item in candidates if item.get("table")
+            ) or "（无候选表）"
+            retry_prompt = build_conversation_prompt(
+                db_type=ds.db_type,
+                question=question,
+                schema_context=schema_context,
+                obsidian_context=obsidian_context,
+                is_retry=True,
+                candidate_table_names=retry_tables,
             )
             retry_response = run_hermes_session_json(
                 retry_prompt,
@@ -1006,8 +1007,18 @@ def ask_llm_stream(
     # 2. 调用 Hermes。Hermes 在后端提供的候选 Schema 和相关笔记内判断歧义与生成 SQL。
     yield _sse_event("status", {"phase": "calling_hermes", "message": "正在调用 Hermes Agent..."})
 
-    system_prompt = _build_system_prompt(ds.db_type)
-    prompt = _build_full_prompt(system_prompt, question, schema_context, obsidian_context)
+    use_incremental = should_use_incremental_prompt(question, history, candidates, hermes_session_id)
+    session_summary = build_clarification_session_summary(history) if use_incremental else ""
+    minimal_schema = build_minimal_schema_context(candidates) if use_incremental else schema_context
+    obsidian_for_prompt = "" if use_incremental else obsidian_context
+
+    prompt = build_conversation_prompt(
+        db_type=ds.db_type,
+        question=question,
+        schema_context=minimal_schema,
+        obsidian_context=obsidian_for_prompt,
+        session_summary=session_summary,
+    )
 
     try:
         result = None
@@ -1029,28 +1040,38 @@ def ask_llm_stream(
         if result is None:
             raise RuntimeError("Hermes 返回为空")
         if clarification_has_schema_contradiction(result, candidates):
-            retry_prompt = build_clarification_retry_prompt(
-                system_prompt,
-                question,
-                schema_context,
-                obsidian_context,
-                candidates,
+            retry_tables = "、".join(
+                item["table"].name for item in candidates if item.get("table")
+            ) or "（无候选表）"
+            retry_prompt = build_conversation_prompt(
+                db_type=ds.db_type,
+                question=question,
+                schema_context=schema_context,
+                obsidian_context=obsidian_context,
+                is_retry=True,
+                candidate_table_names=retry_tables,
             )
-            retry_response = run_hermes_session_json(
+            yield _sse_event("status", {"phase": "calling_hermes", "message": "正在纠错重试..."})
+            retry_result = None
+            retry_raw_hermes_result = None
+            retry_session_id = None
+            for event in iter_hermes_session_json(
                 retry_prompt,
                 cwd=str(knowledge_dir),
                 hermes_cli_path=hermes_cli_path,
                 session_id=next_hermes_session_id or hermes_session_id,
-            )
-            if len(retry_response) == 3:
-                retry_raw_result, retry_raw_hermes_result, retry_session_id = retry_response
-            else:
-                retry_raw_result, retry_session_id = retry_response
-                retry_raw_hermes_result = retry_raw_result
-            result = validate_llm_result(retry_raw_result)
-            result = validate_and_guard_result(result, knowledge_dir, candidates, ds.db_type)
-            raw_hermes_result = retry_raw_hermes_result or raw_hermes_result
-            next_hermes_session_id = retry_session_id or next_hermes_session_id
+            ):
+                if event.get("type") == "trace":
+                    yield _sse_event("hermes_trace", {"message": event.get("message", "")})
+                elif event.get("type") == "result":
+                    retry_raw_hermes_result = event.get("raw_result") or retry_raw_hermes_result
+                    retry_result = validate_llm_result(event.get("result") or {})
+                    retry_result = validate_and_guard_result(retry_result, knowledge_dir, candidates, ds.db_type)
+                    retry_session_id = event.get("session_id")
+            if retry_result is not None:
+                result = retry_result
+                raw_hermes_result = retry_raw_hermes_result or raw_hermes_result
+                next_hermes_session_id = retry_session_id or next_hermes_session_id
     except (ValueError, RuntimeError) as e:
         yield _sse_event("status", {"phase": "failed", "message": str(e)})
         yield _sse_event("error", {"message": str(e)})

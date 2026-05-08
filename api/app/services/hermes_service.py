@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import select
 import subprocess
 from collections.abc import Generator
 
@@ -119,7 +120,15 @@ def iter_hermes_session_json(
     output_parts: list[str] = []
     if process.stdout is not None:
         try:
-            for raw_line in process.stdout:
+            fd = process.stdout.fileno()
+            while True:
+                ready, _, _ = select.select([fd], [], [], 30.0)
+                if not ready:
+                    process.kill()
+                    raise RuntimeError("Hermes CLI 超过 30 秒无输出，已终止")
+                raw_line = process.stdout.readline()
+                if not raw_line:
+                    break
                 output_parts.append(raw_line)
                 trace_message = hermes_trace_message_from_line(raw_line)
                 if trace_message:
@@ -416,26 +425,14 @@ def _clarification_from_text(text: str) -> dict | None:
         re.search(r"不在.*数据库.*范围|当前数据库查询范围", text, flags=re.I)
     )
 
-    if explicit_out_of_scope:
-        message_lines = [
-            "这个问题似乎不在当前数据库查询范围内，请选择最符合您需求的选项：",
-            "A) 改为查询当前数据源中的业务数据",
-            "B) 补充要查询的表、字段或业务对象",
-            "C) 补充筛选条件、时间范围或统计口径",
-            "D) 取消本次 SQL 生成",
-        ]
-    else:
-        message_lines = [
-            "当前问题还需要进一步澄清，请选择最符合您需求的选项：",
-            "A) 我补充要查询的表、字段或业务对象",
-            "B) 我补充筛选条件、时间范围或统计口径",
-            "C) 请基于当前候选 Schema 重新判断并继续生成",
-            "D) 取消本次 SQL 生成",
-        ]
+    from app.services.workbench_service import CLARIFICATION_TEMPLATES
+
+    template_key = "out_of_scope" if explicit_out_of_scope else "ambiguous"
+    message = CLARIFICATION_TEMPLATES[template_key]
 
     return {
         "type": "clarification",
-        "message": "\n".join(message_lines),
+        "message": message,
         "used_notes": [],
     }
 

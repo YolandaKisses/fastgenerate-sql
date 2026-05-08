@@ -500,6 +500,12 @@ const handleQuerySubmit = (question: string) => {
 
       hermes_trace: (data) => {
         if (!data.message) return;
+        hermesSteps.value.push({
+          phase: "hermes_trace",
+          actor: "hermes",
+          message: data.message.slice(0, 200),
+          timestamp: Date.now(),
+        });
       },
 
       result: (data) => {
