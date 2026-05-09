@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.concurrency import run_in_threadpool
 from sqlmodel import Session
 from app.api.deps import get_current_user
 from app.core.database import get_session
@@ -22,8 +23,6 @@ def update_datasource(ds_id: int, ds_in: DataSourceUpdate, session: Session = De
 @router.delete("/{ds_id}", response_model=dict)
 def delete_datasource(ds_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
     return datasource_service.delete_datasource(session, ds_id, current_user.user_id)
-
-from fastapi.concurrency import run_in_threadpool
 
 @router.post("/{ds_id}/test", response_model=dict)
 async def test_datasource(ds_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):

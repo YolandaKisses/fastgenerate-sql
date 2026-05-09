@@ -116,7 +116,7 @@ def start_knowledge_sync(
     current_user = Depends(get_current_user)
 ):
     """启动数据源级后台知识库同步任务。"""
-    from app.models.knowledge import KnowledgeSyncScope, KnowledgeSyncMode
+    from app.models.knowledge import KnowledgeSyncScope
 
     ds = session.get(DataSource, datasource_id)
     if not ds or ds.user_id != current_user.user_id:
@@ -152,8 +152,8 @@ def start_table_knowledge_sync(
     current_user = Depends(get_current_user)
 ):
     """启动单表后台知识库同步任务。"""
-    from app.models.knowledge import KnowledgeSyncScope, KnowledgeSyncMode
-    
+    from app.models.knowledge import KnowledgeSyncScope
+
     table = session.get(SchemaTable, table_id)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
