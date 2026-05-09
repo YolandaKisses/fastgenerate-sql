@@ -8,10 +8,13 @@ engine = create_engine(
     connect_args={"check_same_thread": False, "timeout": 30}
 )
 
-import app.models.setting  # 确保 RuntimeSetting 被注册到 SQLModel.metadata
-import app.models.user  # 确保 AppUser 被注册到 SQLModel.metadata
-import app.models.login_log  # 确保 LoginLog 被注册到 SQLModel.metadata
-import app.models.routine  # 确保存储过程定义表被注册到 SQLModel.metadata
+import app.models.setting
+import app.models.user
+import app.models.login_log
+import app.models.routine
+import app.models.datasource
+import app.models.schema
+import app.models.knowledge
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     ensure_compatible_schema()

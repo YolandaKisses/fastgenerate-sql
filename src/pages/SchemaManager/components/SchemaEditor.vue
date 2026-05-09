@@ -218,7 +218,7 @@ const handleDetailChange = (key: string, val: string) => {
               AI 单表同步（WIKI）
             </n-button>
           </template>
-          针对当前表进行 AI 深度业务解读。
+          针对当前表进行 AI 深度业务解读（含部分业务术语）。
         </n-tooltip>
       </div>
     </div>

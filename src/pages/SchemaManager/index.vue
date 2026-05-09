@@ -594,7 +594,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 }}
               </n-button>
             </template>
-            通过 AI 深度解析表业务含义及复杂关联，耗时较长。
+            通过 AI 深度解析表业务含义及复杂关联（含部分业务术语），耗时较长。
           </n-tooltip>
         </div>
       </div>
