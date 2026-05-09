@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     DATA_DIR: str = os.path.expanduser("~/.fastgenerate_sql_data")
     OBSIDIAN_VAULT_ROOT: str = os.path.expanduser("~/Documents/obsidian知识库/FastGenerate SQL")
     HERMES_CLI_PATH: str = os.path.expanduser("~/.local/bin/hermes")
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEEPSEEK_LLM_MODEL: str = "deepseek-v4-flash"
     AUTH_TOKEN_SECRET: str = ""
     AUTH_TOKEN_EXPIRE_MINUTES: int = 480
     ALLOWED_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173"

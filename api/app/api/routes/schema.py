@@ -7,8 +7,9 @@ from app.api.deps import get_current_user
 from app.core.database import engine, get_session
 from app.models.datasource import DataSource
 from app.models.knowledge import KnowledgeSyncTask
+from app.models.routine import RoutineDefinition
 from app.models.schema import SchemaTable, SchemaField
-from app.services import knowledge_service, schema_service
+from app.services import knowledge_service, routine_service, schema_service
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/schema", tags=["schema"], dependencies=[Depends(get_current_user)])
@@ -39,6 +40,22 @@ def sync_schema(datasource_id: int, session: Session = Depends(get_session), cur
     if not ds or ds.user_id != current_user.user_id:
         return {"success": False, "message": "DataSource not found"}
     return schema_service.sync_schema_for_datasource(session, ds)
+
+
+@router.post("/routines/sync/{datasource_id}")
+def sync_routines(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    ds = session.get(DataSource, datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        return {"success": False, "message": "DataSource not found"}
+    return routine_service.sync_routines_for_datasource(session, ds)
+
+
+@router.get("/routines/{datasource_id}", response_model=list[RoutineDefinition])
+def read_routines(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    ds = session.get(DataSource, datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+    return routine_service.get_routines(session, datasource_id)
 
 @router.get("/tables/{datasource_id}", response_model=list[SchemaTable])
 def read_tables(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
@@ -107,8 +124,6 @@ def start_knowledge_sync(
 
     try:
         mode = knowledge_service.validate_sync_mode(request_data.mode)
-        if mode == KnowledgeSyncMode.AI_ENHANCED:
-            raise HTTPException(status_code=400, detail="当前版本不支持整库 AI 增强，请改用单表 AI 分析")
         task = knowledge_service.create_knowledge_sync_task(
             session, 
             datasource_id, 

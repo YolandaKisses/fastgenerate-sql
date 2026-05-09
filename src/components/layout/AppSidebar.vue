@@ -26,25 +26,25 @@ function renderIcon(icon: Component) {
 }
 
 const menuOptions = [
-  {
+  /* {
     label: "工作台",
     key: "/workspace",
     icon: renderIcon(HomeOutline),
-  },
-  {
-    label: "数据源配置",
-    key: "/data-sources",
-    icon: renderIcon(CloudOutline),
-  },
+  }, */
   {
     label: "Schema 管理",
     key: "/schema",
     icon: renderIcon(LayersOutline),
   },
+  // {
+  //   label: "审计日志",
+  //   key: "/audit-logs",
+  //   icon: renderIcon(ListOutline),
+  // },
   {
-    label: "审计日志",
-    key: "/audit-logs",
-    icon: renderIcon(ListOutline),
+    label: "数据源配置",
+    key: "/data-sources",
+    icon: renderIcon(CloudOutline),
   },
   {
     label: "本地设置",
@@ -101,11 +101,7 @@ const handleLogout = () => {
     />
     <div class="sidebar-footer">
       <div class="user-info" :class="{ 'is-collapsed': isCollapsed }">
-        <n-avatar
-          round
-          size="medium"
-          class="user-avatar"
-        >
+        <n-avatar round size="medium" class="user-avatar">
           {{ currentUser?.name?.slice(0, 1) || "管" }}
         </n-avatar>
         <div class="user-meta" v-if="!isCollapsed">

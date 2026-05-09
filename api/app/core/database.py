@@ -11,6 +11,7 @@ engine = create_engine(
 import app.models.setting  # 确保 RuntimeSetting 被注册到 SQLModel.metadata
 import app.models.user  # 确保 AppUser 被注册到 SQLModel.metadata
 import app.models.login_log  # 确保 LoginLog 被注册到 SQLModel.metadata
+import app.models.routine  # 确保存储过程定义表被注册到 SQLModel.metadata
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     ensure_compatible_schema()

@@ -8,6 +8,9 @@ from collections.abc import Generator
 
 from app.core.config import settings
 
+import urllib.request
+import urllib.error
+
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
@@ -16,7 +19,7 @@ def _run_hermes_cli(
     command: list[str],
     *,
     cwd: str | None = None,
-    timeout: int = 120,
+    timeout: int = 300,
     timeout_message: str = "Hermes CLI 执行超时，请检查服务可用性",
     failure_message: str = "Hermes 调用失败",
 ) -> str:
@@ -50,6 +53,75 @@ def run_hermes_json(prompt: str, cwd: str | None = None, hermes_cli_path: str | 
         "--ignore-rules",
     ]
     return parse_hermes_json_output(_run_hermes_cli(command, cwd=cwd))
+
+
+DEEPSEEK_SYSTEM_PROMPT = (
+    "你是一个数据库元数据分析助手。根据用户提供的元数据生成结构化知识卡片。"
+    "只返回合法 JSON 对象，不要输出 markdown、代码块或任何额外内容。"
+)
+
+
+def run_deepseek_json(prompt: str) -> dict:
+    """直连 DeepSeek API，跳过 hermes CLI 开销。"""
+    api_key = settings.DEEPSEEK_API_KEY
+    if not api_key:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置，请在环境变量或 .env 中设置")
+
+    base_url = settings.DEEPSEEK_BASE_URL.rstrip("/")
+    model = settings.DEEPSEEK_LLM_MODEL
+
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 3072,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{base_url}/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        error_body = ""
+        try:
+            error_body = exc.read().decode("utf-8")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(f"DeepSeek API 返回错误 HTTP {exc.code}: {error_body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"DeepSeek API 连接失败: {exc.reason}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"DeepSeek API 请求超时或网络错误: {exc}") from exc
+
+    try:
+        result = json.loads(body)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"DeepSeek API 返回非 JSON: {body[:500]}")
+
+    choices = result.get("choices", [])
+    if not choices:
+        raise RuntimeError("DeepSeek API 返回空 choices")
+
+    content = choices[0].get("message", {}).get("content", "")
+    if not content:
+        raise RuntimeError("DeepSeek API 返回空内容")
+
+    return parse_hermes_json_output(content)
 
 
 def run_hermes_session_json(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, type PropType } from "vue";
 import {
   NButton,
   NInput,
@@ -14,7 +14,7 @@ import { get, patch } from "../../../services/request";
 
 const props = defineProps({
   table: { type: Object, default: null },
-  allTables: { type: Array, default: () => [] },
+  allTables: { type: Array as PropType<Array<any>>, default: () => [] },
   knowledgeTask: { type: Object, default: null },
   knowledgeSyncing: { type: Boolean, default: false },
   schemaSyncing: { type: Boolean, default: false },
@@ -36,7 +36,9 @@ const isRelatedChanged = ref(false);
 
 const dirtyFields = ref(new Set<number>());
 const isTableRemarkChanged = ref(false);
-const isRemarkSaveDisabled = computed(() => !isTableRemarkChanged.value && dirtyFields.value.size === 0);
+const isRemarkSaveDisabled = computed(
+  () => !isTableRemarkChanged.value && dirtyFields.value.size === 0,
+);
 
 const tableOptions = computed(() => {
   if (!props.allTables) return [];
@@ -94,7 +96,6 @@ watch(
   { immediate: true },
 );
 
-
 const handleTableRemarkChange = () => {
   isTableRemarkChanged.value = true;
 };
@@ -105,20 +106,28 @@ const handleRemarkChange = (fieldId: number) => {
 
 const saveRemarks = async () => {
   if (!props.table) return;
-  
+
   const promises = [];
-  
+
   if (isTableRemarkChanged.value) {
-    promises.push(patch(`/schema/tables/${props.table.id}/remark`, { remark: tableRemark.value }));
+    promises.push(
+      patch(`/schema/tables/${props.table.id}/remark`, {
+        remark: tableRemark.value,
+      }),
+    );
   }
-  
+
   for (const fieldId of dirtyFields.value) {
-    const field = fields.value.find(f => f.id === fieldId);
+    const field = fields.value.find((f) => f.id === fieldId);
     if (field) {
-      promises.push(patch(`/schema/fields/${fieldId}/remark`, { remark: field.supplementary_comment || "" }));
+      promises.push(
+        patch(`/schema/fields/${fieldId}/remark`, {
+          remark: field.supplementary_comment || "",
+        }),
+      );
     }
   }
-  
+
   try {
     await Promise.all(promises);
     isTableRemarkChanged.value = false;
@@ -180,7 +189,7 @@ const handleDetailChange = (key: string, val: string) => {
           <template #icon>
             <n-icon><BookOutline /></n-icon>
           </template>
-          单表知识库同步
+          基础单表同步（WIKI）
         </n-button>
         <n-button
           tertiary
@@ -196,7 +205,7 @@ const handleDetailChange = (key: string, val: string) => {
           <template #icon>
             <n-icon><SparklesOutline /></n-icon>
           </template>
-          AI 单表深度解析
+          AI 单表同步（WIKI）
         </n-button>
       </div>
     </div>
@@ -210,8 +219,17 @@ const handleDetailChange = (key: string, val: string) => {
       >
         <n-tab-pane name="remarks" tab="备注管理">
           <div class="panel section">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-              <label class="section-label" style="margin-bottom: 0;">表级补充备注</label>
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+              "
+            >
+              <label class="section-label" style="margin-bottom: 0"
+                >表级补充备注</label
+              >
               <n-button
                 :type="!isRemarkSaveDisabled ? 'primary' : 'default'"
                 size="small"
@@ -225,7 +243,7 @@ const handleDetailChange = (key: string, val: string) => {
               v-model:value="tableRemark"
               type="textarea"
               placeholder="补充业务背景、关键口径或表的用途说明..."
-              :autosize="{ minRows: 3, maxRows: 3 }"
+              :autosize="{ minRows: 2, maxRows: 2 }"
               @update:value="handleTableRemarkChange"
             />
           </div>
@@ -234,16 +252,32 @@ const handleDetailChange = (key: string, val: string) => {
             <div class="section-label" style="padding: 12px 16px">
               字段级补充备注
             </div>
-            <div class="table-scroll-area">
-              <table class="native-table">
+            <div class="table-header-area">
+              <table class="native-table native-table-header">
+                <colgroup>
+                  <col style="width: 15%" />
+                  <col style="width: 25%" />
+                  <col style="width: 25%" />
+                  <col style="width: 35%" />
+                </colgroup>
                 <thead>
                   <tr>
-                    <th style="width: 15%">字段名</th>
-                    <th style="width: 25%">类型</th>
-                    <th style="width: 25%">原始备注</th>
-                    <th style="width: 35%">本地补充备注</th>
+                    <th>字段名</th>
+                    <th>类型</th>
+                    <th>原始备注</th>
+                    <th>本地补充备注</th>
                   </tr>
                 </thead>
+              </table>
+            </div>
+            <div class="table-scroll-area">
+              <table class="native-table native-table-body">
+                <colgroup>
+                  <col style="width: 15%" />
+                  <col style="width: 25%" />
+                  <col style="width: 25%" />
+                  <col style="width: 35%" />
+                </colgroup>
                 <tbody>
                   <tr v-for="field in fields" :key="field.id">
                     <td class="code-font" :title="field.name">
@@ -262,9 +296,7 @@ const handleDetailChange = (key: string, val: string) => {
                         placeholder="添加说明..."
                         size="small"
                         :autosize="{ minRows: 1, maxRows: 3 }"
-                        @update:value="
-                          () => handleRemarkChange(field.id)
-                        "
+                        @update:value="() => handleRemarkChange(field.id)"
                       />
                     </td>
                   </tr>
@@ -311,30 +343,32 @@ const handleDetailChange = (key: string, val: string) => {
 
             <div class="relation-preview" v-if="relatedTables.length > 0">
               <div class="preview-title">已选关联表详情</div>
-              <div class="preview-list">
-                <div
-                  v-for="key in relatedTables"
-                  :key="key"
-                  class="preview-item"
-                >
-                  <div class="item-info">
-                    <span class="item-name">{{
-                      allTables.find((t) => t.name === key)?.name || key
-                    }}</span>
-                    <span class="item-comment">{{
-                      allTables.find((t) => t.name === key)?.original_comment ||
-                      "无备注"
-                    }}</span>
-                  </div>
-                  <div class="item-input">
-                    <n-input
-                      :value="relatedTableDetails[key] || ''"
-                      type="textarea"
-                      @update:value="(val) => handleDetailChange(key, val)"
-                      placeholder="例如：t1.user_id = t2.id"
-                      size="small"
-                      :autosize="{ minRows: 2, maxRows: 3 }"
-                    />
+              <div class="preview-scroll-area">
+                <div class="preview-list">
+                  <div
+                    v-for="key in relatedTables"
+                    :key="key"
+                    class="preview-item"
+                  >
+                    <div class="item-info">
+                      <span class="item-name">{{
+                        allTables.find((t) => t.name === key)?.name || key
+                      }}</span>
+                      <span class="item-comment">{{
+                        allTables.find((t) => t.name === key)
+                          ?.original_comment || "无备注"
+                      }}</span>
+                    </div>
+                    <div class="item-input">
+                      <n-input
+                        :value="relatedTableDetails[key] || ''"
+                        type="textarea"
+                        @update:value="(val) => handleDetailChange(key, val)"
+                        placeholder="例如：t1.user_id = t2.id"
+                        size="small"
+                        :autosize="{ minRows: 2, maxRows: 3 }"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -461,6 +495,13 @@ const handleDetailChange = (key: string, val: string) => {
   min-height: 0;
 }
 
+:deep(.full-height-tabs .n-tab-pane) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .section-label {
   font-size: 13px;
   font-weight: 600;
@@ -482,6 +523,12 @@ const handleDetailChange = (key: string, val: string) => {
   overflow: hidden;
 }
 
+.table-header-area {
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-bottom: 1px solid #efeff5;
+}
+
 .table-scroll-area {
   flex: 1;
   overflow: auto;
@@ -501,10 +548,7 @@ const handleDetailChange = (key: string, val: string) => {
   padding: 12px;
   font-weight: 600;
   color: #414753;
-  border-bottom: 1px solid #efeff5;
-  position: sticky;
-  top: 0;
-  z-index: 10; /* Ensure header stays above content */
+  border-bottom: none;
 }
 
 .native-table td {
@@ -526,6 +570,14 @@ const handleDetailChange = (key: string, val: string) => {
 
 .comment-text {
   color: #717785;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
+
+.native-table-body tbody tr:last-child td {
+  border-bottom: none;
 }
 
 :deep(.n-tabs) {
@@ -539,6 +591,8 @@ const handleDetailChange = (key: string, val: string) => {
 }
 
 .relation-panel {
+  flex: 1;
+  min-height: 0;
   padding: 20px;
   background: #fbfcfd;
   border-radius: 8px;
@@ -556,16 +610,28 @@ const handleDetailChange = (key: string, val: string) => {
 }
 
 .relation-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px dashed #efeff5;
 }
 
 .preview-title {
+  flex: 0 0 auto;
   font-size: 14px;
   font-weight: 600;
   color: #181c22;
   margin-bottom: 12px;
+}
+
+.preview-scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 6px;
 }
 
 .preview-list {

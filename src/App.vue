@@ -47,11 +47,14 @@ const isLoginPage = computed(() => route.path === '/login')
 
 .main-content {
   background-color: #fbfcfd;
+  height: 100vh;
+  min-height: 0;
 }
 
 .page-container {
   padding: 32px 40px;
   height: 100%;
+  min-height: 0;
   box-sizing: border-box;
   overflow-y: auto;
 }
