@@ -4,17 +4,12 @@ import { isAuthenticated } from './services/auth'
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: '/workspace'
+    redirect: '/data-sources'
   },
   {
     path: '/login',
     component: () => import('./pages/Login/index.vue'),
     meta: { public: true }
-  },
-  {
-    path: '/workspace',
-    component: () => import('./pages/Workbench/index.vue'),
-    meta: { requiresAuth: true }
   },
   {
     path: '/data-sources',
@@ -24,11 +19,6 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/schema',
     component: () => import('./pages/SchemaManager/index.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/audit-logs',
-    component: () => import('./pages/AuditLogs/index.vue'),
     meta: { requiresAuth: true }
   },
   {
@@ -46,7 +36,7 @@ export const router = createRouter({
 router.beforeEach((to) => {
   const authed = isAuthenticated()
   if (to.path === '/login' && authed) {
-    return '/workspace'
+    return '/data-sources'
   }
   if (to.meta.requiresAuth && !authed) {
     return {

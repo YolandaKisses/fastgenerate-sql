@@ -26,21 +26,11 @@ function renderIcon(icon: Component) {
 }
 
 const menuOptions = [
-  /* {
-    label: "工作台",
-    key: "/workspace",
-    icon: renderIcon(HomeOutline),
-  }, */
   {
     label: "Schema 管理",
     key: "/schema",
     icon: renderIcon(LayersOutline),
   },
-  // {
-  //   label: "审计日志",
-  //   key: "/audit-logs",
-  //   icon: renderIcon(ListOutline),
-  // },
   {
     label: "数据源配置",
     key: "/data-sources",

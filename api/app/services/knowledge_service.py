@@ -21,7 +21,7 @@ from app.models.knowledge import (
 )
 from app.models.routine import RoutineDefinition
 from app.models.schema import SchemaField, SchemaTable
-from app.services.hermes_service import run_hermes_json, run_deepseek_json
+from app.services.hermes_service import run_deepseek_json
 from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
 
@@ -1221,30 +1221,6 @@ def generate_table_summary(
         "business_terms": data.get("business_terms", []),
         "_source": "ai",
     }
-
-
-def _run_knowledge_summary_with_retry(
-    prompt: str,
-    *,
-    hermes_cli_path: str | None = None,
-    max_attempts: int = 2,
-) -> dict:
-    last_error: RuntimeError | None = None
-    for _ in range(max_attempts):
-        try:
-            return run_hermes_json(prompt, hermes_cli_path=hermes_cli_path)
-        except RuntimeError as exc:
-            last_error = exc
-            if not _is_retryable_knowledge_summary_error(exc):
-                raise
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("知识摘要生成失败")
-
-
-def _is_retryable_knowledge_summary_error(exc: RuntimeError) -> bool:
-    message = str(exc)
-    return "Hermes 返回了非 JSON 内容" in message or "Hermes 返回为空" in message
 
 
 

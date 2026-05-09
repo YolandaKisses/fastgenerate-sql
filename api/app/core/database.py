@@ -25,11 +25,6 @@ def _is_sqlite_readonly_error(exc: sqlalchemy.exc.OperationalError) -> bool:
 def ensure_compatible_schema():
     try:
         with engine.begin() as conn:
-            columns = conn.execute(sqlalchemy.text("PRAGMA table_info(auditlog)")).fetchall()
-            column_names = {row[1] for row in columns}
-            if "used_notes" not in column_names:
-                conn.execute(sqlalchemy.text("ALTER TABLE auditlog ADD COLUMN used_notes VARCHAR"))
-
             sync_task_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(knowledgesynctask)")).fetchall()
             sync_task_column_names = {row[1] for row in sync_task_columns}
             if "failed_tables" not in sync_task_column_names:

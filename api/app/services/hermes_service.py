@@ -44,17 +44,6 @@ def _run_hermes_cli(
     return result.stdout
 
 
-def run_hermes_json(prompt: str, cwd: str | None = None, hermes_cli_path: str | None = None) -> dict:
-    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
-    command = [
-        cli_path,
-        "-z",
-        prompt,
-        "--ignore-rules",
-    ]
-    return parse_hermes_json_output(_run_hermes_cli(command, cwd=cwd))
-
-
 DEEPSEEK_SYSTEM_PROMPT = (
     "你是一个数据库元数据分析助手。根据用户提供的元数据生成结构化知识卡片。"
     "只返回合法 JSON 对象，不要输出 markdown、代码块或任何额外内容。"
