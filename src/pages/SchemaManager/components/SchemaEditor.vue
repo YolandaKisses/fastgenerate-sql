@@ -7,6 +7,7 @@ import {
   NIcon,
   NTabs,
   NTabPane,
+  NTooltip,
   useMessage,
 } from "naive-ui";
 import { SyncOutline, BookOutline, SparklesOutline } from "@vicons/ionicons5";
@@ -175,38 +176,50 @@ const handleDetailChange = (key: string, val: string) => {
         <span class="table-comment">{{ table.original_comment }}</span>
       </div>
       <div class="header-actions">
-        <n-button
-          secondary
-          size="small"
-          :loading="
-            isKnowledgeSyncActive &&
-            knowledgeTask?.scope === 'table' &&
-            knowledgeTask?.mode === 'basic'
-          "
-          :disabled="isKnowledgeSyncActive || schemaSyncing"
-          @click="emit('sync-table', 'basic')"
-        >
-          <template #icon>
-            <n-icon><BookOutline /></n-icon>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button
+              type="primary"
+              secondary
+              size="small"
+              :loading="
+                isKnowledgeSyncActive &&
+                knowledgeTask?.scope === 'table' &&
+                knowledgeTask?.mode === 'basic'
+              "
+              :disabled="isKnowledgeSyncActive || schemaSyncing"
+              @click="emit('sync-table', 'basic')"
+            >
+              <template #icon>
+                <n-icon><BookOutline /></n-icon>
+              </template>
+              基础单表同步（WIKI）
+            </n-button>
           </template>
-          基础单表同步（WIKI）
-        </n-button>
-        <n-button
-          tertiary
-          size="small"
-          :loading="
-            isKnowledgeSyncActive &&
-            knowledgeTask?.scope === 'table' &&
-            knowledgeTask?.mode === 'ai_enhanced'
-          "
-          :disabled="isKnowledgeSyncActive || schemaSyncing"
-          @click="emit('sync-table', 'ai_enhanced')"
-        >
-          <template #icon>
-            <n-icon><SparklesOutline /></n-icon>
+          快速同步当前表的备注、表间关系及存储过程事实。
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button
+              type="warning"
+              secondary
+              size="small"
+              :loading="
+                isKnowledgeSyncActive &&
+                knowledgeTask?.scope === 'table' &&
+                knowledgeTask?.mode === 'ai_enhanced'
+              "
+              :disabled="isKnowledgeSyncActive || schemaSyncing"
+              @click="emit('sync-table', 'ai_enhanced')"
+            >
+              <template #icon>
+                <n-icon><SparklesOutline /></n-icon>
+              </template>
+              AI 单表同步（WIKI）
+            </n-button>
           </template>
-          AI 单表同步（WIKI）
-        </n-button>
+          针对当前表进行 AI 深度业务解读。
+        </n-tooltip>
       </div>
     </div>
 

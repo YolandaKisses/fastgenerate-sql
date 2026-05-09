@@ -7,6 +7,8 @@ import {
   NTabs,
   NTabPane,
   NTag,
+  NTooltip,
+  NButtonGroup,
   useMessage,
   useDialog,
 } from "naive-ui";
@@ -357,9 +359,10 @@ const handleKnowledgeSync = async () => {
   const totalTables = tables.value.length;
 
   dialog.warning({
-    title: "确认同步知识库",
-    content: "是否已完成本地补充配置？确认后将开始知识库同步。",
-    positiveText: "确认开始",
+    title: "确认全量同步知识库 (WIKI)",
+    content:
+      "将同步本地备注、关联表及存储过程事实。注意：此操作将清空并重建当前数据源下所有已生成的知识库页面。是否继续？",
+    positiveText: "确认重建",
     negativeText: "取消",
     onPositiveClick: async () => {
       cleanupKnowledgeSSE();
@@ -391,9 +394,9 @@ const handleKnowledgeAiSync = async () => {
   const totalTables = tables.value.length;
 
   dialog.warning({
-    title: "确认 AI 全量同步",
-    content: `将对数据源全部 ${totalTables} 张表执行 AI 分析，预计耗时较长（约 ${Math.ceil(totalTables * 0.5)} 分钟）。是否继续？`,
-    positiveText: "确认开始",
+    title: "确认 AI 全量深度同步",
+    content: `将调用 AI 对数据源全部 ${totalTables} 张表进行深度业务解读。注意：此操作将清空并重建当前知识库页面，预计耗时较长（约 ${Math.ceil(totalTables * 0.5)} 分钟）。是否继续？`,
+    positiveText: "确认并开始 AI 解析",
     negativeText: "取消",
     onPositiveClick: async () => {
       cleanupKnowledgeSSE();
@@ -552,38 +555,48 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             </template>
             同步存储过程
           </n-button>
-          <n-button
-            type="primary"
-            size="small"
-            :loading="knowledgeSyncing && knowledgeTask?.scope !== 'table'"
-            :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
-            @click="handleKnowledgeSync"
-          >
-            <template #icon>
-              <n-icon><BookOutline /></n-icon>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button
+                type="primary"
+                size="small"
+                :loading="knowledgeSyncing && knowledgeTask?.scope !== 'table'"
+                :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
+                @click="handleKnowledgeSync"
+              >
+                <template #icon>
+                  <n-icon><BookOutline /></n-icon>
+                </template>
+                {{
+                  knowledgeSyncing && knowledgeTask?.scope !== "table"
+                    ? "同步中..."
+                    : "基础全量同步（WIKI）"
+                }}
+              </n-button>
             </template>
-            {{
-              knowledgeSyncing && knowledgeTask?.scope !== "table"
-                ? "同步中..."
-                : "基础全量同步（WIKI）"
-            }}
-          </n-button>
-          <n-button
-            type="warning"
-            size="small"
-            :loading="knowledgeSyncing && knowledgeTask?.scope !== 'table'"
-            :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
-            @click="handleKnowledgeAiSync"
-          >
-            <template #icon>
-              <n-icon><SparklesOutline /></n-icon>
+            快速同步本地备注、表间关系及存储过程事实。
+          </n-tooltip>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button
+                type="warning"
+                size="small"
+                :loading="knowledgeSyncing && knowledgeTask?.scope !== 'table'"
+                :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
+                @click="handleKnowledgeAiSync"
+              >
+                <template #icon>
+                  <n-icon><SparklesOutline /></n-icon>
+                </template>
+                {{
+                  knowledgeSyncing && knowledgeTask?.scope !== "table"
+                    ? "同步中..."
+                    : "AI 全量同步（WIKI）"
+                }}
+              </n-button>
             </template>
-            {{
-              knowledgeSyncing && knowledgeTask?.scope !== "table"
-                ? "同步中..."
-                : "AI 全量同步（WIKI）"
-            }}
-          </n-button>
+            通过 AI 深度解析表业务含义及复杂关联，耗时较长。
+          </n-tooltip>
         </div>
       </div>
     </div>
