@@ -18,7 +18,7 @@ const emit = defineEmits(['select'])
 </script>
 
 <template>
-  <n-card class="list-card" content-style="padding: 0; display: flex; flex-direction: column; height: 100%; border-radius: 12px;">
+  <div class="list-card">
     <div v-if="routines.length === 0" class="empty-list-container">
       <n-empty description="暂无已同步的存储过程或函数" size="large">
         <template #icon>
@@ -50,20 +50,23 @@ const emit = defineEmits(['select'])
         </n-list-item>
       </n-list>
     </n-scrollbar>
-  </n-card>
+  </div>
 </template>
 
 <style scoped>
 .list-card {
   border-radius: 12px;
   border: 1px solid #efeff5;
-  box-shadow: none;
   background: #ffffff;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .empty-list-container {
-  height: 100%;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;

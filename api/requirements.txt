@@ -8,3 +8,4 @@ psycopg2-binary>=2.9.9
 oracledb>=2.0.0
 httpx>=0.27.0
 cryptography>=42.0.0
+collate-sqllineage>=2.1.1

@@ -176,7 +176,7 @@ const handleDetailChange = (key: string, val: string) => {
         <span class="table-comment">{{ table.original_comment }}</span>
       </div>
       <div class="header-actions">
-        <n-tooltip trigger="hover">
+        <!-- <n-tooltip trigger="hover">
           <template #trigger>
             <n-button
               type="primary"
@@ -197,7 +197,7 @@ const handleDetailChange = (key: string, val: string) => {
             </n-button>
           </template>
           快速同步当前表的备注、表间关系及存储过程事实。
-        </n-tooltip>
+        </n-tooltip> -->
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-button
@@ -215,10 +215,10 @@ const handleDetailChange = (key: string, val: string) => {
               <template #icon>
                 <n-icon><SparklesOutline /></n-icon>
               </template>
-              AI 单表同步（WIKI）
+              单表同步知识库
             </n-button>
           </template>
-          针对当前表进行 AI 深度业务解读（含部分业务术语）。
+          针对当前表进行深度业务解读（含部分业务术语）。
         </n-tooltip>
       </div>
     </div>
@@ -226,7 +226,6 @@ const handleDetailChange = (key: string, val: string) => {
     <div class="editor-content">
       <n-tabs
         type="line"
-        animated
         class="full-height-tabs"
         pane-style="flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 20px;"
       >
@@ -436,7 +435,8 @@ const handleDetailChange = (key: string, val: string) => {
 .empty-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   background: #fff;
   border: 1px solid #efeff5;
   border-radius: 12px;

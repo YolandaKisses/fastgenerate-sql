@@ -5,10 +5,10 @@ from app.models.knowledge import (
     KnowledgeSyncTask,
     KnowledgeSyncTaskStatus,
 )
-from app.models.routine import RoutineDefinition
+from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaTable
 from app.services import knowledge_service
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import SQLModel, Session, create_engine, select
 from pathlib import Path
 
 
@@ -268,6 +268,41 @@ def test_get_related_routines_for_table_matches_definition_text_case_insensitive
         assert [item.name for item in matched] == ["P_SYNC_USERS"]
 
 
+def test_get_related_routines_for_table_prefers_structured_routine_facts():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        routine = RoutineDefinition(
+            datasource_id=1,
+            owner="APP",
+            name="P_SYNC_USERS",
+            routine_type="PROCEDURE",
+            definition_text="v_users_count := 1",
+        )
+        session.add(routine)
+        session.commit()
+        session.refresh(routine)
+        session.add(
+            RoutineSqlFact(
+                datasource_id=1,
+                routine_id=routine.id,
+                statement_index=0,
+                statement_text="INSERT INTO user_snapshot SELECT * FROM orders",
+                table_name="orders",
+                normalized_table_name="orders",
+                usage_type="read",
+                parser_name="sqllineage",
+            )
+        )
+        session.commit()
+
+        table = SchemaTable(datasource_id=1, name="users")
+        matched = knowledge_service.get_related_routines_for_table(session, datasource_id=1, table=table)
+
+        assert matched == []
+
+
 def test_generate_table_summary_prompt_includes_related_routines_section(monkeypatch):
     captured = {"prompt": ""}
 
@@ -313,6 +348,42 @@ def test_generate_table_summary_prompt_includes_related_routines_section(monkeyp
                 definition_text="SELECT * FROM users WHERE users.id IS NOT NULL",
             )
         )
+        session.commit()
+        routine = session.exec(select(RoutineDefinition)).first()
+        session.add_all(
+            [
+                RoutineSqlFact(
+                    datasource_id=1,
+                    routine_id=routine.id,
+                    statement_index=0,
+                    statement_text="INSERT INTO user_snapshot SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="user_snapshot",
+                    normalized_table_name="user_snapshot",
+                    usage_type="write",
+                    parser_name="sqllineage",
+                ),
+                RoutineSqlFact(
+                    datasource_id=1,
+                    routine_id=routine.id,
+                    statement_index=0,
+                    statement_text="INSERT INTO user_snapshot SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="users",
+                    normalized_table_name="users",
+                    usage_type="read",
+                    parser_name="sqllineage",
+                ),
+                RoutineSqlFact(
+                    datasource_id=1,
+                    routine_id=routine.id,
+                    statement_index=0,
+                    statement_text="INSERT INTO user_snapshot SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="orders",
+                    normalized_table_name="orders",
+                    usage_type="read",
+                    parser_name="sqllineage",
+                ),
+            ]
+        )
         session.add(
             SchemaTable(
                 datasource_id=1,
@@ -343,11 +414,13 @@ def test_generate_table_summary_prompt_includes_related_routines_section(monkeyp
     assert "相关存储过程摘要" in captured["prompt"]
     assert "相关存储过程关键片段" in captured["prompt"]
     assert "APP.P_SYNC_USERS｜PROCEDURE" in captured["prompt"]
-    assert "当前表角色:" in captured["prompt"]
-    assert "SELECT * FROM users WHERE users.id IS NOT NULL" in captured["prompt"]
+    assert "当前表角色: read" in captured["prompt"]
+    assert "相关表:" in captured["prompt"]
+    assert "orders" in captured["prompt"]
+    assert "user_snapshot" in captured["prompt"]
+    assert "INSERT INTO user_snapshot SELECT * FROM users u JOIN orders o ON o.user_id = u.id" in captured["prompt"]
     assert "原文:" not in captured["prompt"]
-    assert '所有字符串中禁止使用英文双引号' in captured["prompt"]
-    assert "举例时用单引号、中文书名号或直接不用引号" in captured["prompt"]
+    assert "仅在输出内容（如 purpose, core_fields）中禁用英文双引号" in captured["prompt"]
 
 
 def test_select_high_relevance_sibling_tables_prioritizes_manual_and_routine_hits():
@@ -910,7 +983,7 @@ def test_render_table_markdown_includes_routine_evidence_sections():
         },
     )
 
-    assert "## 相关存储过程" in markdown
+    assert "## 🛠️ 相关存储过程" in markdown
     assert "- **证据来源**: Oracle 存储过程/函数同步原文" in markdown
     assert "- `APP.P_SYNC_USERS` · `PROCEDURE`" in markdown
     assert "### `APP.P_SYNC_USERS`" in markdown
@@ -945,7 +1018,7 @@ def test_render_table_markdown_always_shows_routine_section_and_strips_nohit_cav
         },
     )
 
-    assert "## 相关存储过程" in markdown
+    assert "## 🛠️ 相关存储过程" in markdown
     assert "- **证据来源**: Oracle 存储过程/函数同步原文" in markdown
     assert "- 暂无命中过程" in markdown
     assert "未命中任何存储过程原文" not in markdown.split("## 注意事项", 1)[1].split("## 相关存储过程", 1)[0]

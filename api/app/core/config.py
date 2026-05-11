@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "FastGenerate SQL API"
     # 默认本地 SQLite 数据目录，Tauri 环境下可被覆写
     DATA_DIR: str = os.path.expanduser("~/.fastgenerate_sql_data")
-    OBSIDIAN_VAULT_ROOT: str = os.path.expanduser("~/Documents/obsidian知识库/FastGenerate SQL")
+    WIKI_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../wiki"))
     HERMES_CLI_PATH: str = os.path.expanduser("~/.local/bin/hermes")
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"

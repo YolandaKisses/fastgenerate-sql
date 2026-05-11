@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from app.models.datasource import DataSource, DataSourceStatus
 from app.models.routine import RoutineDefinition
 from app.services.datasource_service import build_connect_args, build_database_url
+from app.services.routine_lineage_service import rebuild_routine_sql_facts
 
 
 ORACLE_ROUTINE_SQL = """
@@ -68,6 +69,7 @@ def sync_routines_for_datasource(session: Session, ds: DataSource) -> dict:
                 session.delete(obsolete)
 
         now = datetime.now()
+        routines_to_rebuild: list[RoutineDefinition] = []
         for key, text_lines in grouped.items():
             owner, name, routine_type = key
             definition_text = _normalize_routine_text(text_lines)
@@ -86,6 +88,14 @@ def sync_routines_for_datasource(session: Session, ds: DataSource) -> dict:
                     updated_at=now,
                 )
             session.add(item)
+            routines_to_rebuild.append(item)
+
+        session.flush()
+        rebuild_routine_sql_facts(
+            session,
+            datasource_id=ds.id,
+            routines=routines_to_rebuild,
+        )
 
         ds.status = DataSourceStatus.CONNECTION_OK
         ds.last_sync_message = f"Oracle 存储过程/函数已同步 {len(grouped)} 个对象"

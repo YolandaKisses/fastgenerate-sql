@@ -28,7 +28,7 @@ const filteredTables = computed(() => {
 </script>
 
 <template>
-  <n-card class="list-card" content-style="padding: 0; display: flex; flex-direction: column; height: 100%; border-radius: 12px;">
+  <div class="list-card">
     <div class="search-box">
       <n-input v-model:value="keyword" placeholder="搜索表名..." size="small" clearable>
         <template #prefix>
@@ -54,16 +54,19 @@ const filteredTables = computed(() => {
         <div v-if="filteredTables.length === 0" class="empty-state">没有匹配的表</div>
       </div>
     </n-scrollbar>
-  </n-card>
+  </div>
 </template>
 
 <style scoped>
 .list-card {
   border-radius: 12px;
   border: 1px solid #efeff5;
-  box-shadow: none;
   background: #ffffff;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .search-box {
@@ -73,6 +76,7 @@ const filteredTables = computed(() => {
 
 .table-scroll {
   flex: 1;
+  min-height: 0;
 }
 
 .table-list {

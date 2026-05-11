@@ -289,7 +289,8 @@ const subscribeKnowledgeTask = (taskId: number) => {
           total_tables:
             data.total_tables ?? knowledgeTask.value?.total_tables ?? 0,
           current_table: data.current_table ?? null,
-          failed_table_names: data.failed_table_names ?? knowledgeTask.value?.failed_table_names,
+          failed_table_names:
+            data.failed_table_names ?? knowledgeTask.value?.failed_table_names,
           error_message:
             data.error_message ?? knowledgeTask.value?.error_message,
         };
@@ -448,9 +449,9 @@ const handleKnowledgeAiSync = async () => {
   const totalTables = tables.value.length;
 
   dialog.warning({
-    title: "确认 AI 全量深度同步",
-    content: `将调用 AI 对数据源全部 ${totalTables} 张表进行深度业务解读。注意：此操作将清空并重建当前知识库页面，预计耗时较长（约 ${Math.ceil(totalTables * 0.5)} 分钟）。是否继续？`,
-    positiveText: "确认并开始 AI 解析",
+    title: "确认增量同步知识库",
+    content: "将调用 AI 仅对尚未生成知识库文档的表进行深度业务解读。已生成的文档将被安全跳过，不会被覆盖。是否继续？",
+    positiveText: "确认增量同步",
     negativeText: "取消",
     onPositiveClick: async () => {
       cleanupKnowledgeSSE();
@@ -544,7 +545,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
     <div class="page-header">
       <div class="header-top">
         <div class="header-left">
-          <h1 class="page-title">Schema备注管理与存储过程</h1>
+          <h1 class="page-title">元数据备注管理与存储过程</h1>
           <p class="page-subtitle">
             管理数据库元数据与存储过程，同步结构事实并为 AI
             深度解析提供更完整的业务上下文。
@@ -586,11 +587,11 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
               class="knowledge-detail"
             >
               {{ knowledgeDetailMessage(latestDatasourceTask) }}
-              <n-button 
+              <n-button
                 v-if="parseFailedTableNames(latestDatasourceTask).length > 0"
-                text 
-                type="primary" 
-                size="tiny" 
+                text
+                type="primary"
+                size="tiny"
                 style="margin-left: 8px"
                 @click="showFailedModal = true"
               >
@@ -618,6 +619,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             v-model:value="currentSource"
             :options="sourceOptions"
             placeholder="选择数据源"
+            size="small"
             style="width: 260px"
           />
           <n-button
@@ -630,7 +632,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             <template #icon>
               <n-icon><SyncOutline /></n-icon>
             </template>
-            同步数据源Schema
+            同步表结构
           </n-button>
           <n-button
             secondary
@@ -644,7 +646,8 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             </template>
             同步存储过程
           </n-button>
-          <n-tooltip trigger="hover">
+
+          <!-- <n-tooltip trigger="hover">
             <template #trigger>
               <n-button
                 type="primary"
@@ -664,7 +667,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
               </n-button>
             </template>
             快速同步本地备注、表间关系及存储过程事实。
-          </n-tooltip>
+          </n-tooltip> -->
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-button
@@ -680,7 +683,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 {{
                   knowledgeSyncing && knowledgeTask?.scope !== "table"
                     ? "同步中..."
-                    : "AI 增量同步"
+                    : "增量同步知识库"
                 }}
               </n-button>
             </template>
@@ -698,7 +701,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 <template #icon>
                   <n-icon><RefreshOutline /></n-icon>
                 </template>
-                AI 全量重建
+                全量同步知识库
               </n-button>
             </template>
             清空并彻底重新生成所有页面，用于解决结构性错误。
@@ -711,8 +714,8 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
       <n-tabs
         v-model:value="activeTab"
         type="line"
-        animated
         class="manager-tabs"
+        pane-style="flex: 1; display: flex; flex-direction: column; min-height: 0;"
       >
         <n-tab-pane name="schema" tab="Schema">
           <div class="schema-container">
@@ -789,7 +792,10 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
     >
       <n-scrollbar style="max-height: 400px">
         <n-list bordered>
-          <n-list-item v-for="name in parseFailedTableNames(latestDatasourceTask)" :key="name">
+          <n-list-item
+            v-for="name in parseFailedTableNames(latestDatasourceTask)"
+            :key="name"
+          >
             {{ name }}
           </n-list-item>
         </n-list>
@@ -807,7 +813,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
 .page-shell {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
@@ -815,30 +821,30 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
 .page-header {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  margin-bottom: 5px;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .header-top {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 24px;
 }
 
 .header-status {
   display: flex;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  flex-direction: row;
+  gap: 12px;
 }
 
 .toolbar-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
+  gap: 12px;
+  padding: 8px 12px;
   border: 1px solid #e8ebf2;
   border-radius: 12px;
   background: linear-gradient(135deg, #ffffff 0%, #f7f9fc 100%);
@@ -854,11 +860,13 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
 .content-shell {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .manager-tabs {
-  height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;

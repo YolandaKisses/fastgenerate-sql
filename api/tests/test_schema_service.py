@@ -43,6 +43,7 @@ def test_schema_resync_removes_deleted_tables_fields_and_stale_knowledge_files(t
 
     monkeypatch.setattr(schema_service.sqlalchemy, "create_engine", lambda *args, **kwargs: object())
     monkeypatch.setattr(schema_service.sqlalchemy, "inspect", lambda _engine: FakeInspector())
+    monkeypatch.setattr(schema_service.settings, "WIKI_ROOT", str(vault_root))
 
     with Session(engine) as session:
         ds = DataSource(
@@ -57,7 +58,7 @@ def test_schema_resync_removes_deleted_tables_fields_and_stale_knowledge_files(t
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
         session.add(ds)
-        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(vault_root)))
+
         session.commit()
         session.refresh(ds)
 

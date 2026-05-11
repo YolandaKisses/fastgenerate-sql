@@ -19,11 +19,14 @@ from app.models.knowledge import (
     KnowledgeSyncScope,
     KnowledgeSyncMode
 )
-from app.models.routine import RoutineDefinition
+from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaField, SchemaTable
 from app.services.hermes_service import run_deepseek_json
 from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
+from app.services.routine_lineage_service import normalize_table_name
+
+run_hermes_json = run_deepseek_json
 
 STALE_RUNNING_TASK_AFTER = timedelta(minutes=8)
 MAX_PROMPT_SIBLING_TABLES = 8
@@ -146,8 +149,7 @@ def _is_missing_knowledge_task_column_error(exc: Exception) -> bool:
     )
 
 
-def get_obsidian_root_path(session: Session) -> str:
-    return setting_service.get_setting(session, "obsidian_vault_root", settings.OBSIDIAN_VAULT_ROOT)
+
 
 
 def validate_sync_mode(mode: str) -> KnowledgeSyncMode:
@@ -221,7 +223,7 @@ def create_knowledge_sync_task(
             raise ValueError("未找到已同步表，无法同步到知识库")
         total_tables = len(tables)
 
-    output_root = get_obsidian_root_path(session)
+    output_root = settings.WIKI_ROOT
     output_dir = str(Path(output_root) / sanitize_path_segment(datasource.name))
     task = KnowledgeSyncTask(
         datasource_id=datasource.id,
@@ -394,15 +396,16 @@ def render_table_markdown(
         "",
         f"# 🏷️ {table.name}",
         "",
-        "[[../index|⬅️ 返回数据源总览]]",
+        "[⬅️ 返回数据源总览](../index.md)",
         "",
     ]
 
-    # --- 概述（Callout 样式） ---
+    # --- 概述（VuePress Container 样式） ---
     lines.extend([
-        "> [!abstract] 概述",
-        f"> - **数据源**: `{datasource.name}`",
-        f"> - **业务说明**: {summary.get('purpose', '暂无')}",
+        "::: tip 概述",
+        f"- **数据源**: `{datasource.name}`",
+        f"- **业务说明**: {summary.get('purpose', '暂无')}",
+        ":::",
         "",
         "---",
         "",
@@ -411,7 +414,7 @@ def render_table_markdown(
     # --- 表间关系 ---
     lines.extend([
         "## 🔗 表间关系",
-        "> [!link] 关联模型与推断",
+        "::: info 关联模型与推断",
     ])
     has_relationship_content = False
 
@@ -420,22 +423,22 @@ def render_table_markdown(
         # 处理可能的多行关系说明，确保每一行都带 >
         rel_lines = format_bullet_section(relationships)
         for rel in rel_lines:
-            lines.append(f"> {rel}")
+            lines.append(rel)
         has_relationship_content = True
 
     # AI 推断的 graph_links（仅 AI 模式生成）
     if graph_links:
         if has_relationship_content:
-            lines.append("> ")
+            lines.append("")
         for item in graph_links:
             target = item.get("target_table", "未知表")
             relation_type = item.get("relation_type", "可能关联")
             join_hint = item.get("join_hint", "未提供")
             confidence = item.get("confidence", "低")
             reason = item.get("reason", "未提供")
-            target_display = f"[[{target}]]" if target in existing_table_links else str(target)
+            target_display = f"[{target}](./{sanitize_path_segment(target)}.md)" if target in existing_table_links else str(target)
             lines.append(
-                f"> - {target_display} · {relation_type} · `{join_hint}` · 置信度：`{confidence}` · 依据：{reason}"
+                f"- {target_display} · {relation_type} · `{join_hint}` · 置信度：`{confidence}` · 依据：{reason}"
             )
         has_relationship_content = True
 
@@ -458,17 +461,18 @@ def render_table_markdown(
         lines.append("")
         lines.append("---")
 
-    # --- 注意事项（Warning Callout） ---
+    # --- 注意事项（Warning Container） ---
     sanitized_caveats = _sanitize_caveats(summary.get("caveats", "暂无"))
     lines.extend([
         "",
         "## ⚠️ 注意事项",
-        "> [!warning] 风险提示",
+        "::: warning 风险提示",
     ])
     caveat_items = format_bullet_section(sanitized_caveats)
     for item in caveat_items:
-        lines.append(f"> {item}")
+        lines.append(item)
     
+    lines.append(":::")
     lines.append("")
     lines.append("---")
 
@@ -489,7 +493,7 @@ def render_table_markdown(
                 rtype = item.get("routine_type", "未知")
                 if routine_key in (existing_routine_names or set()):
                     lines.append(
-                        f"- [[../routines/{sanitize_path_segment(routine_key)}|{routine_key}]] · `{rtype}`"
+                        f"- [{routine_key}](../routines/{sanitize_path_segment(routine_key)}.md) · `{rtype}`"
                     )
                 else:
                     lines.append(f"- `{routine_key}` · `{rtype}`")
@@ -612,10 +616,11 @@ def render_term_markdown(
         "",
         f"# 📖 {name}",
         "",
-        "[[../index|⬅️ 返回数据源总览]]",
+        "[⬅️ 返回数据源总览](../index.md)",
         "",
-        "> [!info] 业务术语定义",
-        f"> {str(term.get('definition') or '暂无定义')}",
+        "::: info 业务术语定义",
+        f"{str(term.get('definition') or '暂无定义')}",
+        ":::",
         "",
         "---",
         "",
@@ -624,7 +629,7 @@ def render_term_markdown(
     if related_tables:
         for table_name in related_tables:
             if table_name in existing_table_links:
-                lines.append(f"- [[../tables/{sanitize_path_segment(table_name)}|{table_name}]]")
+                lines.append(f"- [{table_name}](../tables/{sanitize_path_segment(table_name)}.md)")
             else:
                 lines.append(f"- `{table_name}`")
     else:
@@ -671,7 +676,7 @@ def render_metric_markdown(
         "",
         f"# 📊 {name}",
         "",
-        "[[../index|⬅️ 返回数据源总览]]",
+        "[⬅️ 返回数据源总览](../index.md)",
         "",
         "> [!todo] 指标定义",
         f"> {str(metric.get('definition') or '暂无定义')}",
@@ -702,7 +707,7 @@ def render_metric_markdown(
     if related_tables:
         for table_name in related_tables:
             if table_name in existing_table_links:
-                lines.append(f"- [[../tables/{sanitize_path_segment(table_name)}|{table_name}]]")
+                lines.append(f"- [{table_name}](../tables/{sanitize_path_segment(table_name)}.md)")
             else:
                 lines.append(f"- `{table_name}`")
     else:
@@ -749,21 +754,21 @@ def render_join_pattern_markdown(
         "",
         f"# 🔗 {name}",
         "",
-        "[[../index|⬅️ 返回数据源总览]]",
+        "[⬅️ 返回数据源总览](../index.md)",
         "",
-        "> [!link] 关联定义",
-        f"> **关联对象**: ",
+        "::: info 关联定义",
+        "**关联对象**: ",
     ]
     
     if left_table in existing_table_links:
-        lines.append(f"> - [[../tables/{sanitize_path_segment(left_table)}|{left_table}]]")
+        lines.append(f"- [{left_table}](../tables/{sanitize_path_segment(left_table)}.md)")
     else:
-        lines.append(f"> - `{left_table}`")
+        lines.append(f"- `{left_table}`")
         
     if right_table in existing_table_links:
-        lines.append(f"> - [[../tables/{sanitize_path_segment(right_table)}|{right_table}]]")
+        lines.append(f"- [{right_table}](../tables/{sanitize_path_segment(right_table)}.md)")
     else:
-        lines.append(f"> - `{right_table}`")
+        lines.append(f"- `{right_table}`")
 
     lines.extend([
         "",
@@ -817,11 +822,12 @@ def render_routine_markdown(
         "",
         f"# ⚙️ {routine_name}",
         "",
-        "[[../index|⬅️ 返回数据源总览]]",
+        "[⬅️ 返回数据源总览](../index.md)",
         "",
-        "> [!info] 存储过程信息",
-        f"> - **所属 Schema**: `{routine.owner}`",
-        f"> - **类型**: `{routine.routine_type}`",
+        "::: info 存储过程信息",
+        f"- **所属 Schema**: `{routine.owner}`",
+        f"- **类型**: `{routine.routine_type}`",
+        ":::",
         "",
         "---",
         "",
@@ -830,7 +836,7 @@ def render_routine_markdown(
     if related_tables:
         for table_name in related_tables:
             if table_name in existing_table_links:
-                lines.append(f"- [[../tables/{sanitize_path_segment(table_name)}|{table_name}]]")
+                lines.append(f"- [{table_name}](../tables/{sanitize_path_segment(table_name)}.md)")
             else:
                 lines.append(f"- `{table_name}`")
     else:
@@ -1031,11 +1037,11 @@ def generate_table_summary_basic(
                     # 构建关联关系描述
                     if detail:
                         relationships_lines.append(
-                            f"- [[{t.name}]]（{t.original_comment or '无备注'}）：{detail}"
+                            f"- [{t.name}](./{sanitize_path_segment(t.name)}.md)（{t.original_comment or '无备注'}）：{detail}"
                         )
                     else:
                         relationships_lines.append(
-                            f"- [[{t.name}]]（{t.original_comment or '无备注'}）"
+                            f"- [{t.name}](./{sanitize_path_segment(t.name)}.md)（{t.original_comment or '无备注'}）"
                         )
                 related_tables_info = "\n".join(out_names)
 
@@ -1117,9 +1123,9 @@ def render_datasource_index_markdown(
         brief = (table.supplementary_comment or table.original_comment or "").strip()
         if brief:
             brief = brief[:80] + ("..." if len(brief) > 80 else "")
-            lines.append(f"- [[tables/{sanitize_path_segment(table.name)}|{table.name}]] — {brief}")
+            lines.append(f"- [{table.name}](./tables/{sanitize_path_segment(table.name)}.md) — {brief}")
         else:
-            lines.append(f"- [[tables/{sanitize_path_segment(table.name)}|{table.name}]]")
+            lines.append(f"- [{table.name}](./tables/{sanitize_path_segment(table.name)}.md)")
 
     if routine_names:
         lines.extend([
@@ -1127,7 +1133,7 @@ def render_datasource_index_markdown(
             f"## 存储过程（{len(routine_names)} 个）",
         ])
         for rname in sorted(routine_names):
-            lines.append(f"- [[routines/{sanitize_path_segment(rname)}|{rname}]]")
+            lines.append(f"- [{rname}](./routines/{sanitize_path_segment(rname)}.md)")
 
     if term_names:
         lines.extend([
@@ -1135,7 +1141,7 @@ def render_datasource_index_markdown(
             f"## 业务术语（{len(term_names)} 个）",
         ])
         for tname in sorted(term_names):
-            lines.append(f"- [[terms/{sanitize_path_segment(tname)}|{tname}]]")
+            lines.append(f"- [{tname}](./terms/{sanitize_path_segment(tname)}.md)")
 
     lines.extend(
         [
@@ -1174,6 +1180,11 @@ def generate_table_summary(
         datasource_id=datasource.id,
         table=table,
     )
+    routine_fact_map = _build_routine_fact_map(
+        session,
+        datasource_id=datasource.id,
+        routine_ids=[routine.id for routine in related_routines if routine.id is not None],
+    )
     _log_knowledge_timing(
         task_id=None,
         table_name=table.name,
@@ -1188,6 +1199,7 @@ def generate_table_summary(
         fields,
         sibling_tables,
         related_routines,
+        routine_fact_map,
     )
     _log_knowledge_timing(
         task_id=None,
@@ -1197,7 +1209,7 @@ def generate_table_summary(
         extra={"prompt_len": len(prompt)},
     )
     hermes_started = perf_counter()
-    data = run_deepseek_json(prompt)
+    data = run_hermes_json(prompt)
     _log_knowledge_timing(
         task_id=None,
         table_name=table.name,
@@ -1220,7 +1232,11 @@ def generate_table_summary(
         "graph_links": data.get("graph_links", []),
         "note_properties": data.get("note_properties", {}),
         "caveats": data.get("caveats", "暂无"),
-        "routine_evidence": build_related_routine_evidence(related_routines, table.name),
+        "routine_evidence": build_related_routine_evidence(
+            related_routines,
+            table.name,
+            routine_fact_map=routine_fact_map,
+        ),
         "business_terms": data.get("business_terms", []),
         "_source": "ai",
     }
@@ -1405,9 +1421,15 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                             datasource_id=datasource.id,
                             table=table,
                         )
+                        routine_fact_map = _build_routine_fact_map(
+                            session,
+                            datasource_id=datasource.id,
+                            routine_ids=[routine.id for routine in related_routines if routine.id is not None],
+                        )
                         summary["routine_evidence"] = build_related_routine_evidence(
                             related_routines,
                             table.name,
+                            routine_fact_map=routine_fact_map,
                         )
                         _log_knowledge_timing(
                             task_id=task.id,
@@ -1416,8 +1438,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                             started_at=summary_started,
                             extra={"routine_count": len(related_routines)},
                         )
-
-                    existing_table_links = {item.name for item in tables_to_sync}
+                    existing_table_links = all_table_names
                     render_started = perf_counter()
                     markdown = render_table_markdown(
                         datasource,
@@ -1616,9 +1637,35 @@ def get_related_routines_for_table(
     datasource_id: int,
     table: SchemaTable,
 ) -> list[RoutineDefinition]:
-    table_name = (table.name or "").strip().lower()
+    table_name = normalize_table_name(table.name or "")
     if not table_name:
         return []
+
+    routine_facts = session.exec(
+        select(RoutineSqlFact).where(RoutineSqlFact.datasource_id == datasource_id)
+    ).all()
+    if routine_facts:
+        matched_routine_ids: list[int] = []
+        seen_routine_ids: set[int] = set()
+        for fact in routine_facts:
+            if fact.normalized_table_name != table_name:
+                continue
+            if fact.routine_id in seen_routine_ids:
+                continue
+            seen_routine_ids.add(fact.routine_id)
+            matched_routine_ids.append(fact.routine_id)
+
+        if not matched_routine_ids:
+            return []
+
+        return session.exec(
+            select(RoutineDefinition)
+            .where(
+                RoutineDefinition.datasource_id == datasource_id,
+                RoutineDefinition.id.in_(matched_routine_ids),
+            )
+            .order_by(RoutineDefinition.owner, RoutineDefinition.routine_type, RoutineDefinition.name)
+        ).all()
 
     routines = session.exec(
         select(RoutineDefinition)
@@ -1631,6 +1678,29 @@ def get_related_routines_for_table(
         if table_name in (routine.definition_text or "").lower():
             matched.append(routine)
     return matched
+
+
+def _build_routine_fact_map(
+    session: Session,
+    *,
+    datasource_id: int,
+    routine_ids: list[int] | None = None,
+) -> dict[int, list[RoutineSqlFact]]:
+    statement = select(RoutineSqlFact).where(RoutineSqlFact.datasource_id == datasource_id)
+    if routine_ids:
+        statement = statement.where(RoutineSqlFact.routine_id.in_(routine_ids))
+
+    facts = session.exec(
+        statement.order_by(
+            RoutineSqlFact.routine_id,
+            RoutineSqlFact.statement_index,
+            RoutineSqlFact.id,
+        )
+    ).all()
+    fact_map: dict[int, list[RoutineSqlFact]] = {}
+    for fact in facts:
+        fact_map.setdefault(fact.routine_id, []).append(fact)
+    return fact_map
 
 
 def build_routine_table_map(
@@ -1649,16 +1719,33 @@ def build_routine_table_map(
             RoutineDefinition.datasource_id == datasource_id
         )
     ).all()
+    routine_fact_map = _build_routine_fact_map(
+        session,
+        datasource_id=datasource_id,
+        routine_ids=[routine.id for routine in routines if routine.id is not None],
+    )
+    normalized_to_actual = {
+        normalize_table_name(table.name or ""): table.name
+        for table in tables
+        if table.name
+    }
 
     routine_map: dict[str, tuple[RoutineDefinition, set[str]]] = {}
     for routine in routines:
         key = f"{routine.owner}.{routine.name}"
         referenced_tables: set[str] = set()
-        routine_text = (routine.definition_text or "").lower()
-        for table in tables:
-            table_name = (table.name or "").strip().lower()
-            if table_name and table_name in routine_text:
-                referenced_tables.add(table.name)
+        facts = routine_fact_map.get(routine.id or -1, [])
+        if facts:
+            for fact in facts:
+                actual_name = normalized_to_actual.get(fact.normalized_table_name)
+                if actual_name:
+                    referenced_tables.add(actual_name)
+        else:
+            routine_text = (routine.definition_text or "").lower()
+            for table in tables:
+                table_name = (table.name or "").strip().lower()
+                if table_name and table_name in routine_text:
+                    referenced_tables.add(table.name)
         
         # 无论是否命中表，都包含进来，确保“存储过程”完整
         routine_map[key] = (routine, referenced_tables)
@@ -1783,29 +1870,67 @@ def _build_routine_summary(
     *,
     table_name: str,
     sibling_tables: list[SchemaTable],
+    routine_facts: list[RoutineSqlFact] | None = None,
 ) -> dict[str, object]:
     definition_text = routine.definition_text or ""
     lowered = definition_text.lower()
-    matched_count = lowered.count(table_name.lower())
-    related_tables = []
-    for sibling in sibling_tables:
-        sibling_name = sibling.name or ""
-        if sibling_name.lower() in lowered:
-            related_tables.append(sibling_name)
-    related_tables = related_tables[:5]
-    table_role = _infer_routine_table_role(definition_text, table_name)
-    if table_role == "insert_into":
-        summary = "该过程向当前表写入数据。"
-    elif table_role == "update":
-        summary = "该过程更新当前表中的记录。"
-    elif table_role == "delete_from":
-        summary = "该过程删除当前表中的记录。"
-    elif table_role == "select_from":
-        summary = "该过程读取当前表数据。"
-    elif table_role == "join_ref":
-        summary = "该过程将当前表作为关联对象引用。"
+    routine_facts = routine_facts or []
+    normalized_current = normalize_table_name(table_name)
+
+    if routine_facts:
+        related_tables = []
+        sibling_lookup = {
+            normalize_table_name(sibling.name or ""): sibling.name
+            for sibling in sibling_tables
+            if sibling.name
+        }
+        matched_facts = [
+            fact for fact in routine_facts if fact.normalized_table_name == normalized_current
+        ]
+        for fact in routine_facts:
+            actual_name = sibling_lookup.get(fact.normalized_table_name) or fact.table_name
+            if normalize_table_name(actual_name) == normalized_current:
+                continue
+            if actual_name and actual_name not in related_tables:
+                related_tables.append(actual_name)
+        related_tables = related_tables[:5]
+        usage_types = {fact.usage_type for fact in matched_facts}
+        matched_count = len(matched_facts)
+        if usage_types == {"read"}:
+            table_role = "read"
+            summary = "该过程读取当前表数据，并结合其他表生成结果。"
+        elif usage_types == {"write"}:
+            table_role = "write"
+            summary = "该过程向当前表写入或更新结果数据。"
+        elif usage_types:
+            table_role = "read_write"
+            summary = "该过程既读取当前表，也向当前表写回或衍生数据。"
+        else:
+            table_role = "related"
+            summary = "该过程与当前表存在间接关系。"
+        snippet = matched_facts[0].statement_text if matched_facts else routine_facts[0].statement_text
     else:
-        summary = "该过程对当前表存在读写混合或多步骤引用。"
+        matched_count = lowered.count(table_name.lower())
+        related_tables = []
+        for sibling in sibling_tables:
+            sibling_name = sibling.name or ""
+            if sibling_name.lower() in lowered:
+                related_tables.append(sibling_name)
+        related_tables = related_tables[:5]
+        table_role = _infer_routine_table_role(definition_text, table_name)
+        if table_role == "insert_into":
+            summary = "该过程向当前表写入数据。"
+        elif table_role == "update":
+            summary = "该过程更新当前表中的记录。"
+        elif table_role == "delete_from":
+            summary = "该过程删除当前表中的记录。"
+        elif table_role == "select_from":
+            summary = "该过程读取当前表数据。"
+        elif table_role == "join_ref":
+            summary = "该过程将当前表作为关联对象引用。"
+        else:
+            summary = "该过程对当前表存在读写混合或多步骤引用。"
+        snippet = _extract_routine_snippet(definition_text, table_name)
     return {
         "owner": routine.owner,
         "name": routine.name,
@@ -1814,7 +1939,7 @@ def _build_routine_summary(
         "matched_count": matched_count,
         "related_tables": related_tables,
         "summary": summary,
-        "snippet": _extract_routine_snippet(definition_text, table_name),
+        "snippet": snippet,
     }
 
 
@@ -1823,13 +1948,19 @@ def _format_related_routine_summaries_for_prompt(
     *,
     table_name: str,
     sibling_tables: list[SchemaTable],
+    routine_fact_map: dict[int, list[RoutineSqlFact]] | None = None,
 ) -> str:
     if not routines:
         return "- 无命中的存储过程"
 
     lines: list[str] = []
     for routine in routines[:MAX_PROMPT_ROUTINE_SUMMARIES]:
-        item = _build_routine_summary(routine, table_name=table_name, sibling_tables=sibling_tables)
+        item = _build_routine_summary(
+            routine,
+            table_name=table_name,
+            sibling_tables=sibling_tables,
+            routine_facts=(routine_fact_map or {}).get(routine.id or -1, []),
+        )
         related_tables = ", ".join(item["related_tables"]) if item["related_tables"] else "无"
         lines.append(
             f"- {item['owner']}.{item['name']}｜{item['routine_type']}｜当前表角色: {item['table_role']}｜命中: {item['matched_count']} 次｜相关表: {related_tables}｜摘要: {item['summary']}"
@@ -1842,13 +1973,19 @@ def _format_related_routine_snippets_for_prompt(
     *,
     table_name: str,
     sibling_tables: list[SchemaTable],
+    routine_fact_map: dict[int, list[RoutineSqlFact]] | None = None,
 ) -> str:
     if not routines:
         return "- 无关键片段"
 
     lines: list[str] = []
     for routine in routines[:MAX_PROMPT_ROUTINE_SNIPPETS]:
-        item = _build_routine_summary(routine, table_name=table_name, sibling_tables=sibling_tables)
+        item = _build_routine_summary(
+            routine,
+            table_name=table_name,
+            sibling_tables=sibling_tables,
+            routine_facts=(routine_fact_map or {}).get(routine.id or -1, []),
+        )
         lines.extend(
             [
                 f"[{item['owner']}.{item['name']}]",
@@ -1880,15 +2017,23 @@ def _extract_routine_snippet(definition_text: str, table_name: str) -> str:
 def build_related_routine_evidence(
     routines: list[RoutineDefinition],
     table_name: str,
+    routine_fact_map: dict[int, list[RoutineSqlFact]] | None = None,
 ) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     for routine in routines:
+        item = _build_routine_summary(
+            routine,
+            table_name=table_name,
+            sibling_tables=[],
+            routine_facts=(routine_fact_map or {}).get(routine.id or -1, []),
+        )
         evidence.append(
             {
                 "owner": routine.owner,
                 "name": routine.name,
                 "routine_type": routine.routine_type,
-                "snippet": _extract_routine_snippet(routine.definition_text or "", table_name),
+                "snippet": item["snippet"],
+                "table_role": item["table_role"],
             }
         )
     return evidence
@@ -1916,6 +2061,7 @@ def _build_summary_prompt(
     fields: list[SchemaField],
     sibling_tables: list[SchemaTable] | None = None,
     related_routines: list[RoutineDefinition] | None = None,
+    routine_fact_map: dict[int, list[RoutineSqlFact]] | None = None,
 ) -> str:
     user_related_names, user_related_details = _parse_related_table_config(table)
 
@@ -1958,14 +2104,16 @@ def _build_summary_prompt(
         related_routines or [],
         table_name=table.name,
         sibling_tables=selected_siblings,
+        routine_fact_map=routine_fact_map,
     )
     joined_related_routine_snippets = _format_related_routine_snippets_for_prompt(
         related_routines or [],
         table_name=table.name,
         sibling_tables=selected_siblings,
+        routine_fact_map=routine_fact_map,
     )
 
-    return f"""根据下面的数据库元数据，为 Obsidian 生成一张表的结构化知识卡片。只返回合法 JSON（不要 markdown / 代码块 / 额外说明），中文输出，保守总结不编造。
+    return f"""根据下面的数据库元数据，为知识库生成一张表的结构化知识卡片。只返回合法 JSON（不要 markdown / 代码块 / 额外说明），中文输出，保守总结不编造。
 
 输入：
 

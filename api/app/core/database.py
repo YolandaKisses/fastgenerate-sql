@@ -48,6 +48,10 @@ def ensure_compatible_schema():
                 conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN target_table_name VARCHAR"))
             if "updated_at" not in sync_task_column_names:
                 conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN updated_at DATETIME"))
+            if "is_incremental" not in sync_task_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN is_incremental BOOLEAN DEFAULT 0"))
+            if "failed_table_names" not in sync_task_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE knowledgesynctask ADD COLUMN failed_table_names VARCHAR"))
 
             ds_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(datasource)")).fetchall()
             ds_column_names = {row[1] for row in ds_columns}
@@ -59,6 +63,15 @@ def ensure_compatible_schema():
             table_column_names = {row[1] for row in table_columns}
             if "related_tables" not in table_column_names:
                 conn.execute(sqlalchemy.text("ALTER TABLE schematable ADD COLUMN related_tables VARCHAR"))
+
+            routine_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(routinedefinition)")).fetchall()
+            routine_column_names = {row[1] for row in routine_columns}
+            if "lineage_status" not in routine_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE routinedefinition ADD COLUMN lineage_status VARCHAR DEFAULT 'pending'"))
+            if "lineage_message" not in routine_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE routinedefinition ADD COLUMN lineage_message VARCHAR"))
+            if "lineage_updated_at" not in routine_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE routinedefinition ADD COLUMN lineage_updated_at DATETIME"))
     except sqlalchemy.exc.OperationalError as exc:
         if _is_sqlite_readonly_error(exc):
             return

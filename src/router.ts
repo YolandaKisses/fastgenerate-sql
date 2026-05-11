@@ -12,6 +12,11 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true }
   },
   {
+    path: '/wiki',
+    component: () => import('./pages/Wiki/index.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/data-sources',
     component: () => import('./pages/DataSources/index.vue'),
     meta: { requiresAuth: true }

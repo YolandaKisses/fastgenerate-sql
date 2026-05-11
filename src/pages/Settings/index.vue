@@ -12,10 +12,7 @@ const hermesDefault = ref('')
 const hermesStatus = ref<'idle' | 'testing' | 'success' | 'error'>('idle')
 const hermesMessage = ref('')
 
-const obsidianRoot = ref('')
-const obsidianDefault = ref('')
-const obsidianStatus = ref<'idle' | 'testing' | 'success' | 'error'>('idle')
-const obsidianMessage = ref('')
+
 
 const fetchSettings = async () => {
   try {
@@ -23,8 +20,7 @@ const fetchSettings = async () => {
     hermesPath.value = data.hermes_cli_path.value || data.hermes_cli_path.default
     hermesDefault.value = data.hermes_cli_path.default
     
-    obsidianRoot.value = data.obsidian_vault_root.value || data.obsidian_vault_root.default
-    obsidianDefault.value = data.obsidian_vault_root.default
+
   } catch (e) {
     message.error('获取设置失败')
   }
@@ -52,42 +48,26 @@ const runHermesTest = async () => {
   }
 }
 
-const runObsidianTest = async () => {
-  obsidianStatus.value = 'testing'
-  obsidianMessage.value = '正在检查知识库目录...'
-  try {
-    const data = await post('/settings/test/obsidian')
-    obsidianStatus.value = data.status === 'success' ? 'success' : 'error'
-    obsidianMessage.value = data.message
-  } catch (e: any) {
-    obsidianStatus.value = 'error'
-    obsidianMessage.value = '测试请求失败'
-  }
-}
+
 
 const testHermes = async () => {
   await saveSetting('hermes_cli_path', hermesPath.value)
   await runHermesTest()
 }
 
-const testObsidian = async () => {
-  await saveSetting('obsidian_vault_root', obsidianRoot.value)
-  await runObsidianTest()
-}
+
 
 const resetHermes = () => {
   hermesPath.value = hermesDefault.value
 }
 
-const resetObsidian = () => {
-  obsidianRoot.value = obsidianDefault.value
-}
+
 
 onMounted(async () => {
   await fetchSettings()
   // 页面加载时自动执行一次静默检查
   if (hermesPath.value) runHermesTest()
-  if (obsidianRoot.value) runObsidianTest()
+
 })
 </script>
 
@@ -133,39 +113,7 @@ onMounted(async () => {
         </n-form>
       </n-card>
 
-      <!-- Obsidian 配置 -->
-      <n-card title="Obsidian 知识库" class="setting-card">
-        <template #header-extra>
-          <n-tag :type="obsidianStatus === 'success' ? 'success' : (obsidianStatus === 'error' ? 'error' : 'default')" round>
-            <template #icon>
-              <n-icon v-if="obsidianStatus === 'success'"><CheckmarkCircleOutline /></n-icon>
-              <n-icon v-else-if="obsidianStatus === 'error'"><CloseCircleOutline /></n-icon>
-            </template>
-            {{ obsidianStatus === 'success' ? '目录正常' : (obsidianStatus === 'error' ? '目录异常' : '未测试') }}
-          </n-tag>
-        </template>
-        
-        <n-form label-placement="top">
-          <n-form-item label="知识库根目录">
-            <n-input v-model:value="obsidianRoot" placeholder="例如: ~/Documents/obsidian知识库/FastGenerate SQL" />
-          </n-form-item>
-          
-          <div v-if="obsidianMessage" class="test-message" :class="obsidianStatus">
-            {{ obsidianMessage }}
-          </div>
-          
-          <n-space style="margin-top: 16px;">
-            <n-button type="primary" :loading="obsidianStatus === 'testing'" @click="testObsidian">
-              <template #icon><n-icon><FolderOpenOutline /></n-icon></template>
-              检查并保存
-            </n-button>
-            <n-button @click="resetObsidian">
-              <template #icon><n-icon><RefreshOutline /></n-icon></template>
-              恢复默认值
-            </n-button>
-          </n-space>
-        </n-form>
-      </n-card>
+      <!-- Obsidian 配置已移除 -->
     </div>
   </div>
 </template>

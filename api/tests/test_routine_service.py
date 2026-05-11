@@ -1,7 +1,7 @@
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
-from app.models.routine import RoutineDefinition
+from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.services import routine_service
 
 
@@ -132,3 +132,56 @@ def test_sync_routines_for_datasource_rejects_non_oracle_datasource():
 
         assert result["success"] is False
         assert result["message"] == "当前仅支持 Oracle 存储过程/函数同步"
+
+
+def test_sync_routines_for_oracle_builds_statement_level_table_facts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    oracle_rows = [
+        ("APP", "P_SYNC_USERS", "PROCEDURE", 1, "PROCEDURE P_SYNC_USERS IS"),
+        ("APP", "P_SYNC_USERS", "PROCEDURE", 2, "BEGIN"),
+        ("APP", "P_SYNC_USERS", "PROCEDURE", 3, "  INSERT INTO user_snapshot"),
+        ("APP", "P_SYNC_USERS", "PROCEDURE", 4, "  SELECT * FROM users u JOIN orders o ON o.user_id = u.id;"),
+        ("APP", "P_SYNC_USERS", "PROCEDURE", 5, "END;"),
+    ]
+
+    monkeypatch.setattr(
+        routine_service.sqlalchemy,
+        "create_engine",
+        lambda *args, **kwargs: FakeOracleEngine(oracle_rows),
+    )
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="oracle-demo",
+            db_type="oracle",
+            host="localhost",
+            port=1521,
+            database="orclpdb",
+            username="system",
+            password="secret",
+            user_id="u1",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.NEVER_SYNCED,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+
+        result = routine_service.sync_routines_for_datasource(session, ds)
+
+        assert result["success"] is True
+
+        facts = session.exec(
+            select(RoutineSqlFact)
+            .where(RoutineSqlFact.datasource_id == ds.id)
+            .order_by(RoutineSqlFact.usage_type, RoutineSqlFact.table_name)
+        ).all()
+
+        assert [(item.usage_type, item.table_name) for item in facts] == [
+            ("read", "orders"),
+            ("read", "users"),
+            ("write", "user_snapshot"),
+        ]
+        assert all(item.parser_name for item in facts)

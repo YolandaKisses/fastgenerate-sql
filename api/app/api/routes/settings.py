@@ -17,16 +17,12 @@ def get_all_settings(session: Session = Depends(get_session)):
         "hermes_cli_path": {
             "value": setting_service.get_setting(session, "hermes_cli_path"),
             "default": env_settings.HERMES_CLI_PATH
-        },
-        "obsidian_vault_root": {
-            "value": setting_service.get_setting(session, "obsidian_vault_root"),
-            "default": env_settings.OBSIDIAN_VAULT_ROOT
         }
     }
 
 @router.post("/{key}")
 def update_setting(key: str, req: RuntimeSettingUpdate, session: Session = Depends(get_session)):
-    allowed_keys = ["hermes_cli_path", "obsidian_vault_root"]
+    allowed_keys = ["hermes_cli_path"]
     if key not in allowed_keys:
         raise HTTPException(status_code=400, detail="不支持的配置键")
     return setting_service.set_setting(session, key, req.value)
@@ -48,14 +44,4 @@ def test_hermes(session: Session = Depends(get_session)):
     except Exception as e:
         return {"status": "error", "message": f"执行异常: {str(e)}"}
 
-@router.post("/test/obsidian")
-def test_obsidian(session: Session = Depends(get_session)):
-    vault_root = setting_service.get_setting(session, "obsidian_vault_root", env_settings.OBSIDIAN_VAULT_ROOT)
-    if not os.path.exists(vault_root):
-        return {"status": "error", "message": f"目录不存在: {vault_root}"}
-    if not os.path.isdir(vault_root):
-        return {"status": "error", "message": f"路径不是目录: {vault_root}"}
-    if not os.access(vault_root, os.W_OK):
-        return {"status": "error", "message": f"目录不可写: {vault_root}"}
-    
-    return {"status": "success", "message": f"目录正常可访问"}
+
