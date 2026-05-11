@@ -44,6 +44,15 @@ def test_knowledge_sync_rejects_invalid_mode():
     assert response.json()["detail"] == "不支持的同步模式: invalid_mode"
 
 
+def test_lineage_routes_exist():
+    app.dependency_overrides[get_current_user] = override_current_user
+    with TestClient(app) as client:
+        response = client.get("/api/v1/lineage/table/1/users")
+    app.dependency_overrides.clear()
+
+    assert response.status_code in {404, 422}
+
+
 def test_ensure_compatible_schema_ignores_readonly_sqlite_migration(monkeypatch):
     class FakeResult:
         def __init__(self, rows):

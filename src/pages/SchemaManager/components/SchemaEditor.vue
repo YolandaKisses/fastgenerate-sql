@@ -10,7 +10,7 @@ import {
   NTooltip,
   useMessage,
 } from "naive-ui";
-import { SyncOutline, BookOutline, SparklesOutline } from "@vicons/ionicons5";
+import { SyncOutline, BookOutline, SparklesOutline, GitNetworkOutline } from "@vicons/ionicons5";
 import { get, patch } from "../../../services/request";
 
 const props = defineProps({
@@ -21,7 +21,7 @@ const props = defineProps({
   schemaSyncing: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(["sync", "sync-knowledge", "sync-table"]);
+const emit = defineEmits(["sync", "sync-knowledge", "sync-table", "view-lineage"]);
 const message = useMessage();
 const isKnowledgeSyncActive = computed(() => Boolean(props.knowledgeSyncing));
 const isDatasourceKnowledgeSyncActive = computed(() => {
@@ -220,6 +220,16 @@ const handleDetailChange = (key: string, val: string) => {
           </template>
           针对当前表进行深度业务解读（含部分业务术语）。
         </n-tooltip>
+        <n-button
+          secondary
+          size="small"
+          @click="emit('view-lineage', table.name)"
+        >
+          <template #icon>
+            <n-icon><GitNetworkOutline /></n-icon>
+          </template>
+          查看血缘
+        </n-button>
       </div>
     </div>
 

@@ -22,11 +22,13 @@ import {
   SparklesOutline,
   CloseOutline,
   RefreshOutline,
+  GitNetworkOutline,
 } from "@vicons/ionicons5";
 import TableList from "./components/TableList.vue";
 import RoutineList from "./components/RoutineList.vue";
 import ViewList from "./components/ViewList.vue";
 import SchemaEditor from "./components/SchemaEditor.vue";
+import LineageExplorer from "./components/LineageExplorer.vue";
 import { get, post, streamSse } from "../../services/request";
 
 const message = useMessage();
@@ -48,7 +50,8 @@ const schemaSyncing = ref(false);
 const routineSyncing = ref(false);
 const viewSyncing = ref(false);
 const metadataSyncing = ref(false);
-const activeTab = ref<"schema" | "views" | "routines">("schema");
+const activeTab = ref<"schema" | "views" | "routines" | "lineage">("schema");
+const selectedLineageObject = ref<{ type: string; name: string } | null>(null);
 const bannerDismissed = ref(false);
 const showFailedModal = ref(false);
 const LS_KEY = "fastgenerate_last_datasource_id";
@@ -682,6 +685,11 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
     message.error(error?.message || "启动单表同步失败");
   }
 };
+
+const viewLineage = (type: string, name: string) => {
+  selectedLineageObject.value = { type, name };
+  activeTab.value = "lineage";
+};
 </script>
 
 <template>
@@ -912,6 +920,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 @sync="handleSync"
                 @sync-knowledge="handleKnowledgeSync"
                 @sync-table="handleSingleTableSync"
+                @view-lineage="(name) => viewLineage('table', name)"
               />
             </div>
           </div>
@@ -941,6 +950,10 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                         {{ selectedView.owner }} · VIEW
                       </p>
                     </div>
+                    <n-button secondary size="small" @click="viewLineage('view', selectedView.name)">
+                      <template #icon><n-icon><GitNetworkOutline /></n-icon></template>
+                      查看血缘
+                    </n-button>
                   </div>
                   <div class="view-detail-body">
                     <div class="view-detail-section">
@@ -994,6 +1007,10 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                         {{ selectedRoutine.routine_type }}
                       </p>
                     </div>
+                    <n-button secondary size="small" @click="viewLineage('routine', selectedRoutine.owner + '.' + selectedRoutine.name)">
+                      <template #icon><n-icon><GitNetworkOutline /></n-icon></template>
+                      查看血缘
+                    </n-button>
                   </div>
                   <pre class="routine-preview-body">{{
                     selectedRoutine.definition_text
@@ -1004,6 +1021,16 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 </div>
               </div>
             </div>
+          </div>
+        </n-tab-pane>
+        <n-tab-pane name="lineage" tab="血缘图谱">
+          <LineageExplorer
+            v-if="currentSource"
+            :datasource-id="currentSource"
+            :initial-object="selectedLineageObject"
+          />
+          <div v-else class="routine-empty-state">
+            请先选择一个数据源
           </div>
         </n-tab-pane>
       </n-tabs>

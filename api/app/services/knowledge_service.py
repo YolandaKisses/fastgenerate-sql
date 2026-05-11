@@ -376,6 +376,7 @@ def render_table_markdown(
     generated_at: datetime | None = None,
     existing_table_links: set[str] | None = None,
     existing_routine_names: set[str] | None = None,
+    lineage_section: str | None = None,
 ) -> str:
     generated_at = generated_at or datetime.now()
     existing_table_links = existing_table_links or set()
@@ -477,6 +478,14 @@ def render_table_markdown(
     lines.append(":::")
     lines.append("")
     lines.append("---")
+
+    if lineage_section:
+        lines.extend([
+            "",
+            lineage_section.strip(),
+            "",
+            "---",
+        ])
 
     # --- 相关存储过程 ---
     view_evidence = summary.get("view_evidence") or []
@@ -1617,6 +1626,13 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                             extra={"routine_count": len(related_routines)},
                         )
                     existing_table_links = all_table_names
+                    lineage_section = lineage_service.build_table_lineage_markdown_section(
+                        lineage_service.get_table_lineage(
+                            session,
+                            datasource_id=datasource.id,
+                            table_name=table.name,
+                        )
+                    )
                     render_started = perf_counter()
                     markdown = render_table_markdown(
                         datasource,
@@ -1625,6 +1641,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                         summary,
                         existing_table_links=existing_table_links,
                         existing_routine_names=existing_routine_names,
+                        lineage_section=lineage_section,
                     )
                     table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
 
