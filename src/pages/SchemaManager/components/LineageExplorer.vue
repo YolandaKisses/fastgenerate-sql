@@ -12,6 +12,7 @@ import {
   NScrollbar,
   NBreadcrumb,
   NBreadcrumbItem,
+  NText,
 } from "naive-ui";
 import {
   GitNetworkOutline,
@@ -34,6 +35,15 @@ const emit = defineEmits(["select-object"]);
 const loading = ref(false);
 const lineageData = ref<any>(null);
 const history = ref<any[]>([]);
+
+// Canvas Dragging State
+const isDragging = ref(false);
+const startPos = ref({ x: 0, y: 0 });
+const offset = ref({ x: 0, y: 0 });
+
+const visualStyle = computed(() => ({
+  transform: `translate(${offset.value.x}px, ${offset.value.y}px)`,
+}));
 
 const currentObject = ref<{ type: string; name: string } | null>(
   props.initialObject
@@ -83,11 +93,37 @@ const resetLineage = (obj: { type: string; name: string }) => {
   currentObject.value = { ...obj };
 };
 
+// Canvas Dragging Handlers
+const handleMouseDown = (e: MouseEvent) => {
+  // Ignore clicks on interactive elements
+  if ((e.target as HTMLElement).closest(".node-card, .n-button, .n-scrollbar")) return;
+  
+  isDragging.value = true;
+  startPos.value = { x: e.clientX - offset.value.x, y: e.clientY - offset.value.y };
+};
+
+const handleMouseMove = (e: MouseEvent) => {
+  if (!isDragging.value) return;
+  offset.value = {
+    x: e.clientX - startPos.value.x,
+    y: e.clientY - startPos.value.y,
+  };
+};
+
+const stopDragging = () => {
+  isDragging.value = false;
+};
+
+const resetCanvas = () => {
+  offset.value = { x: 0, y: 0 };
+};
+
 watch(
   () => currentObject.value,
   (newVal) => {
     if (newVal) {
       fetchLineage(newVal.type, newVal.name);
+      resetCanvas();
     }
   },
   { deep: true },
@@ -114,40 +150,6 @@ const getIcon = (type: string) => {
   if (type === "routine") return CodeSlashOutline;
   return CubeOutline;
 };
-
-// Dragging logic
-const isDragging = ref(false);
-const startPos = ref({ x: 0, y: 0 });
-const offset = ref({ x: 0, y: 0 });
-
-const visualStyle = computed(() => ({
-  transform: `translate(${offset.value.x}px, ${offset.value.y}px)`,
-  cursor: isDragging.value ? "grabbing" : "grab",
-}));
-
-const handleMouseDown = (e: MouseEvent) => {
-  if ((e.target as HTMLElement).closest(".node-card, .n-button, .n-scrollbar")) return;
-  isDragging.value = true;
-  startPos.value = { x: e.clientX - offset.value.x, y: e.clientY - offset.value.y };
-};
-
-const handleMouseMove = (e: MouseEvent) => {
-  if (!isDragging.value) return;
-  offset.value = {
-    x: e.clientX - startPos.value.x,
-    y: e.clientY - startPos.value.y,
-  };
-};
-
-const handleMouseUp = () => {
-  isDragging.value = false;
-};
-
-const resetOffset = () => {
-  offset.value = { x: 0, y: 0 };
-};
-
-watch(() => currentObject.value, resetOffset);
 
 const getTypeLabel = (type: string) => {
   if (type === "table") return "表";
@@ -189,147 +191,155 @@ defineExpose({ resetLineage });
       </div>
     </div>
 
-    <div
-      class="explorer-body"
-      @mousedown="handleMouseDown"
-      @mousemove="handleMouseMove"
-      @mouseup="handleMouseUp"
-      @mouseleave="handleMouseUp"
-    >
+    <div class="explorer-body">
       <n-spin :show="loading" content-style="height: 100%">
-        <div v-if="lineageData" class="lineage-visual" :style="visualStyle">
-          <!-- Horizontal Layout: Upstream -> Current -> Downstream -->
-          <div class="lineage-stage upstream">
-            <div class="stage-label">上游依赖</div>
-            <n-scrollbar class="stage-scrollbar">
-              <div class="node-column">
-                <template v-if="currentObject?.type === 'table'">
-                   <n-card
-                    v-for="item in lineageData.upstream_tables"
-                    :key="item"
-                    class="node-card clickable"
-                    size="small"
-                    @click="handleNavigate('table', item)"
-                  >
-                    <div class="node-content">
-                      <n-icon :component="GridOutline" />
-                      <span class="node-name">{{ item }}</span>
-                    </div>
-                  </n-card>
-                  <div v-if="!lineageData.upstream_tables?.length" class="empty-node">无上游表</div>
-                </template>
-                <template v-else>
-                   <n-card
-                    v-for="item in lineageData.reads"
-                    :key="item"
-                    class="node-card clickable"
-                    size="small"
-                    @click="handleNavigate('table', item)"
-                  >
-                    <div class="node-content">
-                      <n-icon :component="GridOutline" />
-                      <span class="node-name">{{ item }}</span>
-                    </div>
-                  </n-card>
-                  <div v-if="!lineageData.reads?.length" class="empty-node">无读取对象</div>
-                </template>
-              </div>
-            </n-scrollbar>
-          </div>
-
-          <div class="lineage-arrow">
-            <n-icon size="24" color="#d1d5db"><ArrowForwardOutline /></n-icon>
-          </div>
-
-          <div class="lineage-stage current">
-            <div class="stage-label">当前对象</div>
-            <div class="node-column">
-              <n-card class="node-card active" size="medium">
-                <div class="node-content-main">
-                  <div class="node-type-tag">{{ getTypeLabel(currentObject?.type || '') }}</div>
-                  <n-icon :component="getIcon(currentObject?.type || '')" size="32" class="node-main-icon" />
-                  <div class="node-name-main">{{ currentObject?.name }}</div>
-                  <div v-if="lineageData.lineage_message" class="node-status-msg">
-                    {{ lineageData.lineage_message }}
-                  </div>
+        <div 
+          v-if="lineageData" 
+          class="lineage-canvas"
+          :class="{ dragging: isDragging }"
+          @mousedown="handleMouseDown"
+          @mousemove="handleMouseMove"
+          @mouseup="stopDragging"
+          @mouseleave="stopDragging"
+        >
+          <div class="lineage-visual" :style="visualStyle">
+            <!-- Horizontal Layout: Upstream -> Current -> Downstream -->
+            <div class="lineage-stage upstream">
+              <div class="stage-label">上游依赖</div>
+              <n-scrollbar class="stage-scrollbar">
+                <div class="node-column">
+                  <template v-if="currentObject?.type === 'table'">
+                    <n-card
+                      v-for="item in lineageData.upstream_tables"
+                      :key="item"
+                      class="node-card clickable"
+                      size="small"
+                      @click="handleNavigate('table', item)"
+                    >
+                      <div class="node-content">
+                        <n-icon :component="GridOutline" />
+                        <span class="node-name">{{ item }}</span>
+                      </div>
+                    </n-card>
+                    <div v-if="!lineageData.upstream_tables?.length" class="empty-node">无上游表</div>
+                  </template>
+                  <template v-else>
+                    <n-card
+                      v-for="item in lineageData.reads"
+                      :key="item"
+                      class="node-card clickable"
+                      size="small"
+                      @click="handleNavigate('table', item)"
+                    >
+                      <div class="node-content">
+                        <n-icon :component="GridOutline" />
+                        <span class="node-name">{{ item }}</span>
+                      </div>
+                    </n-card>
+                    <div v-if="!lineageData.reads?.length" class="empty-node">无读取对象</div>
+                  </template>
                 </div>
-              </n-card>
-
-              <!-- Related Side Objects for Tables -->
-              <template v-if="currentObject?.type === 'table'">
-                <n-card class="related-card" size="small">
-                  <div class="stage-label">关联视图 / 过程</div>
-                  <n-scrollbar style="max-height: 200px">
-                    <div class="related-list">
-                      <template v-if="lineageData.related_views?.length || lineageData.related_routines?.length">
-                        <n-tooltip v-for="v in lineageData.related_views" :key="v.name">
-                          <template #trigger>
-                            <n-button circle quaternary size="small" @click="handleNavigate('view', v.name)">
-                              <template #icon><n-icon><EyeOutline /></n-icon></template>
-                            </n-button>
-                          </template>
-                          视图: {{ v.name }}
-                        </n-tooltip>
-                        <n-tooltip v-for="r in lineageData.related_routines" :key="r.name">
-                          <template #trigger>
-                            <n-button circle quaternary size="small" @click="handleNavigate('routine', r.name)">
-                              <template #icon><n-icon><CodeSlashOutline /></n-icon></template>
-                            </n-button>
-                          </template>
-                          存储过程: {{ r.name }} ({{ r.routine_type }})
-                        </n-tooltip>
-                      </template>
-                      <n-text v-else depth="3" style="font-size: 12px">暂无关联</n-text>
-                    </div>
-                  </n-scrollbar>
-                </n-card>
-              </template>
+              </n-scrollbar>
             </div>
-          </div>
 
-          <div class="lineage-arrow">
-            <n-icon size="24" color="#d1d5db"><ArrowForwardOutline /></n-icon>
-          </div>
+            <div class="lineage-arrow">
+              <n-icon size="24" color="#d1d5db"><ArrowForwardOutline /></n-icon>
+            </div>
 
-          <div class="lineage-stage downstream">
-            <div class="stage-label">下游影响</div>
-            <n-scrollbar class="stage-scrollbar">
+            <div class="lineage-stage current">
+              <div class="stage-label">当前对象</div>
               <div class="node-column">
+                <n-card class="node-card active" size="medium">
+                  <div class="node-content-main">
+                    <div class="node-type-tag">{{ getTypeLabel(currentObject?.type || '') }}</div>
+                    <n-icon :component="getIcon(currentObject?.type || '')" size="32" class="node-main-icon" />
+                    <div class="node-name-main">{{ currentObject?.name }}</div>
+                    <div v-if="lineageData.lineage_message" class="node-status-msg">
+                      {{ lineageData.lineage_message }}
+                    </div>
+                  </div>
+                </n-card>
+
+                <!-- Related Side Objects for Tables -->
                 <template v-if="currentObject?.type === 'table'">
-                   <n-card
-                    v-for="item in lineageData.downstream_tables"
-                    :key="item"
-                    class="node-card clickable"
-                    size="small"
-                    @click="handleNavigate('table', item)"
-                  >
-                    <div class="node-content">
-                      <n-icon :component="GridOutline" />
-                      <span class="node-name">{{ item }}</span>
-                    </div>
+                  <n-card class="related-card" size="small">
+                    <div class="stage-label">关联视图 / 过程</div>
+                    <n-scrollbar style="max-height: 200px">
+                      <div class="related-list-vertical">
+                        <template v-if="lineageData.related_views?.length || lineageData.related_routines?.length">
+                          <div
+                            v-for="v in lineageData.related_views"
+                            :key="v.name"
+                            class="related-item clickable"
+                            @click="handleNavigate('view', v.name)"
+                            :title="'视图: ' + v.name"
+                          >
+                            <n-icon :component="EyeOutline" class="related-icon view" />
+                            <span class="related-name">{{ v.name }}</span>
+                          </div>
+                          <div
+                            v-for="r in lineageData.related_routines"
+                            :key="r.name"
+                            class="related-item clickable"
+                            @click="handleNavigate('routine', r.name)"
+                            :title="r.routine_type + ': ' + r.name"
+                          >
+                            <n-icon :component="CodeSlashOutline" class="related-icon routine" />
+                            <span class="related-name">{{ r.name }}</span>
+                          </div>
+                        </template>
+                        <n-text v-else depth="3" class="related-empty">暂无关联</n-text>
+                      </div>
+                    </n-scrollbar>
                   </n-card>
-                  <div v-if="!lineageData.downstream_tables?.length" class="empty-node">无下游影响</div>
-                </template>
-                <template v-else-if="currentObject?.type === 'routine'">
-                   <n-card
-                    v-for="item in lineageData.writes"
-                    :key="item"
-                    class="node-card clickable"
-                    size="small"
-                    @click="handleNavigate('table', item)"
-                  >
-                    <div class="node-content">
-                      <n-icon :component="GridOutline" />
-                      <span class="node-name">{{ item }}</span>
-                    </div>
-                  </n-card>
-                  <div v-if="!lineageData.writes?.length" class="empty-node">无写入对象</div>
-                </template>
-                <template v-else>
-                   <div class="empty-node">视图暂无下游追踪</div>
                 </template>
               </div>
-            </n-scrollbar>
+            </div>
+
+            <div class="lineage-arrow">
+              <n-icon size="24" color="#d1d5db"><ArrowForwardOutline /></n-icon>
+            </div>
+
+            <div class="lineage-stage downstream">
+              <div class="stage-label">下游影响</div>
+              <n-scrollbar class="stage-scrollbar">
+                <div class="node-column">
+                  <template v-if="currentObject?.type === 'table'">
+                    <n-card
+                      v-for="item in lineageData.downstream_tables"
+                      :key="item"
+                      class="node-card clickable"
+                      size="small"
+                      @click="handleNavigate('table', item)"
+                    >
+                      <div class="node-content">
+                        <n-icon :component="GridOutline" />
+                        <span class="node-name">{{ item }}</span>
+                      </div>
+                    </n-card>
+                    <div v-if="!lineageData.downstream_tables?.length" class="empty-node">无下游影响</div>
+                  </template>
+                  <template v-else-if="currentObject?.type === 'routine'">
+                    <n-card
+                      v-for="item in lineageData.writes"
+                      :key="item"
+                      class="node-card clickable"
+                      size="small"
+                      @click="handleNavigate('table', item)"
+                    >
+                      <div class="node-content">
+                        <n-icon :component="GridOutline" />
+                        <span class="node-name">{{ item }}</span>
+                      </div>
+                    </n-card>
+                    <div v-if="!lineageData.writes?.length" class="empty-node">无写入对象</div>
+                  </template>
+                  <template v-else>
+                    <div class="empty-node">视图暂无下游追踪</div>
+                  </template>
+                </div>
+              </n-scrollbar>
+            </div>
           </div>
         </div>
         <div v-else-if="!loading" class="empty-state">
@@ -374,24 +384,36 @@ defineExpose({ resetLineage });
   overflow: hidden;
 }
 
+.lineage-canvas {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+}
+
+.lineage-canvas.dragging {
+  cursor: grabbing;
+}
+
 .lineage-visual {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  gap: 12px;
+  min-width: 100%;
+  min-height: 100%;
+  padding: 40px;
+  gap: 32px;
   transition: transform 0.05s linear;
 }
 
 .lineage-stage {
   flex: 1;
-  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-width: 200px;
-  max-width: 320px;
-  overflow: hidden;
+  gap: 16px;
+  min-width: 280px;
+  max-width: 360px;
 }
 
 .stage-scrollbar {
@@ -401,9 +423,10 @@ defineExpose({ resetLineage });
 
 .stage-label {
   text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: #6b7280;
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+  margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -411,27 +434,28 @@ defineExpose({ resetLineage });
 .node-column {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 4px;
+  gap: 16px;
+  padding: 12px 4px;
 }
 
 .node-card {
   border-radius: 12px;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid #e5e7eb;
+  background: #fff;
 }
 
 .node-card.clickable:hover {
   cursor: pointer;
   border-color: #3b82f6;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
-  transform: translateY(-2px);
+  background-color: #f0f9ff;
+  transform: translateX(4px);
 }
 
 .node-card.active {
   border-color: #3b82f6;
-  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
-  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.15);
+  background: #eff6ff;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
 }
 
 .node-content {
@@ -442,18 +466,16 @@ defineExpose({ resetLineage });
 
 .node-name {
   font-family: "JetBrains Mono", monospace;
-  font-size: 13px;
-  color: #374151;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 12px;
+  color: #4b5563;
+  word-break: break-all;
 }
 
 .node-content-main {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 12px 0;
+  padding: 8px 0;
   text-align: center;
 }
 
@@ -465,17 +487,16 @@ defineExpose({ resetLineage });
   padding: 2px 8px;
   border-radius: 10px;
   margin-bottom: 12px;
-  text-transform: uppercase;
 }
 
 .node-main-icon {
   color: #3b82f6;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .node-name-main {
   font-family: "JetBrains Mono", monospace;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: #111827;
   word-break: break-all;
@@ -485,7 +506,6 @@ defineExpose({ resetLineage });
   margin-top: 12px;
   font-size: 11px;
   color: #9ca3af;
-  font-style: italic;
 }
 
 .empty-node {
@@ -493,7 +513,7 @@ defineExpose({ resetLineage });
   padding: 20px;
   color: #9ca3af;
   font-size: 12px;
-  border: 1px dashed #d1d5db;
+  border: 1px dashed #e5e7eb;
   border-radius: 8px;
 }
 
@@ -501,55 +521,65 @@ defineExpose({ resetLineage });
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0.5;
 }
 
-.side-objects {
-  margin-top: 12px;
-  padding: 12px;
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #e5e7eb;
+.related-card {
+  margin-top: 16px;
+  background: #f9fafb;
 }
 
-.side-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #6b7280;
-  margin-bottom: 8px;
-  text-align: center;
-}
-
-.side-grid {
+.related-list-vertical {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
-  justify-content: center;
+  padding: 4px;
 }
 
-.side-item {
-  width: 32px;
-  height: 32px;
+.related-item {
   display: flex;
   align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  cursor: pointer;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
   transition: all 0.2s;
-  background: #f3f4f6;
 }
 
-.side-item:hover {
-  transform: scale(1.1);
+.related-item.clickable:hover {
+  cursor: pointer;
+  border-color: #3b82f6;
+  background: #eff6ff;
 }
 
-.side-item.view {
+.related-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.related-icon.view {
   color: #10b981;
-  background: #ecfdf5;
 }
 
-.side-item.routine {
+.related-icon.routine {
   color: #8b5cf6;
-  background: #f5f3ff;
+}
+
+.related-name {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: #4b5563;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.related-empty {
+  font-size: 12px;
+  text-align: center;
+  display: block;
+  padding: 12px 0;
 }
 
 .empty-state {
