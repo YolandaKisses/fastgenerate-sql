@@ -44,11 +44,13 @@ containers.forEach(type => {
     render: function (tokens, idx) {
       const m = tokens[idx].info.trim().match(new RegExp(`^${type}\\s*(.*)$`))
       if (tokens[idx].nesting === 1) {
-        const title = m && m[1] ? m[1] : type.toUpperCase()
+        const title = m && m[1] ? m[1] : ''
         if (type === 'details') {
-          return `<details class="custom-container ${type}"><summary class="custom-container-title">${title}</summary>\n`
+          const summary = title ? `<summary class="custom-container-title">${title}</summary>` : ''
+          return `<details class="custom-container ${type}">${summary}\n`
         }
-        return `<div class="custom-container ${type}"><p class="custom-container-title">${title}</p>\n`
+        const titleBlock = title ? `<p class="custom-container-title">${title}</p>\n` : ''
+        return `<div class="custom-container ${type}">${titleBlock}`
       } else {
         if (type === 'details') {
           return '</details>\n'
@@ -122,7 +124,7 @@ const loadContent = async (path: string) => {
     const match = rawContent.match(frontmatterRegex)
     if (match) {
       const yamlContent = match[1]
-      rawContent = rawContent.replace(frontmatterRegex, `::: details 📄 元数据 (Frontmatter)\n\`\`\`yaml\n${yamlContent}\n\`\`\`\n:::\n\n`)
+      rawContent = rawContent.replace(frontmatterRegex, `::: info 📄 元数据 (Frontmatter)\n\`\`\`yaml\n${yamlContent}\n\`\`\`\n:::\n\n`)
     }
     
     currentContent.value = md.render(rawContent)

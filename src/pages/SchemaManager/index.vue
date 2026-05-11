@@ -450,7 +450,8 @@ const handleKnowledgeAiSync = async () => {
 
   dialog.warning({
     title: "确认增量同步知识库",
-    content: "将调用 AI 仅对尚未生成知识库文档的表进行深度业务解读。已生成的文档将被安全跳过，不会被覆盖。是否继续？",
+    content:
+      "将调用 AI 仅对尚未生成知识库文档的表进行深度业务解读。已生成的文档将被安全跳过，不会被覆盖。是否继续？",
     positiveText: "确认增量同步",
     negativeText: "取消",
     onPositiveClick: async () => {
@@ -717,7 +718,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
         class="manager-tabs"
         pane-style="flex: 1; display: flex; flex-direction: column; min-height: 0;"
       >
-        <n-tab-pane name="schema" tab="Schema">
+        <n-tab-pane name="schema" tab="表结构">
           <div class="schema-container">
             <div class="sider-panel">
               <TableList

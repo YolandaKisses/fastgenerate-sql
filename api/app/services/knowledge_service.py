@@ -379,11 +379,10 @@ def render_table_markdown(
     note_properties = build_note_properties(datasource, table, summary, generated_at, fields=fields)
     if existing_table_links:
         note_properties["related"] = [
-            item
+            _normalize_related_name(item)
             for item in note_properties.get("related", [])
             if isinstance(item, str)
-            and item.startswith("[[")
-            and item.removeprefix("[[").removesuffix("]]") in existing_table_links
+            and _normalize_related_name(item) in existing_table_links
         ]
     frontmatter = render_frontmatter(note_properties)
     graph_links = summary.get("graph_links") or []
@@ -413,8 +412,8 @@ def render_table_markdown(
 
     # --- 表间关系 ---
     lines.extend([
-        "## 🔗 表间关系",
-        "::: info 关联模型与推断",
+        "## 🔗 关联模型与推断",
+        "::: info",
     ])
     has_relationship_content = False
 
@@ -606,7 +605,7 @@ def render_term_markdown(
                 "tags": ["business-term"],
                 "aliases": aliases,
                 "related": [
-                    f"[[tables/{sanitize_path_segment(table_name)}|{table_name}]]"
+                    table_name
                     for table_name in related_tables
                     if table_name in existing_table_links
                 ],
@@ -666,7 +665,7 @@ def render_metric_markdown(
                 "updated": generated_at.strftime("%Y/%m/%d"),
                 "tags": ["metric-definition"],
                 "related": [
-                    f"[[tables/{sanitize_path_segment(table_name)}|{table_name}]]"
+                    table_name
                     for table_name in related_tables
                     if table_name in existing_table_links
                 ],
@@ -744,7 +743,7 @@ def render_join_pattern_markdown(
                 "updated": generated_at.strftime("%Y/%m/%d"),
                 "tags": ["join-pattern"],
                 "related": [
-                    f"[[tables/{sanitize_path_segment(table_name)}|{table_name}]]"
+                    table_name
                     for table_name in [left_table, right_table]
                     if table_name in existing_table_links
                 ],
@@ -812,7 +811,7 @@ def render_routine_markdown(
                 "updated": generated_at.strftime("%Y/%m/%d"),
                 "tags": ["routine-note"],
                 "related": [
-                    f"[[tables/{sanitize_path_segment(table_name)}|{table_name}]]"
+                    table_name
                     for table_name in related_tables
                     if table_name in existing_table_links
                 ],
@@ -859,6 +858,20 @@ def _merge_string_lists(existing: list[str], incoming: list[str]) -> list[str]:
         if item and item not in merged:
             merged.append(item)
     return merged
+
+
+def _normalize_related_name(item: str) -> str:
+    value = (item or "").strip()
+    if not value:
+        return ""
+    if value.startswith("[[") and value.endswith("]]"):
+        inner = value[2:-2]
+        if "|" in inner:
+            inner = inner.split("|", 1)[1]
+        elif "/" in inner:
+            inner = inner.split("/")[-1]
+        return inner.strip()
+    return value
 
 
 def _register_named_page(
@@ -1000,7 +1013,7 @@ def generate_table_summary_basic(
     
     # 2.5 关联表说明
     related_tables_info = "暂无明确关联表信息。"
-    related_wiki_links = []  # 用于 note_properties.related
+    related_names = []  # 用于 note_properties.related
     relationships_lines = []  # 用于正文 "常见关联关系" 部分
     if table.related_tables and session:
         import json
@@ -1033,7 +1046,7 @@ def generate_table_summary_basic(
                     detail_str = f" - 关系: {detail}" if detail else ""
                     out_names.append(f"{t.name} ({t.original_comment or '无备注'}){detail_str}")
                     # 构建 wiki link
-                    related_wiki_links.append(f"[[{t.name}]]")
+                    related_names.append(t.name)
                     # 构建关联关系描述
                     if detail:
                         relationships_lines.append(
@@ -1097,7 +1110,7 @@ def generate_table_summary_basic(
             "status": "active",
             "summary": (purpose[:100] + "...") if len(purpose) > 100 else purpose,
             "keywords": [table.name],
-            "related": related_wiki_links,
+            "related": related_names,
         }
     }
 
@@ -2113,7 +2126,7 @@ def _build_summary_prompt(
         routine_fact_map=routine_fact_map,
     )
 
-    return f"""根据下面的数据库元数据，为知识库生成一张表的结构化知识卡片。只返回合法 JSON（不要 markdown / 代码块 / 额外说明），中文输出，保守总结不编造。
+    return f"""你是一个数据库分析专家，根据下面的数据库元数据，为知识库生成一张表的结构化知识卡片。只返回合法 JSON（不要 markdown / 代码块 / 额外说明），中文输出，保守总结不编造。
 
 输入：
 
@@ -2143,7 +2156,7 @@ def _build_summary_prompt(
 2. core_fields：关键字段的业务含义、统计口径，有枚举值时注明。请以换行或列表形式提供，确保清晰易读。
 3. relationships：最重要关联（对象、字段、置信度）。
 4. graph_links：最有价值关联，confidence 仅限 高/中/低，无关联返回 []；各项可选 target_table / relation_type / confidence。
-5. note_properties.summary 一句话；table_type 仅限 事实表/维表/流水表/日志表/配置表/中间表/未知；tags / keywords 简短；related 用 wiki link 格式 [[表名]]。
+5. note_properties.summary 一句话；table_type 仅限 事实表/维表/流水表/日志表/配置表/中间表/未知；tags / keywords 简短；related 仅返回相关表名列表，不要使用 wiki link 或 markdown 链接。
 6. 置信度仅当字段名/备注明显支撑时给"高"，推测最多"中/低"，不确定写"推测"。
 7. 利用存储过程信息增强，但不编造不存在的事实。
 8. 仅在输出内容（如 purpose, core_fields）中禁用英文双引号，改用单引号或书名号，但 JSON 结构本身的键值对必须使用标准的英文双引号。
@@ -2245,14 +2258,13 @@ def build_note_properties(
 
     related = []
     for item in note_properties.get("related", []):
-        if item:
-            related.append(item)
+        normalized = _normalize_related_name(str(item))
+        if normalized and normalized not in related:
+            related.append(normalized)
     for graph_link in summary.get("graph_links", []) or []:
         target_table = graph_link.get("target_table")
-        if target_table:
-            wiki_link = f"[[{target_table}]]"
-            if wiki_link not in related:
-                related.append(wiki_link)
+        if target_table and target_table not in related:
+            related.append(target_table)
     note_properties["related"] = related
     return note_properties
 
