@@ -115,6 +115,40 @@ const getIcon = (type: string) => {
   return CubeOutline;
 };
 
+// Dragging logic
+const isDragging = ref(false);
+const startPos = ref({ x: 0, y: 0 });
+const offset = ref({ x: 0, y: 0 });
+
+const visualStyle = computed(() => ({
+  transform: `translate(${offset.value.x}px, ${offset.value.y}px)`,
+  cursor: isDragging.value ? "grabbing" : "grab",
+}));
+
+const handleMouseDown = (e: MouseEvent) => {
+  if ((e.target as HTMLElement).closest(".node-card, .n-button, .n-scrollbar")) return;
+  isDragging.value = true;
+  startPos.value = { x: e.clientX - offset.value.x, y: e.clientY - offset.value.y };
+};
+
+const handleMouseMove = (e: MouseEvent) => {
+  if (!isDragging.value) return;
+  offset.value = {
+    x: e.clientX - startPos.value.x,
+    y: e.clientY - startPos.value.y,
+  };
+};
+
+const handleMouseUp = () => {
+  isDragging.value = false;
+};
+
+const resetOffset = () => {
+  offset.value = { x: 0, y: 0 };
+};
+
+watch(() => currentObject.value, resetOffset);
+
 const getTypeLabel = (type: string) => {
   if (type === "table") return "表";
   if (type === "view") return "视图";
@@ -155,13 +189,19 @@ defineExpose({ resetLineage });
       </div>
     </div>
 
-    <div class="explorer-body">
-      <n-spin :show="loading">
-        <div v-if="lineageData" class="lineage-visual">
+    <div
+      class="explorer-body"
+      @mousedown="handleMouseDown"
+      @mousemove="handleMouseMove"
+      @mouseup="handleMouseUp"
+      @mouseleave="handleMouseUp"
+    >
+      <n-spin :show="loading" content-style="height: 100%">
+        <div v-if="lineageData" class="lineage-visual" :style="visualStyle">
           <!-- Horizontal Layout: Upstream -> Current -> Downstream -->
           <div class="lineage-stage upstream">
             <div class="stage-label">上游依赖</div>
-            <n-scrollbar style="max-height: 100%">
+            <n-scrollbar class="stage-scrollbar">
               <div class="node-column">
                 <template v-if="currentObject?.type === 'table'">
                    <n-card
@@ -217,27 +257,32 @@ defineExpose({ resetLineage });
 
               <!-- Related Side Objects for Tables -->
               <template v-if="currentObject?.type === 'table'">
-                <div class="side-objects" v-if="lineageData.related_views?.length || lineageData.related_routines?.length">
-                   <div class="side-label">关联视图 / 过程</div>
-                   <div class="side-grid">
-                      <n-tooltip v-for="v in lineageData.related_views" :key="v.name" trigger="hover">
-                        <template #trigger>
-                          <div class="side-item view" @click="handleNavigate('view', v.name)">
-                            <n-icon :component="EyeOutline" />
-                          </div>
-                        </template>
-                        视图: {{ v.name }}
-                      </n-tooltip>
-                      <n-tooltip v-for="r in lineageData.related_routines" :key="r.name" trigger="hover">
-                        <template #trigger>
-                          <div class="side-item routine" @click="handleNavigate('routine', r.name)">
-                            <n-icon :component="CodeSlashOutline" />
-                          </div>
-                        </template>
-                        {{ r.routine_type }}: {{ r.name }}
-                      </n-tooltip>
-                   </div>
-                </div>
+                <n-card class="related-card" size="small">
+                  <div class="stage-label">关联视图 / 过程</div>
+                  <n-scrollbar style="max-height: 200px">
+                    <div class="related-list">
+                      <template v-if="lineageData.related_views?.length || lineageData.related_routines?.length">
+                        <n-tooltip v-for="v in lineageData.related_views" :key="v.name">
+                          <template #trigger>
+                            <n-button circle quaternary size="small" @click="handleNavigate('view', v.name)">
+                              <template #icon><n-icon><EyeOutline /></n-icon></template>
+                            </n-button>
+                          </template>
+                          视图: {{ v.name }}
+                        </n-tooltip>
+                        <n-tooltip v-for="r in lineageData.related_routines" :key="r.name">
+                          <template #trigger>
+                            <n-button circle quaternary size="small" @click="handleNavigate('routine', r.name)">
+                              <template #icon><n-icon><CodeSlashOutline /></n-icon></template>
+                            </n-button>
+                          </template>
+                          存储过程: {{ r.name }} ({{ r.routine_type }})
+                        </n-tooltip>
+                      </template>
+                      <n-text v-else depth="3" style="font-size: 12px">暂无关联</n-text>
+                    </div>
+                  </n-scrollbar>
+                </n-card>
               </template>
             </div>
           </div>
@@ -248,7 +293,7 @@ defineExpose({ resetLineage });
 
           <div class="lineage-stage downstream">
             <div class="stage-label">下游影响</div>
-            <n-scrollbar style="max-height: 100%">
+            <n-scrollbar class="stage-scrollbar">
               <div class="node-column">
                 <template v-if="currentObject?.type === 'table'">
                    <n-card
@@ -335,6 +380,7 @@ defineExpose({ resetLineage });
   justify-content: center;
   height: 100%;
   gap: 12px;
+  transition: transform 0.05s linear;
 }
 
 .lineage-stage {
@@ -345,6 +391,12 @@ defineExpose({ resetLineage });
   gap: 12px;
   min-width: 200px;
   max-width: 320px;
+  overflow: hidden;
+}
+
+.stage-scrollbar {
+  flex: 1;
+  min-height: 0;
 }
 
 .stage-label {
