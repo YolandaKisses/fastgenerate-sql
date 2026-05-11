@@ -56,3 +56,30 @@ pip install -r requirements.txt
 ```bash
 uvicorn app.main:app --reload
 ```
+
+## 生产部署
+
+前端生产打包：
+
+```bash
+npm run build
+```
+
+如果你想一次性准备前端发布产物和部署模板：
+
+```bash
+npm run build:release
+```
+
+生成后的产物会放在：
+
+```text
+release/frontend-dist
+release/deploy
+```
+
+完整生产部署说明见：
+
+```text
+deploy/DEPLOY.md
+```

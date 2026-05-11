@@ -8,7 +8,7 @@ from sqlmodel import Session, delete
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 
 SQL_START_PATTERN = re.compile(
-    r"^\s*(with|select|insert\s+into|update|delete\s+from|merge\s+into)\b",
+    r"^\s*(with|select|insert\s+into|update|delete\s+from|merge\s+into|truncate\s+table)\b",
     re.IGNORECASE,
 )
 TABLE_TOKEN_PATTERN = r"[A-Za-z_][A-Za-z0-9_$#]*(?:\.[A-Za-z_][A-Za-z0-9_$#]*)?"
@@ -17,6 +17,7 @@ INSERT_PATTERN = re.compile(rf"\binsert\s+into\s+({TABLE_TOKEN_PATTERN})\b", re.
 UPDATE_PATTERN = re.compile(rf"\bupdate\s+({TABLE_TOKEN_PATTERN})\b", re.IGNORECASE)
 DELETE_PATTERN = re.compile(rf"\bdelete\s+from\s+({TABLE_TOKEN_PATTERN})\b", re.IGNORECASE)
 MERGE_PATTERN = re.compile(rf"\bmerge\s+into\s+({TABLE_TOKEN_PATTERN})\b", re.IGNORECASE)
+TRUNCATE_PATTERN = re.compile(rf"\btruncate\s+table\s+({TABLE_TOKEN_PATTERN})\b", re.IGNORECASE)
 EXECUTE_IMMEDIATE_PATTERN = re.compile(
     r"execute\s+immediate\s+'((?:''|[^'])+)'",
     re.IGNORECASE | re.DOTALL,
@@ -27,6 +28,8 @@ def normalize_table_name(table_name: str) -> str:
     cleaned = (table_name or "").strip().strip('"')
     if not cleaned:
         return ""
+    if cleaned.startswith("<default>."):
+        cleaned = cleaned.split(".", 1)[1]
     if "." in cleaned:
         cleaned = cleaned.split(".")[-1]
     return cleaned.strip('"').lower()
@@ -43,14 +46,14 @@ def extract_sql_statements(definition_text: str) -> list[tuple[str, bool]]:
 
         if current_lines:
             current_lines.append(line)
-            if ";" in line:
+            if _has_statement_terminator(line):
                 statements.append(("\n".join(current_lines).strip().rstrip(";"), False))
                 current_lines = []
             continue
 
         if SQL_START_PATTERN.match(line):
             current_lines = [line]
-            if ";" in line:
+            if _has_statement_terminator(line):
                 statements.append(("\n".join(current_lines).strip().rstrip(";"), False))
                 current_lines = []
 
@@ -69,6 +72,71 @@ def _extract_table_names(pattern: re.Pattern[str], sql: str) -> set[str]:
     return {match.group(1) for match in pattern.finditer(sql)}
 
 
+def _has_statement_terminator(line: str) -> bool:
+    in_single_quote = False
+    idx = 0
+    while idx < len(line):
+        char = line[idx]
+        if char == "'":
+            if in_single_quote and idx + 1 < len(line) and line[idx + 1] == "'":
+                idx += 2
+                continue
+            in_single_quote = not in_single_quote
+        elif char == ";" and not in_single_quote:
+            return True
+        idx += 1
+    return False
+
+
+def _strip_block_comments(sql: str) -> str:
+    without_complete_blocks = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    without_open_tail = re.sub(r"/\*.*$", " ", without_complete_blocks, flags=re.DOTALL)
+    without_close_tail = without_open_tail.replace("*/", " ")
+    return without_close_tail
+
+
+def _strip_line_comments(sql: str) -> str:
+    lines: list[str] = []
+    for raw_line in sql.splitlines():
+        line = raw_line
+        if "--" in line:
+            comment_idx = line.index("--")
+            in_single_quote = False
+            idx = 0
+            while idx < comment_idx:
+                char = line[idx]
+                if char == "'":
+                    if in_single_quote and idx + 1 < comment_idx and line[idx + 1] == "'":
+                        idx += 2
+                        continue
+                    in_single_quote = not in_single_quote
+                idx += 1
+            if not in_single_quote:
+                line = line[:comment_idx]
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _normalize_whitespace(sql: str) -> str:
+    return "\n".join(line.rstrip() for line in sql.splitlines() if line.strip()).strip()
+
+
+def _remove_insert_target_alias(sql: str) -> str:
+    return re.sub(
+        rf"(?is)\b(insert\s+into\s+{TABLE_TOKEN_PATTERN})\s+[A-Za-z_][A-Za-z0-9_$#]*\s*(\()",
+        r"\1 \2",
+        sql,
+    )
+
+
+def _clean_statement_for_sqllineage(statement_text: str) -> str:
+    cleaned = _strip_block_comments(statement_text)
+    cleaned = _strip_line_comments(cleaned)
+    cleaned = _remove_insert_target_alias(cleaned)
+    cleaned = _normalize_whitespace(cleaned)
+    return cleaned
+
+
 def _fallback_parse_statement(statement_text: str) -> tuple[set[str], set[str]]:
     reads = _extract_table_names(READ_PATTERN, statement_text)
     writes = set()
@@ -76,16 +144,23 @@ def _fallback_parse_statement(statement_text: str) -> tuple[set[str], set[str]]:
     writes.update(_extract_table_names(UPDATE_PATTERN, statement_text))
     writes.update(_extract_table_names(DELETE_PATTERN, statement_text))
     writes.update(_extract_table_names(MERGE_PATTERN, statement_text))
+    writes.update(_extract_table_names(TRUNCATE_PATTERN, statement_text))
     return reads, writes
 
 
 def parse_statement_tables(statement_text: str) -> tuple[set[str], set[str], str]:
+    cleaned_statement = _clean_statement_for_sqllineage(statement_text)
     try:
         from sqllineage.runner import LineageRunner
 
-        runner = LineageRunner(statement_text, dialect="oracle")
-        reads = {str(table) for table in getattr(runner, "source_tables", set())}
-        writes = {str(table) for table in getattr(runner, "target_tables", set())}
+        runner = LineageRunner(cleaned_statement, dialect="oracle")
+        reads = {normalize_table_name(str(table)) for table in getattr(runner, "source_tables", set())}
+        writes = {normalize_table_name(str(table)) for table in getattr(runner, "target_tables", set())}
+        reads.discard("")
+        writes.discard("")
+        if not reads and not writes:
+            reads, writes = _fallback_parse_statement(statement_text)
+            return reads, writes, "regex-fallback"
         return reads, writes, "sqllineage"
     except Exception:
         reads, writes = _fallback_parse_statement(statement_text)

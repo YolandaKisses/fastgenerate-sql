@@ -269,12 +269,41 @@ onMounted(() => {
   padding: 12px 8px;
 }
 
-:deep(.n-tree-node-content) {
-  padding: 4px 0;
+:deep(.n-tree-node) {
+  align-items: center;
 }
+
+:deep(.n-tree-node-switcher) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+:deep(.n-tree-node-switcher__icon) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+:deep(.n-tree-node-content) {
+  display: flex;
+  align-items: center;
+  padding: 6px 0;
+}
+
+:deep(.n-tree-node-content__prefix) {
+  display: flex;
+  align-items: center;
+  margin-right: 8px;
+  font-size: 18px;
+}
+
 :deep(.n-tree-node-content__text) {
   font-size: 14px;
   color: #333639;
+  line-height: 1;
+  display: flex;
+  align-items: center;
 }
 
 .wiki-main {

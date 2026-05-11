@@ -1,5 +1,6 @@
 node_modules/
 dist/
+release/
 api/venv/
 __pycache__/
 *.pyc
@@ -15,3 +16,5 @@ backend.log
 frontend.log
 2026*_*
 .venv/
+wiki
+.env

@@ -39,6 +39,7 @@ const selectedRoutine = ref<any | null>(null);
 const knowledgeTask = ref<any | null>(null);
 const latestDatasourceTask = ref<any | null>(null);
 const actualTableCount = ref(0);
+const wikiTableCount = ref(0);
 const knowledgeSyncing = ref(false);
 const schemaSyncing = ref(false);
 const routineSyncing = ref(false);
@@ -59,6 +60,12 @@ const formatKnowledgeBanner = (task: any | null) => {
   const total = task.total_tables ?? 0;
 
   if (task.status === "completed") {
+    if (wikiTableCount.value === 0) {
+      return "尚未同步知识库";
+    }
+    if (wikiTableCount.value < total) {
+      return `知识库已过期 (${wikiTableCount.value}/${total} 页仍存在)`;
+    }
     if (actualTableCount.value > total) {
       return `知识库已过期 (${total}/${actualTableCount.value} 表已同步)`;
     }
@@ -163,6 +170,7 @@ const fetchLatestKnowledgeTask = async (dsId: number) => {
     knowledgeTask.value = data.task;
     latestDatasourceTask.value = data.latest_datasource_task;
     actualTableCount.value = data.actual_table_count;
+    wikiTableCount.value = data.wiki_table_count ?? 0;
 
     if (
       data.task &&
@@ -190,6 +198,7 @@ watch(currentSource, (newVal) => {
   knowledgeTask.value = null;
   latestDatasourceTask.value = null;
   knowledgeSyncing.value = false;
+  wikiTableCount.value = 0;
   routines.value = [];
   selectedRoutine.value = null;
   bannerDismissed.value = false;
@@ -394,6 +403,7 @@ const handleKnowledgeSync = async () => {
         status: "pending",
         completed_tables: 0,
         total_tables: totalTables,
+        is_incremental: true,
       };
 
       try {
@@ -428,6 +438,12 @@ const handleKnowledgeFullRebuild = async (mode: "basic" | "ai_enhanced") => {
       cleanupKnowledgeSSE();
       bannerDismissed.value = false;
       knowledgeSyncing.value = true;
+      knowledgeTask.value = {
+        status: "pending",
+        completed_tables: 0,
+        total_tables: totalTables,
+        is_incremental: false,
+      };
       try {
         const task = await post(`/schema/knowledge/sync/${sourceId}`, {
           mode,
@@ -462,6 +478,7 @@ const handleKnowledgeAiSync = async () => {
         status: "pending",
         completed_tables: 0,
         total_tables: totalTables,
+        is_incremental: true,
       };
 
       try {
@@ -557,11 +574,17 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             <div
               class="knowledge-banner"
               :class="[
-                `is-${latestDatasourceTask.status}`,
+                latestDatasourceTask.status === 'completed' && wikiTableCount === 0
+                  ? 'is-none'
+                  : `is-${latestDatasourceTask.status}`,
                 {
                   'is-expired':
                     latestDatasourceTask.status === 'completed' &&
-                    actualTableCount > latestDatasourceTask.total_tables,
+                    (
+                      wikiTableCount === 0 ||
+                      wikiTableCount < latestDatasourceTask.total_tables ||
+                      actualTableCount > latestDatasourceTask.total_tables
+                    ),
                 },
               ]"
             >
@@ -674,7 +697,11 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
               <n-button
                 type="warning"
                 size="small"
-                :loading="knowledgeSyncing && knowledgeTask?.scope !== 'table'"
+                :loading="
+                  knowledgeSyncing &&
+                  knowledgeTask?.scope !== 'table' &&
+                  knowledgeTask?.is_incremental !== false
+                "
                 :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
                 @click="handleKnowledgeAiSync"
               >
@@ -682,7 +709,9 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                   <n-icon><SparklesOutline /></n-icon>
                 </template>
                 {{
-                  knowledgeSyncing && knowledgeTask?.scope !== "table"
+                  knowledgeSyncing &&
+                  knowledgeTask?.scope !== "table" &&
+                  knowledgeTask?.is_incremental !== false
                     ? "同步中..."
                     : "增量同步知识库"
                 }}
@@ -696,13 +725,24 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
               <n-button
                 type="warning"
                 size="small"
+                :loading="
+                  knowledgeSyncing &&
+                  knowledgeTask?.scope !== 'table' &&
+                  knowledgeTask?.is_incremental === false
+                "
                 :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
                 @click="handleKnowledgeFullRebuild('ai_enhanced')"
               >
                 <template #icon>
                   <n-icon><RefreshOutline /></n-icon>
                 </template>
-                全量同步知识库
+                {{
+                  knowledgeSyncing &&
+                  knowledgeTask?.scope !== "table" &&
+                  knowledgeTask?.is_incremental === false
+                    ? "同步中..."
+                    : "全量同步知识库"
+                }}
               </n-button>
             </template>
             清空并彻底重新生成所有页面，用于解决结构性错误。

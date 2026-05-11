@@ -3,6 +3,10 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from app.models.datasource import DataSource, DataSourceStatus, SyncStatus
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.services import routine_service
+from app.services.routine_lineage_service import (
+    extract_sql_statements,
+    parse_statement_tables,
+)
 
 
 class FakeOracleResult:
@@ -185,3 +189,85 @@ def test_sync_routines_for_oracle_builds_statement_level_table_facts(monkeypatch
             ("write", "user_snapshot"),
         ]
         assert all(item.parser_name for item in facts)
+
+
+def test_extract_sql_statements_keeps_semicolons_inside_string_literals():
+    definition_text = """
+    PROCEDURE P_DEMO IS
+    BEGIN
+      insert into temp_mdm_source_procedurce
+      select dd.object_name
+      from temp_mdm_dba_source t
+      where regexp_substr(t.text, dd.procedure_name || ';') is not null;
+    END;
+    """
+
+    statements = extract_sql_statements(definition_text)
+
+    assert len(statements) == 1
+    assert "dd.procedure_name || ';'" in statements[0][0]
+
+
+def test_sync_routines_for_oracle_extracts_truncate_as_write_fact(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    oracle_rows = [
+        ("APP", "P_TRUNCATE_CACHE", "PROCEDURE", 1, "PROCEDURE P_TRUNCATE_CACHE IS"),
+        ("APP", "P_TRUNCATE_CACHE", "PROCEDURE", 2, "BEGIN"),
+        ("APP", "P_TRUNCATE_CACHE", "PROCEDURE", 3, "  EXECUTE IMMEDIATE 'TRUNCATE TABLE temp_cache';"),
+        ("APP", "P_TRUNCATE_CACHE", "PROCEDURE", 4, "END;"),
+    ]
+
+    monkeypatch.setattr(
+        routine_service.sqlalchemy,
+        "create_engine",
+        lambda *args, **kwargs: FakeOracleEngine(oracle_rows),
+    )
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="oracle-demo",
+            db_type="oracle",
+            host="localhost",
+            port=1521,
+            database="orclpdb",
+            username="system",
+            password="secret",
+            user_id="u1",
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.NEVER_SYNCED,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+
+        result = routine_service.sync_routines_for_datasource(session, ds)
+
+        assert result["success"] is True
+        facts = session.exec(
+            select(RoutineSqlFact).where(RoutineSqlFact.datasource_id == ds.id)
+        ).all()
+
+        assert [(item.usage_type, item.table_name) for item in facts] == [
+            ("write", "temp_cache"),
+        ]
+
+
+def test_parse_statement_tables_cleans_insert_target_alias_for_sqllineage():
+    statement = """
+    INSERT INTO MDM_PROC_TABLE t
+    (F_PROC_ID, F_TABLE_ID, VC_ISAUTO, D_UPDATETIME)
+    select f_proc_id, f_table_id, '1', sysdate
+    from temp_MDM_proc_table s
+    where not exists (select 1
+    from mdm_proc_table zz
+    where zz.f_proc_id = s.f_proc_id
+    and zz.f_table_id = s.f_table_id)
+    """
+
+    reads, writes, parser_name = parse_statement_tables(statement)
+
+    assert parser_name == "sqllineage"
+    assert "temp_mdm_proc_table" in {name.lower() for name in reads}
+    assert "mdm_proc_table" in {name.lower() for name in writes}

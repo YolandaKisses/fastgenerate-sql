@@ -24,6 +24,7 @@ class KnowledgeTaskStatusResponse(BaseModel):
     task: Optional[KnowledgeSyncTask] = None
     latest_datasource_task: Optional[KnowledgeSyncTask] = None
     actual_table_count: int = 0
+    wiki_table_count: int = 0
 
 
 class SyncRequest(BaseModel):
@@ -231,9 +232,19 @@ def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(ge
     actual_table_count = session.exec(
         select(func.count(SchemaTable.id)).where(SchemaTable.datasource_id == datasource_id)
     ).one()
+
+    from pathlib import Path
+    from app.core.config import settings
+    from app.services.path_utils import sanitize_path_segment
+
+    wiki_tables_dir = Path(settings.WIKI_ROOT) / sanitize_path_segment(ds.name) / "tables"
+    wiki_table_count = 0
+    if wiki_tables_dir.exists():
+        wiki_table_count = len(list(wiki_tables_dir.glob("*.md")))
     
     return {
         "task": task,
         "latest_datasource_task": latest_ds_task,
-        "actual_table_count": actual_table_count
+        "actual_table_count": actual_table_count,
+        "wiki_table_count": wiki_table_count,
     }
