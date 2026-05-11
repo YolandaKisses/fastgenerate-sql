@@ -32,6 +32,7 @@ class KnowledgeSyncTaskBase(SQLModel):
     total_tables: int = Field(default=0, description="需要同步的总表数")
     completed_tables: int = Field(default=0, description="已完成同步的表数")
     failed_tables: int = Field(default=0, description="同步失败的表数")
+    is_incremental: bool = Field(default=False, description="是否为增量同步（跳过已存在页面）")
     output_root: str = Field(description="知识库输出根目录")
     output_dir: str = Field(description="知识库输出子目录")
     target_table_id: Optional[int] = Field(default=None, description="单表同步时的目标表ID")
@@ -39,6 +40,7 @@ class KnowledgeSyncTaskBase(SQLModel):
     current_table: Optional[str] = Field(default=None, description="当前正在处理的表名")
     current_phase: Optional[str] = Field(default=None, description="当前处理阶段")
     last_message: Optional[str] = Field(default=None, description="最后一条运行日志")
+    failed_table_names: Optional[str] = Field(default=None, description="同步失败的表名列表 (JSON)")
     error_message: Optional[str] = Field(default=None, description="错误详情")
 
 

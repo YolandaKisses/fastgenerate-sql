@@ -186,7 +186,8 @@ def create_knowledge_sync_task(
     datasource_id: int, 
     scope: KnowledgeSyncScope = KnowledgeSyncScope.DATASOURCE,
     mode: KnowledgeSyncMode = KnowledgeSyncMode.BASIC,
-    target_table_id: int | None = None
+    target_table_id: int | None = None,
+    is_incremental: bool = False
 ) -> KnowledgeSyncTask:
     mark_stale_knowledge_sync_tasks(session, datasource_id=datasource_id)
 
@@ -227,6 +228,7 @@ def create_knowledge_sync_task(
         datasource_name=datasource.name,
         scope=scope,
         mode=mode,
+        is_incremental=is_incremental,
         target_table_id=target_table_id,
         target_table_name=target_table_name,
         total_tables=total_tables,
@@ -356,6 +358,7 @@ def knowledge_task_payload(task: KnowledgeSyncTask) -> dict:
         "failed_tables": task.failed_tables,
         "total_tables": task.total_tables,
         "current_table": task.current_table,
+        "failed_table_names": task.failed_table_names,
         "error_message": task.error_message,
     }
 
@@ -1287,10 +1290,12 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                 ).all()
 
                 # ── 全量同步：清空 tables/ routines/ terms/，重建 ──
-                for _d in (tables_dir, routines_dir, terms_dir):
-                    for _f in _d.iterdir():
-                        if _f.is_file():
-                            _f.unlink()
+                if not task.is_incremental:
+                    for _d in (tables_dir, routines_dir, terms_dir):
+                        if _d.exists():
+                            for _f in _d.iterdir():
+                                if _f.is_file():
+                                    _f.unlink()
 
             task.total_tables = len(tables_to_sync)
             session.add(task)
@@ -1333,6 +1338,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
 
             # ── 收集表摘要（供后续术语提取） ──
             table_summaries: list[tuple[str, dict[str, str]]] = []
+            failed_table_names_list: list[str] = []
 
             for idx, table in enumerate(tables_to_sync):
                 table_started = perf_counter()
@@ -1366,6 +1372,15 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                             f"正在为 {table.name} 执行 AI 分析...",
                             table.name,
                         )
+                        # 增量模式：如果文件已存在且不是手动页面，尝试跳过
+                        table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
+                        if task.is_incremental and table_path.exists():
+                            # 简单起见：只要存在就跳过。如果需要强制更新，用户可以使用全量同步。
+                            # 这里可以增加更复杂的判断，比如校验备注是否更新。
+                            task.completed_tables += 1
+                            table_summaries.append((table.name, {"_source": "skipped"})) # 占位
+                            continue
+
                         summary_started = perf_counter()
                         summary = generate_table_summary(session, datasource, table, fields)
                         _log_knowledge_timing(
@@ -1376,6 +1391,13 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                             extra={"mode": task.mode},
                         )
                     else:
+                        # 增量模式同样适用于基础同步
+                        table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
+                        if task.is_incremental and table_path.exists():
+                            task.completed_tables += 1
+                            table_summaries.append((table.name, {"_source": "skipped"}))
+                            continue
+
                         summary_started = perf_counter()
                         summary = generate_table_summary_basic(table, fields, session=session)
                         related_routines = get_related_routines_for_table(
@@ -1439,6 +1461,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                     table_summaries.append((table.name, summary))
                 except Exception as table_exc:
                     task.failed_tables += 1
+                    failed_table_names_list.append(table.name)
                     error_detail = str(table_exc)[:100]
                     task.error_message = f"表 {table.name} 同步失败: {error_detail}"
 
@@ -1473,14 +1496,23 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                     )
                     existing_term_names.add(term_name)
 
-            # 刷新 index.md（复用已查询的 all_tables）
+            # 刷新 index.md（确保使用 all_tables 而不是仅本次同步的 tables_to_sync）
+            # 对于存储过程：直接使用 routine_map 中的全量键，确保索引完整
+            # 对于术语：由于没有数据库记录，从 terms 目录扫描已有的文件
+            final_term_names = set(existing_term_names)
+            if terms_dir.exists():
+                for _f in terms_dir.glob("*.md"):
+                    final_term_names.add(_f.stem)
+
             index_markdown = render_datasource_index_markdown(
-                datasource, task, tables_to_sync,
-                routine_names=sorted(existing_routine_names),
-                term_names=sorted(existing_term_names),
+                datasource, task, all_tables,
+                routine_names=sorted(list(routine_map.keys())),
+                term_names=sorted(list(final_term_names)),
             )
             (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
             
+            import json
+            task.failed_table_names = json.dumps(failed_table_names_list, ensure_ascii=False) if failed_table_names_list else None
             finalize_knowledge_task_status(task, datasource, total_tables=len(tables_to_sync))
             task.current_table = None
             datasource.status = DataSourceStatus.CONNECTION_OK
@@ -1627,8 +1659,9 @@ def build_routine_table_map(
             table_name = (table.name or "").strip().lower()
             if table_name and table_name in routine_text:
                 referenced_tables.add(table.name)
-        if referenced_tables:
-            routine_map[key] = (routine, referenced_tables)
+        
+        # 无论是否命中表，都包含进来，确保“存储过程”完整
+        routine_map[key] = (routine, referenced_tables)
     return routine_map
 
 
@@ -1965,11 +1998,11 @@ def _build_summary_prompt(
 5. note_properties.summary 一句话；table_type 仅限 事实表/维表/流水表/日志表/配置表/中间表/未知；tags / keywords 简短；related 用 wiki link 格式 [[表名]]。
 6. 置信度仅当字段名/备注明显支撑时给"高"，推测最多"中/低"，不确定写"推测"。
 7. 利用存储过程信息增强，但不编造不存在的事实。
-8. 禁用英文双引号，用单引号或书名号替代。
+8. 仅在输出内容（如 purpose, core_fields）中禁用英文双引号，改用单引号或书名号，但 JSON 结构本身的键值对必须使用标准的英文双引号。
 9. 只输出必需信息，不额外扩展。
 10. business_terms：从当前表提取 1-5 个核心业务术语（跨表通用的业务概念，非表名或字段名），给出 1-2 句简明定义。
 
-返回格式：{{{{"purpose":"","core_fields":"","relationships":"","graph_links":[],"note_properties":{{{{"summary":"","table_type":"","tags":[],"related":[],"keywords":[]}}}},"caveats":"","business_terms":[{{{{"name":"","definition":""}}}}]}}}}"""
+返回格式：{{"purpose":"","core_fields":"","relationships":"","graph_links":[],"note_properties":{{"summary":"","table_type":"","tags":[],"related":[],"keywords":[]}},"caveats":"","business_terms":[{{"name":"","definition":""}}]}}"""
 
 
 def _compute_confidence(

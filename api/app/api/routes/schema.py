@@ -28,6 +28,7 @@ class KnowledgeTaskStatusResponse(BaseModel):
 
 class SyncRequest(BaseModel):
     mode: str = "basic"
+    is_incremental: bool = False
 
 
 def _is_pending_task(task: KnowledgeSyncTask) -> bool:
@@ -128,7 +129,8 @@ def start_knowledge_sync(
             session, 
             datasource_id, 
             scope=KnowledgeSyncScope.DATASOURCE,
-            mode=mode
+            mode=mode,
+            is_incremental=request_data.is_incremental
         )
     except HTTPException:
         raise

@@ -36,7 +36,7 @@ const formRef = ref<FormInst | null>(null);
 const formModel = ref({
   id: null as number | null,
   name: "",
-  db_type: "mysql",
+  db_type: "oracle",
   host: "",
   port: 3306,
   database: "",
@@ -59,7 +59,7 @@ watch(
       formModel.value = {
         id: null,
         name: "",
-        db_type: "mysql",
+        db_type: "oracle",
         host: "",
         port: 3306,
         database: "",
@@ -94,7 +94,11 @@ const rules: FormRules = {
   password: {
     validator(rule, value) {
       const isExistingSource = Boolean(formModel.value.id);
-      if (formModel.value.auth_type === "password" && !isExistingSource && !value)
+      if (
+        formModel.value.auth_type === "password" &&
+        !isExistingSource &&
+        !value
+      )
         return new Error("请输入密码");
       return true;
     },
@@ -103,8 +107,8 @@ const rules: FormRules = {
 };
 
 const typeOptions = [
-  { label: "PostgreSQL", value: "postgresql" },
-  { label: "MySQL", value: "mysql" },
+  // { label: "PostgreSQL", value: "postgresql" },
+  // { label: "MySQL", value: "mysql" },
   { label: "Oracle", value: "oracle" },
 ];
 
@@ -225,7 +229,7 @@ const handleSave = async () => {
             size="medium"
           >
             <n-radio-button value="password">用户名密码</n-radio-button>
-            <n-radio-button value="ssh">SSH 通道模式</n-radio-button>
+            <!-- <n-radio-button value="ssh">SSH 通道模式</n-radio-button> -->
           </n-radio-group>
         </n-form-item>
 

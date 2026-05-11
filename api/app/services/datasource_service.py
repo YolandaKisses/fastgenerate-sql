@@ -44,8 +44,9 @@ def build_connect_args(ds: DataSource, timeout_seconds: int) -> dict:
 
 
 def create_datasource(session: Session, ds_in: DataSourceCreate, user_id: str) -> DataSource:
-    ds = DataSource.model_validate(ds_in)
-    ds.user_id = user_id
+    ds_data = ds_in.model_dump()
+    ds_data["user_id"] = user_id
+    ds = DataSource.model_validate(ds_data)
     ds.password = encrypt_datasource_password(ds.password)
     session.add(ds)
     session.commit()

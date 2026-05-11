@@ -8,6 +8,10 @@ import {
   NTabPane,
   NTag,
   NTooltip,
+  NModal,
+  NList,
+  NListItem,
+  NScrollbar,
   useMessage,
   useDialog,
 } from "naive-ui";
@@ -16,6 +20,8 @@ import {
   BookOutline,
   CodeSlashOutline,
   SparklesOutline,
+  CloseOutline,
+  RefreshOutline,
 } from "@vicons/ionicons5";
 import TableList from "./components/TableList.vue";
 import RoutineList from "./components/RoutineList.vue";
@@ -37,6 +43,8 @@ const knowledgeSyncing = ref(false);
 const schemaSyncing = ref(false);
 const routineSyncing = ref(false);
 const activeTab = ref<"schema" | "routines">("schema");
+const bannerDismissed = ref(false);
+const showFailedModal = ref(false);
 const LS_KEY = "fastgenerate_last_datasource_id";
 
 // 当前活跃的知识库同步流式请求
@@ -73,9 +81,22 @@ const formatKnowledgeBanner = (task: any | null) => {
 const knowledgeDetailMessage = (task: any | null) => {
   if (!task) return "";
   if (task.status === "partial_success" || task.status === "failed") {
+    if (task.failed_tables > 0) {
+      return `共有 ${task.failed_tables} 张表同步失败`;
+    }
     return task.error_message || task.last_message || "";
   }
   return "";
+};
+
+const parseFailedTableNames = (task: any | null): string[] => {
+  if (!task || !task.failed_table_names) return [];
+  try {
+    const parsed = JSON.parse(task.failed_table_names);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 };
 
 const fetchSources = async () => {
@@ -171,7 +192,7 @@ watch(currentSource, (newVal) => {
   knowledgeSyncing.value = false;
   routines.value = [];
   selectedRoutine.value = null;
-  cleanupKnowledgeSSE();
+  bannerDismissed.value = false;
   if (newVal) {
     localStorage.setItem(LS_KEY, newVal.toString());
     fetchTables(newVal);
@@ -268,6 +289,7 @@ const subscribeKnowledgeTask = (taskId: number) => {
           total_tables:
             data.total_tables ?? knowledgeTask.value?.total_tables ?? 0,
           current_table: data.current_table ?? null,
+          failed_table_names: data.failed_table_names ?? knowledgeTask.value?.failed_table_names,
           error_message:
             data.error_message ?? knowledgeTask.value?.error_message,
         };
@@ -365,6 +387,7 @@ const handleKnowledgeSync = async () => {
     negativeText: "取消",
     onPositiveClick: async () => {
       cleanupKnowledgeSSE();
+      bannerDismissed.value = false;
       knowledgeSyncing.value = true;
       knowledgeTask.value = {
         status: "pending",
@@ -375,6 +398,7 @@ const handleKnowledgeSync = async () => {
       try {
         const task = await post(`/schema/knowledge/sync/${sourceId}`, {
           mode: "basic",
+          is_incremental: true, // 默认增量，避免误删
         });
         knowledgeTask.value = task;
         fetchSources();
@@ -382,6 +406,37 @@ const handleKnowledgeSync = async () => {
       } catch (error: any) {
         knowledgeSyncing.value = false;
         message.error(error.message || "知识库同步启动失败");
+      }
+    },
+  });
+};
+
+const handleKnowledgeFullRebuild = async (mode: "basic" | "ai_enhanced") => {
+  if (!currentSource.value) return;
+  const sourceId = currentSource.value;
+  const totalTables = tables.value.length;
+
+  dialog.warning({
+    title:
+      mode === "ai_enhanced" ? "确认 AI 深度全量重建" : "确认全量重建知识库",
+    content:
+      "此操作将【彻底清空】当前数据源下所有已生成的页面并重新生成。确定要重建吗？",
+    positiveText: "确定重建",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      cleanupKnowledgeSSE();
+      bannerDismissed.value = false;
+      knowledgeSyncing.value = true;
+      try {
+        const task = await post(`/schema/knowledge/sync/${sourceId}`, {
+          mode,
+          is_incremental: false,
+        });
+        knowledgeTask.value = task;
+        subscribeKnowledgeTask(task.id);
+      } catch (error: any) {
+        knowledgeSyncing.value = false;
+        message.error(error.message || "重建启动失败");
       }
     },
   });
@@ -399,6 +454,7 @@ const handleKnowledgeAiSync = async () => {
     negativeText: "取消",
     onPositiveClick: async () => {
       cleanupKnowledgeSSE();
+      bannerDismissed.value = false;
       knowledgeSyncing.value = true;
       knowledgeTask.value = {
         status: "pending",
@@ -409,6 +465,7 @@ const handleKnowledgeAiSync = async () => {
       try {
         const task = await post(`/schema/knowledge/sync/${sourceId}`, {
           mode: "ai_enhanced",
+          is_incremental: true, // 默认增量
         });
         knowledgeTask.value = task;
         fetchSources();
@@ -493,7 +550,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             深度解析提供更完整的业务上下文。
           </p>
         </div>
-        <div class="header-status">
+        <div class="header-status" v-if="!bannerDismissed">
           <template v-if="latestDatasourceTask">
             <div
               class="knowledge-banner"
@@ -508,18 +565,51 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             >
               <span class="status-dot"></span>
               {{ formatKnowledgeBanner(latestDatasourceTask) }}
+              <n-button
+                v-if="
+                  latestDatasourceTask.status !== 'running' &&
+                  latestDatasourceTask.status !== 'pending'
+                "
+                quaternary
+                circle
+                size="tiny"
+                class="banner-close"
+                @click="bannerDismissed = true"
+              >
+                <template #icon
+                  ><n-icon><CloseOutline /></n-icon
+                ></template>
+              </n-button>
             </div>
             <div
               v-if="knowledgeDetailMessage(latestDatasourceTask)"
               class="knowledge-detail"
             >
               {{ knowledgeDetailMessage(latestDatasourceTask) }}
+              <n-button 
+                v-if="parseFailedTableNames(latestDatasourceTask).length > 0"
+                text 
+                type="primary" 
+                size="tiny" 
+                style="margin-left: 8px"
+                @click="showFailedModal = true"
+              >
+                查看失败列表
+              </n-button>
             </div>
           </template>
           <div v-else class="knowledge-banner is-none">
             <span class="status-dot"></span>
             尚未同步知识库
           </div>
+        </div>
+        <div v-else class="header-status-dismissed">
+          <n-button quaternary size="tiny" @click="bannerDismissed = false">
+            <template #icon
+              ><n-icon><RefreshOutline /></n-icon
+            ></template>
+            恢复显示状态
+          </n-button>
         </div>
       </div>
       <div class="toolbar-row">
@@ -569,7 +659,7 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 {{
                   knowledgeSyncing && knowledgeTask?.scope !== "table"
                     ? "同步中..."
-                    : "基础全量同步（WIKI）"
+                    : "基础增量同步"
                 }}
               </n-button>
             </template>
@@ -590,11 +680,28 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 {{
                   knowledgeSyncing && knowledgeTask?.scope !== "table"
                     ? "同步中..."
-                    : "AI 全量同步（WIKI）"
+                    : "AI 增量同步"
                 }}
               </n-button>
             </template>
-            通过 AI 深度解析表业务含义及复杂关联（含部分业务术语），耗时较长。
+            仅对未解析或新增的表进行 AI 深度解读，速度较快。
+          </n-tooltip>
+
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button
+                type="warning"
+                size="small"
+                :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
+                @click="handleKnowledgeFullRebuild('ai_enhanced')"
+              >
+                <template #icon>
+                  <n-icon><RefreshOutline /></n-icon>
+                </template>
+                AI 全量重建
+              </n-button>
+            </template>
+            清空并彻底重新生成所有页面，用于解决结构性错误。
           </n-tooltip>
         </div>
       </div>
@@ -672,6 +779,27 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
         </n-tab-pane>
       </n-tabs>
     </div>
+
+    <!-- 失败列表弹窗 -->
+    <n-modal
+      v-model:show="showFailedModal"
+      preset="card"
+      title="同步失败的表列表"
+      style="width: 400px"
+    >
+      <n-scrollbar style="max-height: 400px">
+        <n-list bordered>
+          <n-list-item v-for="name in parseFailedTableNames(latestDatasourceTask)" :key="name">
+            {{ name }}
+          </n-list-item>
+        </n-list>
+      </n-scrollbar>
+      <template #footer>
+        <div style="text-align: right">
+          <n-button @click="showFailedModal = false">关闭</n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -957,5 +1085,21 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
   .routine-sider {
     width: 100%;
   }
+}
+
+.banner-close {
+  margin-left: 4px;
+  opacity: 0.6;
+  transition: all 0.2s;
+}
+.banner-close:hover {
+  opacity: 1;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.header-status-dismissed {
+  display: flex;
+  align-items: center;
+  height: 32px;
 }
 </style>

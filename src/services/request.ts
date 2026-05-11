@@ -39,7 +39,16 @@ export async function request<T = any>(path: string, options: RequestOptions = {
         window.location.hash = '#/login'
       }
     }
-    const message = data?.detail || data?.message || `请求失败 (${res.status})`
+    let message = data?.message || `请求失败 (${res.status})`
+    if (data?.detail) {
+      if (typeof data.detail === 'string') {
+        message = data.detail
+      } else if (Array.isArray(data.detail)) {
+        message = data.detail.map((err: any) => `${err.loc.join('.')}: ${err.msg}`).join('; ')
+      } else if (typeof data.detail === 'object') {
+        message = JSON.stringify(data.detail)
+      }
+    }
     throw new Error(message)
   }
 

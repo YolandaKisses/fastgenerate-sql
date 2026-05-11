@@ -406,11 +406,18 @@ def _last_result_json_object(text: str) -> dict | None:
             except json.JSONDecodeError:
                 continue
 
+        # 1. 优先匹配 Workbench 类型的 JSON
         if (
             isinstance(value, dict)
             and value.get("type") in {"clarification", "sql_candidate"}
             and not _is_prompt_example_result(value)
         ):
+            candidates.append(value)
+        # 2. 如果没有 type，但包含知识库常用的字段（如 purpose），也视为有效
+        elif isinstance(value, dict) and "purpose" in value:
+            candidates.append(value)
+        # 3. 最后兜底：只要是字典且不是空的，也不是示例
+        elif isinstance(value, dict) and value and not _is_prompt_example_result(value):
             candidates.append(value)
 
     return candidates[-1] if candidates else None
