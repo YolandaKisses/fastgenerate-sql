@@ -149,8 +149,8 @@ defineExpose({ resetLineage });
         </n-breadcrumb>
       </div>
       <div class="header-right">
-        <n-tag v-if="lineageData?.lineage_status" :type="lineageData.lineage_status === 'success' ? 'success' : 'warning'" size="small">
-          解析状态: {{ lineageData.lineage_status === 'success' ? '正常' : '异常' }}
+        <n-tag v-if="lineageData?.lineage_status" :type="(lineageData.lineage_status === 'success' || lineageData.lineage_status === 'parsed') ? 'success' : 'warning'" size="small">
+          解析状态: {{ (lineageData.lineage_status === 'success' || lineageData.lineage_status === 'parsed') ? '正常' : '异常' }}
         </n-tag>
       </div>
     </div>
