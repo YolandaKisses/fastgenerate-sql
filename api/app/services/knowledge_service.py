@@ -21,6 +21,7 @@ from app.models.knowledge import (
 )
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaField, SchemaTable
+from app.models.view import ViewDefinition, ViewSqlFact
 from app.services.hermes_service import run_deepseek_json
 from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
@@ -30,6 +31,8 @@ run_hermes_json = run_deepseek_json
 
 STALE_RUNNING_TASK_AFTER = timedelta(minutes=8)
 MAX_PROMPT_SIBLING_TABLES = 8
+MAX_PROMPT_VIEW_SUMMARIES = 5
+MAX_PROMPT_VIEW_SNIPPETS = 3
 MAX_PROMPT_ROUTINE_SUMMARIES = 5
 MAX_PROMPT_ROUTINE_SNIPPETS = 3
 
@@ -223,7 +226,7 @@ def create_knowledge_sync_task(
             raise ValueError("未找到已同步表，无法同步到知识库")
         total_tables = len(tables)
 
-    output_root = settings.WIKI_ROOT
+    output_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
     output_dir = str(Path(output_root) / sanitize_path_segment(datasource.name))
     task = KnowledgeSyncTask(
         datasource_id=datasource.id,
@@ -472,6 +475,45 @@ def render_table_markdown(
         lines.append(item)
     
     lines.append(":::")
+    lines.append("")
+    lines.append("---")
+
+    # --- 相关存储过程 ---
+    view_evidence = summary.get("view_evidence") or []
+    lines.extend([
+        "",
+        "## 👁️ 相关视图",
+        "",
+        "### 🔍 命中列表",
+    ])
+    if view_evidence:
+        for item in view_evidence:
+            owner = item.get("owner", "未知")
+            name = item.get("name", "未知")
+            view_key = f"{owner}.{name}"
+            lines.append(
+                f"- [{view_key}](../views/{sanitize_path_segment(view_key)}.md) · 当前表角色: `{item.get('view_role', '未知')}`"
+            )
+        lines.extend([
+            "",
+            "### 🧩 关键片段",
+        ])
+        for item in view_evidence:
+            owner = item.get("owner", "未知")
+            name = item.get("name", "未知")
+            view_key = f"{owner}.{name}"
+            lines.extend(
+                [
+                    f"#### `{view_key}`",
+                    "```sql",
+                    item.get("snippet") or "无可展示片段",
+                    "```",
+                    "",
+                ]
+            )
+    else:
+        lines.append("*暂无命中视图*")
+
     lines.append("")
     lines.append("---")
 
@@ -852,6 +894,68 @@ def render_routine_markdown(
     return "\n".join(lines)
 
 
+def render_view_markdown(
+    datasource: DataSource,
+    view: ViewDefinition,
+    related_tables: list[str] | None = None,
+    generated_at: datetime | None = None,
+    existing_table_links: set[str] | None = None,
+) -> str:
+    generated_at = generated_at or datetime.now()
+    view_name = f"{view.owner}.{view.name}"
+    related_tables = related_tables or []
+    existing_table_links = existing_table_links or set()
+    lines = [
+        render_frontmatter(
+            {
+                "project": datasource.name,
+                "type": "view-note",
+                "status": "active",
+                "created": generated_at.strftime("%Y/%m/%d"),
+                "updated": generated_at.strftime("%Y/%m/%d"),
+                "tags": ["view-note"],
+                "related": [
+                    table_name
+                    for table_name in related_tables
+                    if table_name in existing_table_links
+                ],
+                "view_owner": view.owner,
+            }
+        ),
+        "",
+        f"# 👁️ {view_name}",
+        "",
+        "[⬅️ 返回数据源总览](../index.md)",
+        "",
+        "::: info 视图信息",
+        f"- **所属 Schema**: `{view.owner}`",
+        f"- **备注**: {view.original_comment or '暂无'}",
+        ":::",
+        "",
+        "---",
+        "",
+        "## 🔗 相关表",
+    ]
+    if related_tables:
+        for table_name in related_tables:
+            if table_name in existing_table_links:
+                lines.append(f"- [{table_name}](../tables/{sanitize_path_segment(table_name)}.md)")
+            else:
+                lines.append(f"- `{table_name}`")
+    else:
+        lines.append("*暂无*")
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 📜 定义",
+        "```sql",
+        view.definition_text or "",
+        "```",
+    ])
+    return "\n".join(lines)
+
+
 def _merge_string_lists(existing: list[str], incoming: list[str]) -> list[str]:
     merged = list(existing)
     for item in incoming:
@@ -1103,6 +1207,7 @@ def generate_table_summary_basic(
         "related_tables": related_tables_info,
         "relationships": relationships,
         "graph_links": [],
+        "view_evidence": [],
         "routine_evidence": [],
         "caveats": caveats,
         "note_properties": {
@@ -1119,6 +1224,7 @@ def render_datasource_index_markdown(
     datasource: DataSource,
     task: KnowledgeSyncTask,
     tables: list[SchemaTable],
+    view_names: list[str] | None = None,
     routine_names: list[str] | None = None,
     term_names: list[str] | None = None,
 ) -> str:
@@ -1139,6 +1245,14 @@ def render_datasource_index_markdown(
             lines.append(f"- [{table.name}](./tables/{sanitize_path_segment(table.name)}.md) — {brief}")
         else:
             lines.append(f"- [{table.name}](./tables/{sanitize_path_segment(table.name)}.md)")
+
+    if view_names:
+        lines.extend([
+            "",
+            f"## 视图（{len(view_names)} 个）",
+        ])
+        for vname in sorted(view_names):
+            lines.append(f"- [{vname}](./views/{sanitize_path_segment(vname)}.md)")
 
     if routine_names:
         lines.extend([
@@ -1188,6 +1302,16 @@ def generate_table_summary(
         extra={"count": len(sibling_tables)},
     )
     routine_started = perf_counter()
+    related_views = get_related_views_for_table(
+        session,
+        datasource_id=datasource.id,
+        table=table,
+    )
+    view_fact_map = _build_view_fact_map(
+        session,
+        datasource_id=datasource.id,
+        view_ids=[view.id for view in related_views if view.id is not None],
+    )
     related_routines = get_related_routines_for_table(
         session,
         datasource_id=datasource.id,
@@ -1203,7 +1327,7 @@ def generate_table_summary(
         table_name=table.name,
         stage="load_related_routines",
         started_at=routine_started,
-        extra={"count": len(related_routines)},
+        extra={"count": len(related_routines), "view_count": len(related_views)},
     )
     prompt_started = perf_counter()
     prompt = _build_summary_prompt(
@@ -1211,6 +1335,8 @@ def generate_table_summary(
         table,
         fields,
         sibling_tables,
+        related_views,
+        view_fact_map,
         related_routines,
         routine_fact_map,
     )
@@ -1245,6 +1371,11 @@ def generate_table_summary(
         "graph_links": data.get("graph_links", []),
         "note_properties": data.get("note_properties", {}),
         "caveats": data.get("caveats", "暂无"),
+        "view_evidence": build_related_view_evidence(
+            related_views,
+            table.name,
+            view_fact_map=view_fact_map,
+        ),
         "routine_evidence": build_related_routine_evidence(
             related_routines,
             table.name,
@@ -1303,6 +1434,8 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             output_dir = Path(task.output_dir)
             tables_dir = output_dir / "tables"
             tables_dir.mkdir(parents=True, exist_ok=True)
+            views_dir = output_dir / "views"
+            views_dir.mkdir(parents=True, exist_ok=True)
             routines_dir = output_dir / "routines"
             routines_dir.mkdir(parents=True, exist_ok=True)
             terms_dir = output_dir / "terms"
@@ -1320,7 +1453,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
 
                 # ── 全量同步：清空 tables/ routines/ terms/，重建 ──
                 if not task.is_incremental:
-                    for _d in (tables_dir, routines_dir, terms_dir):
+                    for _d in (tables_dir, views_dir, routines_dir, terms_dir):
                         if _d.exists():
                             for _f in _d.iterdir():
                                 if _f.is_file():
@@ -1335,11 +1468,28 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             all_tables = session.exec(
                 select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
             ).all()
+            all_table_names: set[str] = {t.name for t in all_tables}
+
+            existing_view_names: set[str] = set()
+            view_map = build_view_table_map(
+                session, datasource_id=datasource.id, tables=all_tables
+            )
+            for view_key, (view_def, referenced_tables) in view_map.items():
+                view_markdown = render_view_markdown(
+                    datasource,
+                    view_def,
+                    related_tables=sorted(referenced_tables),
+                    existing_table_links=all_table_names,
+                )
+                view_filename = f"{sanitize_path_segment(view_key)}.md"
+                (views_dir / view_filename).write_text(
+                    view_markdown, encoding="utf-8"
+                )
+                existing_view_names.add(view_key)
 
             # ── 预扫描：构建 routine → 引用表的映射，生成 routine 实体页 ──
             # 始终扫全量表获取完整引用关系，但单表同步只写涉及该表的 routine
             existing_routine_names: set[str] = set()
-            all_table_names: set[str] = {t.name for t in all_tables}
             is_full_sync = task.scope != KnowledgeSyncScope.TABLE
             synced_table_name: str | None = (
                 tables_to_sync[0].name if not is_full_sync and tables_to_sync else None
@@ -1429,6 +1579,16 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
 
                         summary_started = perf_counter()
                         summary = generate_table_summary_basic(table, fields, session=session)
+                        related_views = get_related_views_for_table(
+                            session,
+                            datasource_id=datasource.id,
+                            table=table,
+                        )
+                        view_fact_map = _build_view_fact_map(
+                            session,
+                            datasource_id=datasource.id,
+                            view_ids=[view.id for view in related_views if view.id is not None],
+                        )
                         related_routines = get_related_routines_for_table(
                             session,
                             datasource_id=datasource.id,
@@ -1438,6 +1598,11 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                             session,
                             datasource_id=datasource.id,
                             routine_ids=[routine.id for routine in related_routines if routine.id is not None],
+                        )
+                        summary["view_evidence"] = build_related_view_evidence(
+                            related_views,
+                            table.name,
+                            view_fact_map=view_fact_map,
                         )
                         summary["routine_evidence"] = build_related_routine_evidence(
                             related_routines,
@@ -1540,6 +1705,7 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
 
             index_markdown = render_datasource_index_markdown(
                 datasource, task, all_tables,
+                view_names=sorted(list(view_map.keys())),
                 routine_names=sorted(list(routine_map.keys())),
                 term_names=sorted(list(final_term_names)),
             )
@@ -1716,6 +1882,64 @@ def _build_routine_fact_map(
     return fact_map
 
 
+def get_related_views_for_table(
+    session: Session,
+    *,
+    datasource_id: int,
+    table: SchemaTable,
+) -> list[ViewDefinition]:
+    table_name = normalize_table_name(table.name or "")
+    if not table_name:
+        return []
+
+    view_facts = session.exec(
+        select(ViewSqlFact).where(ViewSqlFact.datasource_id == datasource_id)
+    ).all()
+    if not view_facts:
+        return []
+
+    matched_view_ids: list[int] = []
+    seen_view_ids: set[int] = set()
+    for fact in view_facts:
+        if fact.normalized_table_name != table_name:
+            continue
+        if fact.view_id in seen_view_ids:
+            continue
+        seen_view_ids.add(fact.view_id)
+        matched_view_ids.append(fact.view_id)
+
+    if not matched_view_ids:
+        return []
+
+    return session.exec(
+        select(ViewDefinition)
+        .where(
+            ViewDefinition.datasource_id == datasource_id,
+            ViewDefinition.id.in_(matched_view_ids),
+        )
+        .order_by(ViewDefinition.owner, ViewDefinition.name)
+    ).all()
+
+
+def _build_view_fact_map(
+    session: Session,
+    *,
+    datasource_id: int,
+    view_ids: list[int] | None = None,
+) -> dict[int, list[ViewSqlFact]]:
+    statement = select(ViewSqlFact).where(ViewSqlFact.datasource_id == datasource_id)
+    if view_ids:
+        statement = statement.where(ViewSqlFact.view_id.in_(view_ids))
+
+    facts = session.exec(
+        statement.order_by(ViewSqlFact.view_id, ViewSqlFact.id)
+    ).all()
+    fact_map: dict[int, list[ViewSqlFact]] = {}
+    for fact in facts:
+        fact_map.setdefault(fact.view_id, []).append(fact)
+    return fact_map
+
+
 def build_routine_table_map(
     session: Session,
     *,
@@ -1763,6 +1987,41 @@ def build_routine_table_map(
         # 无论是否命中表，都包含进来，确保“存储过程”完整
         routine_map[key] = (routine, referenced_tables)
     return routine_map
+
+
+def build_view_table_map(
+    session: Session,
+    *,
+    datasource_id: int,
+    tables: list[SchemaTable],
+) -> dict[str, tuple[ViewDefinition, set[str]]]:
+    views = session.exec(
+        select(ViewDefinition).where(
+            ViewDefinition.datasource_id == datasource_id
+        )
+    ).all()
+    view_fact_map = _build_view_fact_map(
+        session,
+        datasource_id=datasource_id,
+        view_ids=[view.id for view in views if view.id is not None],
+    )
+    normalized_to_actual = {
+        normalize_table_name(table.name or ""): table.name
+        for table in tables
+        if table.name
+    }
+
+    view_map: dict[str, tuple[ViewDefinition, set[str]]] = {}
+    for view in views:
+        key = f"{view.owner}.{view.name}"
+        referenced_tables: set[str] = set()
+        facts = view_fact_map.get(view.id or -1, [])
+        for fact in facts:
+            actual_name = normalized_to_actual.get(fact.normalized_table_name)
+            if actual_name:
+                referenced_tables.add(actual_name)
+        view_map[key] = (view, referenced_tables)
+    return view_map
 
 
 def _parse_related_table_config(table: SchemaTable) -> tuple[set[str], dict[str, str]]:
@@ -1855,6 +2114,136 @@ def _format_related_routines_for_prompt(routines: list[RoutineDefinition]) -> st
             )
         )
     return "\n\n".join(blocks)
+
+
+def _build_view_summary(
+    view: ViewDefinition,
+    *,
+    table_name: str,
+    sibling_tables: list[SchemaTable],
+    view_facts: list[ViewSqlFact] | None = None,
+) -> dict[str, object]:
+    view_facts = view_facts or []
+    normalized_current = normalize_table_name(table_name)
+    sibling_lookup = {
+        normalize_table_name(sibling.name or ""): sibling.name
+        for sibling in sibling_tables
+        if sibling.name
+    }
+
+    related_tables: list[str] = []
+    for fact in view_facts:
+        actual_name = sibling_lookup.get(fact.normalized_table_name) or fact.table_name
+        if normalize_table_name(actual_name) == normalized_current:
+            continue
+        if actual_name and actual_name not in related_tables:
+            related_tables.append(actual_name)
+    related_tables = related_tables[:5]
+
+    matched_count = sum(1 for fact in view_facts if fact.normalized_table_name == normalized_current)
+    view_role = "base_source"
+    if matched_count == 0:
+        view_role = "related"
+        summary = "该视图与当前表存在间接上下文关系。"
+    elif "group by" in (view.definition_text or "").lower():
+        view_role = "aggregated_source"
+        summary = "该视图以当前表为来源之一，并在视图层进行了聚合或汇总。"
+    elif " join " in f" {(view.definition_text or '').lower()} ":
+        view_role = "join_source"
+        summary = "该视图以当前表为来源之一，并与其他表联结形成组合结果。"
+    else:
+        summary = "该视图直接使用当前表作为底层数据来源。"
+
+    snippet = (view_facts[0].statement_text if view_facts else view.definition_text or "").strip()
+    if len(snippet) > 800:
+        snippet = snippet[:800].rstrip() + "..."
+
+    return {
+        "owner": view.owner,
+        "name": view.name,
+        "view_role": view_role,
+        "matched_count": matched_count,
+        "related_tables": related_tables,
+        "summary": summary,
+        "snippet": snippet,
+    }
+
+
+def _format_related_view_summaries_for_prompt(
+    views: list[ViewDefinition],
+    *,
+    table_name: str,
+    sibling_tables: list[SchemaTable],
+    view_fact_map: dict[int, list[ViewSqlFact]] | None = None,
+) -> str:
+    if not views:
+        return "- 无命中的相关视图"
+
+    lines: list[str] = []
+    for view in views[:MAX_PROMPT_VIEW_SUMMARIES]:
+        item = _build_view_summary(
+            view,
+            table_name=table_name,
+            sibling_tables=sibling_tables,
+            view_facts=(view_fact_map or {}).get(view.id or -1, []),
+        )
+        related_tables = ", ".join(item["related_tables"]) if item["related_tables"] else "无"
+        lines.append(
+            f"- {item['owner']}.{item['name']}｜当前表角色: {item['view_role']}｜命中: {item['matched_count']} 次｜相关表: {related_tables}｜摘要: {item['summary']}"
+        )
+    return "\n".join(lines)
+
+
+def _format_related_view_snippets_for_prompt(
+    views: list[ViewDefinition],
+    *,
+    table_name: str,
+    sibling_tables: list[SchemaTable],
+    view_fact_map: dict[int, list[ViewSqlFact]] | None = None,
+) -> str:
+    if not views:
+        return "- 无关键片段"
+
+    lines: list[str] = []
+    for view in views[:MAX_PROMPT_VIEW_SNIPPETS]:
+        item = _build_view_summary(
+            view,
+            table_name=table_name,
+            sibling_tables=sibling_tables,
+            view_facts=(view_fact_map or {}).get(view.id or -1, []),
+        )
+        lines.extend(
+            [
+                f"[{item['owner']}.{item['name']}]",
+                item["snippet"] or "无可展示片段",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def build_related_view_evidence(
+    views: list[ViewDefinition],
+    table_name: str,
+    view_fact_map: dict[int, list[ViewSqlFact]] | None = None,
+) -> list[dict[str, str]]:
+    evidence: list[dict[str, str]] = []
+    for view in views:
+        item = _build_view_summary(
+            view,
+            table_name=table_name,
+            sibling_tables=[],
+            view_facts=(view_fact_map or {}).get(view.id or -1, []),
+        )
+        evidence.append(
+            {
+                "owner": view.owner,
+                "name": view.name,
+                "snippet": item["snippet"],
+                "view_role": item["view_role"],
+            }
+        )
+    return evidence
 
 
 def _infer_routine_table_role(definition_text: str, table_name: str) -> str:
@@ -2073,6 +2462,8 @@ def _build_summary_prompt(
     table: SchemaTable,
     fields: list[SchemaField],
     sibling_tables: list[SchemaTable] | None = None,
+    related_views: list[ViewDefinition] | None = None,
+    view_fact_map: dict[int, list[ViewSqlFact]] | None = None,
     related_routines: list[RoutineDefinition] | None = None,
     routine_fact_map: dict[int, list[RoutineSqlFact]] | None = None,
 ) -> str:
@@ -2113,6 +2504,18 @@ def _build_summary_prompt(
             
     joined_siblings = "\n".join(sibling_lines) if sibling_lines else "- 无高相关其他表"
     joined_user_related = "\n".join(user_related_lines) if user_related_lines else "- 用户未手动标记关联表"
+    joined_related_view_summaries = _format_related_view_summaries_for_prompt(
+        related_views or [],
+        table_name=table.name,
+        sibling_tables=selected_siblings,
+        view_fact_map=view_fact_map,
+    )
+    joined_related_view_snippets = _format_related_view_snippets_for_prompt(
+        related_views or [],
+        table_name=table.name,
+        sibling_tables=selected_siblings,
+        view_fact_map=view_fact_map,
+    )
     joined_related_routine_summaries = _format_related_routine_summaries_for_prompt(
         related_routines or [],
         table_name=table.name,
@@ -2144,6 +2547,12 @@ def _build_summary_prompt(
 
 用户标记的高强度关联表 (优先考虑):
 {joined_user_related}
+
+相关视图摘要:
+{joined_related_view_summaries}
+
+相关视图关键片段:
+{joined_related_view_snippets}
 
 相关存储过程摘要:
 {joined_related_routine_summaries}

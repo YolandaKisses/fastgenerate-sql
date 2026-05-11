@@ -8,8 +8,9 @@ from app.core.database import engine, get_session
 from app.models.datasource import DataSource
 from app.models.knowledge import KnowledgeSyncTask
 from app.models.routine import RoutineDefinition
+from app.models.view import ViewDefinition
 from app.models.schema import SchemaTable, SchemaField
-from app.services import knowledge_service, routine_service, schema_service
+from app.services import knowledge_service, routine_service, schema_service, view_service
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/schema", tags=["schema"], dependencies=[Depends(get_current_user)])
@@ -52,12 +53,28 @@ def sync_routines(datasource_id: int, session: Session = Depends(get_session), c
     return routine_service.sync_routines_for_datasource(session, ds)
 
 
+@router.post("/views/sync/{datasource_id}")
+def sync_views(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    ds = session.get(DataSource, datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        return {"success": False, "message": "DataSource not found"}
+    return view_service.sync_views_for_datasource(session, ds)
+
+
 @router.get("/routines/{datasource_id}", response_model=list[RoutineDefinition])
 def read_routines(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
     ds = session.get(DataSource, datasource_id)
     if not ds or ds.user_id != current_user.user_id:
         raise HTTPException(status_code=404, detail="DataSource not found")
     return routine_service.get_routines(session, datasource_id)
+
+
+@router.get("/views/{datasource_id}", response_model=list[ViewDefinition])
+def read_views(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    ds = session.get(DataSource, datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+    return view_service.get_views(session, datasource_id)
 
 @router.get("/tables/{datasource_id}", response_model=list[SchemaTable])
 def read_tables(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
@@ -237,7 +254,9 @@ def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(ge
     from app.core.config import settings
     from app.services.path_utils import sanitize_path_segment
 
-    wiki_tables_dir = Path(settings.WIKI_ROOT) / sanitize_path_segment(ds.name) / "tables"
+    from app.services import setting_service
+    vault_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
+    wiki_tables_dir = Path(vault_root) / sanitize_path_segment(ds.name) / "tables"
     wiki_table_count = 0
     if wiki_tables_dir.exists():
         wiki_table_count = len(list(wiki_tables_dir.glob("*.md")))

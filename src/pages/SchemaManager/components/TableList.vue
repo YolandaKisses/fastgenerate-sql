@@ -30,7 +30,7 @@ const filteredTables = computed(() => {
 <template>
   <div class="list-card">
     <div class="search-box">
-      <n-input v-model:value="keyword" placeholder="搜索表名..." size="small" clearable>
+      <n-input v-model:value="keyword" placeholder="搜索对象名..." size="small" clearable>
         <template #prefix>
           <n-icon :component="SearchOutline" />
         </template>
@@ -82,17 +82,22 @@ const filteredTables = computed(() => {
 .table-list {
   display: flex;
   flex-direction: column;
+  padding-right: 10px;
+  box-sizing: border-box;
 }
 
 .table-item {
-  padding: 12px 16px;
+  margin: 4px 0;
+  padding: 14px !important;
   cursor: pointer;
-  border-bottom: 1px solid #f7f7fa;
-  transition: background 0.2s;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
 }
 
 .table-item:hover {
-  background-color: #f9faff;
+  background-color: #f8f9fe;
+  border-color: #e0e4f8;
 }
 
 .table-item-content {
@@ -108,6 +113,8 @@ const filteredTables = computed(() => {
 
 .selected-item {
   background-color: #eef0fa !important;
+  border-color: #2080f033 !important;
+  box-shadow: 0 2px 8px rgba(32, 128, 240, 0.08);
 }
 
 .empty-state {

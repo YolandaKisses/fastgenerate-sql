@@ -7,6 +7,7 @@ from app.models.knowledge import (
 )
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaTable
+from app.models.view import ViewDefinition, ViewSqlFact
 from app.services import knowledge_service
 from sqlmodel import SQLModel, Session, create_engine, select
 from pathlib import Path
@@ -391,6 +392,37 @@ def test_generate_table_summary_prompt_includes_related_routines_section(monkeyp
                 original_comment="订单表",
             )
         )
+        session.add(
+            ViewDefinition(
+                datasource_id=1,
+                owner="APP",
+                name="VW_USER_ORDER",
+                definition_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                original_comment="用户订单视图",
+            )
+        )
+        session.commit()
+        view = session.exec(select(ViewDefinition)).first()
+        session.add_all(
+            [
+                ViewSqlFact(
+                    datasource_id=1,
+                    view_id=view.id,
+                    statement_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="users",
+                    normalized_table_name="users",
+                    parser_name="sqllineage",
+                ),
+                ViewSqlFact(
+                    datasource_id=1,
+                    view_id=view.id,
+                    statement_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="orders",
+                    normalized_table_name="orders",
+                    parser_name="sqllineage",
+                ),
+            ]
+        )
         session.commit()
 
         knowledge_service.generate_table_summary(
@@ -411,6 +443,9 @@ def test_generate_table_summary_prompt_includes_related_routines_section(monkeyp
         )
 
     assert "高相关其他表" in captured["prompt"]
+    assert "相关视图摘要" in captured["prompt"]
+    assert "APP.VW_USER_ORDER｜当前表角色:" in captured["prompt"]
+    assert "相关视图关键片段" in captured["prompt"]
     assert "相关存储过程摘要" in captured["prompt"]
     assert "相关存储过程关键片段" in captured["prompt"]
     assert "APP.P_SYNC_USERS｜PROCEDURE" in captured["prompt"]
@@ -736,6 +771,15 @@ def test_run_knowledge_sync_task_only_writes_table_pages_and_index(tmp_path, mon
                 definition_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id;",
             )
         )
+        session.add(
+            ViewDefinition(
+                datasource_id=1,
+                owner="APP",
+                name="VW_USER_ORDER",
+                definition_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                original_comment="用户订单视图",
+            )
+        )
         task = KnowledgeSyncTask(
             datasource_id=1,
             datasource_name="demo",
@@ -750,13 +794,37 @@ def test_run_knowledge_sync_task_only_writes_table_pages_and_index(tmp_path, mon
         session.commit()
         task_id = task.id
 
+        view = session.exec(select(ViewDefinition)).first()
+        session.add_all(
+            [
+                ViewSqlFact(
+                    datasource_id=1,
+                    view_id=view.id,
+                    statement_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="users",
+                    normalized_table_name="users",
+                    parser_name="sqllineage",
+                ),
+                ViewSqlFact(
+                    datasource_id=1,
+                    view_id=view.id,
+                    statement_text="SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                    table_name="orders",
+                    normalized_table_name="orders",
+                    parser_name="sqllineage",
+                ),
+            ]
+        )
+        session.commit()
+
     knowledge_service.run_knowledge_sync_task(engine, task_id)
 
     assert (output_dir / "tables" / "users.md").exists()
     assert (output_dir / "tables" / "orders.md").exists()
+    assert (output_dir / "views" / "APP.VW_USER_ORDER.md").exists()
     assert (output_dir / "index.md").exists()
-    assert not (output_dir / "routines").exists()
-    assert not (output_dir / "terms").exists()
+    assert (output_dir / "routines").exists()
+    assert (output_dir / "terms").exists()
     assert not (output_dir / "metrics").exists()
     assert not (output_dir / "join_patterns").exists()
 
@@ -972,6 +1040,14 @@ def test_render_table_markdown_includes_routine_evidence_sections():
             "graph_links": [],
             "core_fields": "核心字段",
             "caveats": "注意事项",
+            "view_evidence": [
+                {
+                    "owner": "APP",
+                    "name": "VW_USER_ORDER",
+                    "view_role": "join_source",
+                    "snippet": "SELECT * FROM users u JOIN orders o ON o.user_id = u.id",
+                }
+            ],
             "routine_evidence": [
                 {
                     "owner": "APP",
@@ -983,12 +1059,13 @@ def test_render_table_markdown_includes_routine_evidence_sections():
         },
     )
 
+    assert "## 👁️ 相关视图" in markdown
+    assert "- [APP.VW_USER_ORDER](../views/APP.VW_USER_ORDER.md) · 当前表角色: `join_source`" in markdown
+    assert "#### `APP.VW_USER_ORDER`" in markdown
+    assert "SELECT * FROM users u JOIN orders o ON o.user_id = u.id" in markdown
     assert "## 🛠️ 相关存储过程" in markdown
-    assert "- **证据来源**: Oracle 存储过程/函数同步原文" in markdown
     assert "- `APP.P_SYNC_USERS` · `PROCEDURE`" in markdown
-    assert "### `APP.P_SYNC_USERS`" in markdown
-    assert "```sql" in markdown
-    assert "SELECT * FROM users;" in markdown
+    assert "#### `APP.P_SYNC_USERS`" not in markdown
 
 
 def test_render_table_markdown_always_shows_routine_section_and_strips_nohit_caveat():
@@ -1014,14 +1091,16 @@ def test_render_table_markdown_always_shows_routine_section_and_strips_nohit_cav
             "graph_links": [],
             "core_fields": "核心字段",
             "caveats": "密码字段需确认。未命中任何存储过程原文，上下游调用关系无法验证。",
+            "view_evidence": [],
             "routine_evidence": [],
         },
     )
 
+    assert "## 👁️ 相关视图" in markdown
+    assert "*暂无命中视图*" in markdown
     assert "## 🛠️ 相关存储过程" in markdown
-    assert "- **证据来源**: Oracle 存储过程/函数同步原文" in markdown
-    assert "- 暂无命中过程" in markdown
-    assert "未命中任何存储过程原文" not in markdown.split("## 注意事项", 1)[1].split("## 相关存储过程", 1)[0]
+    assert "*暂无命中过程*" in markdown
+    assert "未命中任何存储过程原文" not in markdown
 
 
 def test_format_knowledge_timing_log_includes_sorted_metadata():

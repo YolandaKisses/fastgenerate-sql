@@ -2,6 +2,7 @@ from sqlmodel import Session, select
 from app.models.datasource import DataSource, DataSourceCreate, DataSourceUpdate, DataSourceStatus
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaTable, SchemaField
+from app.models.view import ViewDefinition, ViewSqlFact
 from app.core.security import (
     decrypt_datasource_password,
     encrypt_datasource_password,
@@ -156,10 +157,16 @@ def delete_datasource(session: Session, ds_id: int, user_id: str) -> dict:
 
     routines = session.exec(select(RoutineDefinition).where(RoutineDefinition.datasource_id == ds_id)).all()
     routine_facts = session.exec(select(RoutineSqlFact).where(RoutineSqlFact.datasource_id == ds_id)).all()
+    views = session.exec(select(ViewDefinition).where(ViewDefinition.datasource_id == ds_id)).all()
+    view_facts = session.exec(select(ViewSqlFact).where(ViewSqlFact.datasource_id == ds_id)).all()
     for fact in routine_facts:
+        session.delete(fact)
+    for fact in view_facts:
         session.delete(fact)
     for routine in routines:
         session.delete(routine)
+    for view in views:
+        session.delete(view)
 
     for table in tables:
         session.delete(table)

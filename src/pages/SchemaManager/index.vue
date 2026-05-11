@@ -25,6 +25,7 @@ import {
 } from "@vicons/ionicons5";
 import TableList from "./components/TableList.vue";
 import RoutineList from "./components/RoutineList.vue";
+import ViewList from "./components/ViewList.vue";
 import SchemaEditor from "./components/SchemaEditor.vue";
 import { get, post, streamSse } from "../../services/request";
 
@@ -34,6 +35,8 @@ const currentSource = ref<number | null>(null);
 const sourceOptions = ref<{ label: string; value: number }[]>([]);
 const tables = ref<any[]>([]);
 const selectedTable = ref<any | null>(null);
+const views = ref<any[]>([]);
+const selectedView = ref<any | null>(null);
 const routines = ref<any[]>([]);
 const selectedRoutine = ref<any | null>(null);
 const knowledgeTask = ref<any | null>(null);
@@ -43,7 +46,9 @@ const wikiTableCount = ref(0);
 const knowledgeSyncing = ref(false);
 const schemaSyncing = ref(false);
 const routineSyncing = ref(false);
-const activeTab = ref<"schema" | "routines">("schema");
+const viewSyncing = ref(false);
+const metadataSyncing = ref(false);
+const activeTab = ref<"schema" | "views" | "routines">("schema");
 const bannerDismissed = ref(false);
 const showFailedModal = ref(false);
 const LS_KEY = "fastgenerate_last_datasource_id";
@@ -164,6 +169,17 @@ const fetchRoutines = async (dsId: number) => {
   }
 };
 
+const fetchViews = async (dsId: number) => {
+  try {
+    views.value = await get(`/schema/views/${dsId}`);
+    selectedView.value = views.value.length > 0 ? views.value[0] : null;
+  } catch (error) {
+    views.value = [];
+    selectedView.value = null;
+    message.error("无法加载视图");
+  }
+};
+
 const fetchLatestKnowledgeTask = async (dsId: number) => {
   try {
     const data = await get(`/schema/knowledge/status/${dsId}`);
@@ -199,12 +215,15 @@ watch(currentSource, (newVal) => {
   latestDatasourceTask.value = null;
   knowledgeSyncing.value = false;
   wikiTableCount.value = 0;
+  views.value = [];
+  selectedView.value = null;
   routines.value = [];
   selectedRoutine.value = null;
   bannerDismissed.value = false;
   if (newVal) {
     localStorage.setItem(LS_KEY, newVal.toString());
     fetchTables(newVal);
+    fetchViews(newVal);
     fetchRoutines(newVal);
     fetchLatestKnowledgeTask(newVal);
   }
@@ -226,6 +245,61 @@ const handleSelectRoutine = (routine: any) => {
   selectedRoutine.value = routine;
 };
 
+const handleSelectView = (view: any) => {
+  selectedView.value = view;
+};
+
+const normalizeMetadataSyncMessage = (messageText: string | undefined, fallback: string) => {
+  const text = (messageText || fallback).trim();
+  return text
+    .replace("，请继续同步到知识库", "")
+    .replace("请继续同步到知识库", "")
+    .trim();
+};
+
+const runSchemaSync = async (sourceId: number) => {
+  schemaSyncing.value = true;
+  try {
+    const data = await post(`/schema/sync/${sourceId}`);
+    if (!data.success) {
+      throw new Error(data.message || "表结构同步失败");
+    }
+    await fetchTables(sourceId);
+    await fetchLatestKnowledgeTask(sourceId);
+    return data;
+  } finally {
+    schemaSyncing.value = false;
+  }
+};
+
+const runRoutineSync = async (sourceId: number) => {
+  routineSyncing.value = true;
+  try {
+    const data = await post(`/schema/routines/sync/${sourceId}`);
+    if (!data.success) {
+      throw new Error(data.message || "存储过程同步失败");
+    }
+    await fetchRoutines(sourceId);
+    return data;
+  } finally {
+    routineSyncing.value = false;
+  }
+};
+
+const runViewSync = async (sourceId: number) => {
+  viewSyncing.value = true;
+  try {
+    const data = await post(`/schema/views/sync/${sourceId}`);
+    if (!data.success) {
+      throw new Error(data.message || "视图同步失败");
+    }
+    await fetchViews(sourceId);
+    return data;
+  } finally {
+    viewSyncing.value = false;
+  }
+};
+
 const handleSync = async () => {
   if (!currentSource.value || schemaSyncing.value) return;
   const sourceId = currentSource.value;
@@ -235,26 +309,64 @@ const handleSync = async () => {
     content: "将从数据库重新读取表和字段信息，确定继续吗？",
     positiveText: "开始同步",
     negativeText: "取消",
+    onPositiveClick: async () => {
+      message.info("表结构同步任务已启动，请稍候...");
+      try {
+        const data = await runSchemaSync(sourceId);
+        message.success(
+          normalizeMetadataSyncMessage(data.message, "表结构同步完成"),
+        );
+      } catch (error: any) {
+        message.error(error?.message || "同步请求失败");
+      }
+    },
+  });
+};
+
+const handleMetadataSync = async () => {
+  if (
+    !currentSource.value ||
+    metadataSyncing.value ||
+    knowledgeSyncing.value ||
+    schemaSyncing.value ||
+    routineSyncing.value ||
+    viewSyncing.value
+  ) {
+    return;
+  }
+  const sourceId = currentSource.value;
+
+  dialog.info({
+    title: "同步数据库对象",
+    content: "将按顺序同步表结构、存储过程和视图，确定继续吗？",
+    positiveText: "开始同步",
+    negativeText: "取消",
     onPositiveClick: () => {
-      schemaSyncing.value = true;
-      message.info("同步任务已在后台启动，请稍候...");
-      post(`/schema/sync/${sourceId}`)
-        .then((data) => {
-          if (data.success) {
-            message.success(data.message);
-            fetchTables(sourceId);
-            fetchLatestKnowledgeTask(sourceId);
-          } else {
-            message.error(data.message);
-          }
-        })
-        .catch(() => {
-          message.error("同步请求失败");
-        })
-        .finally(() => {
-          schemaSyncing.value = false;
-        });
-      // 不返回 Promise，让弹窗立即关闭
+      void (async () => {
+        metadataSyncing.value = true;
+        try {
+          message.info("开始同步表结构...");
+          const schemaData = await runSchemaSync(sourceId);
+          message.success(
+            normalizeMetadataSyncMessage(schemaData.message, "表结构同步完成"),
+          );
+
+          message.info("开始同步存储过程...");
+          const routineData = await runRoutineSync(sourceId);
+        message.success(routineData.message || "存储过程同步完成");
+
+        message.info("开始同步视图...");
+        const viewData = await runViewSync(sourceId);
+        message.success(viewData.message || "视图同步完成");
+
+        await fetchSources();
+        message.success("数据库对象已同步完成");
+        } catch (error: any) {
+          message.error(error?.message || "数据库对象同步失败");
+        } finally {
+          metadataSyncing.value = false;
+        }
+      })();
     },
   });
 };
@@ -508,21 +620,35 @@ const handleRoutineSync = async () => {
     positiveText: "开始同步",
     negativeText: "取消",
     onPositiveClick: async () => {
-      routineSyncing.value = true;
       message.info("存储过程同步任务已启动，请稍候...");
       try {
-        const data = await post(`/schema/routines/sync/${sourceId}`);
-        if (data.success) {
-          message.success(data.message || "存储过程同步完成");
-          await fetchRoutines(sourceId);
-          fetchSources();
-        } else {
-          message.error(data.message || "存储过程同步失败");
-        }
+        const data = await runRoutineSync(sourceId);
+        message.success(data.message || "存储过程同步完成");
+        fetchSources();
       } catch (error: any) {
         message.error(error?.message || "存储过程同步失败");
-      } finally {
-        routineSyncing.value = false;
+      }
+    },
+  });
+};
+
+const handleViewSync = async () => {
+  if (!currentSource.value || viewSyncing.value) return;
+  const sourceId = currentSource.value;
+
+  dialog.info({
+    title: "同步视图",
+    content: "将从 Oracle 重新读取当前 Schema 下的视图定义与备注，确定继续吗？",
+    positiveText: "开始同步",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      message.info("视图同步任务已启动，请稍候...");
+      try {
+        const data = await runViewSync(sourceId);
+        message.success(data.message || "视图同步完成");
+        fetchSources();
+      } catch (error: any) {
+        message.error(error?.message || "视图同步失败");
       }
     },
   });
@@ -563,9 +689,9 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
     <div class="page-header">
       <div class="header-top">
         <div class="header-left">
-          <h1 class="page-title">元数据备注管理与存储过程</h1>
+          <h1 class="page-title">元数据与脚本管理</h1>
           <p class="page-subtitle">
-            管理数据库元数据与存储过程，同步结构事实并为 AI
+            管理数据库元数据、视图与存储过程，同步结构事实并为 AI
             深度解析提供更完整的业务上下文。
           </p>
         </div>
@@ -574,17 +700,16 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
             <div
               class="knowledge-banner"
               :class="[
-                latestDatasourceTask.status === 'completed' && wikiTableCount === 0
+                latestDatasourceTask.status === 'completed' &&
+                wikiTableCount === 0
                   ? 'is-none'
                   : `is-${latestDatasourceTask.status}`,
                 {
                   'is-expired':
                     latestDatasourceTask.status === 'completed' &&
-                    (
-                      wikiTableCount === 0 ||
+                    (wikiTableCount === 0 ||
                       wikiTableCount < latestDatasourceTask.total_tables ||
-                      actualTableCount > latestDatasourceTask.total_tables
-                    ),
+                      actualTableCount > latestDatasourceTask.total_tables),
                 },
               ]"
             >
@@ -649,26 +774,20 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
           <n-button
             secondary
             size="small"
-            :loading="schemaSyncing"
-            :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
-            @click="handleSync"
+            :loading="metadataSyncing"
+            :disabled="
+              knowledgeSyncing ||
+              metadataSyncing ||
+              schemaSyncing ||
+              routineSyncing ||
+              viewSyncing
+            "
+            @click="handleMetadataSync"
           >
             <template #icon>
               <n-icon><SyncOutline /></n-icon>
             </template>
-            同步表结构
-          </n-button>
-          <n-button
-            secondary
-            size="small"
-            :loading="routineSyncing"
-            :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
-            @click="handleRoutineSync"
-          >
-            <template #icon>
-              <n-icon><CodeSlashOutline /></n-icon>
-            </template>
-            同步存储过程
+            同步数据库对象
           </n-button>
 
           <!-- <n-tooltip trigger="hover">
@@ -702,7 +821,12 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                   knowledgeTask?.scope !== 'table' &&
                   knowledgeTask?.is_incremental !== false
                 "
-                :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
+                :disabled="
+                  knowledgeSyncing ||
+                  schemaSyncing ||
+                  routineSyncing ||
+                  viewSyncing
+                "
                 @click="handleKnowledgeAiSync"
               >
                 <template #icon>
@@ -730,7 +854,12 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                   knowledgeTask?.scope !== 'table' &&
                   knowledgeTask?.is_incremental === false
                 "
-                :disabled="knowledgeSyncing || schemaSyncing || routineSyncing"
+                :disabled="
+                  knowledgeSyncing ||
+                  schemaSyncing ||
+                  routineSyncing ||
+                  viewSyncing
+                "
                 @click="handleKnowledgeFullRebuild('ai_enhanced')"
               >
                 <template #icon>
@@ -761,6 +890,12 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
         <n-tab-pane name="schema" tab="表结构">
           <div class="schema-container">
             <div class="sider-panel">
+              <div class="panel-caption">
+                <span>已同步对象</span>
+                <n-tag size="small" round type="info" :bordered="false">
+                  {{ tables.length }}
+                </n-tag>
+              </div>
               <TableList
                 :tables="tables"
                 :selected-table="selectedTable"
@@ -778,6 +913,56 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
                 @sync-knowledge="handleKnowledgeSync"
                 @sync-table="handleSingleTableSync"
               />
+            </div>
+          </div>
+        </n-tab-pane>
+        <n-tab-pane name="views" tab="视图">
+          <div class="schema-container">
+            <div class="sider-panel routine-sider">
+              <div class="panel-caption">
+                <span>已同步对象</span>
+                <n-tag size="small" round type="success" :bordered="false">
+                  {{ views.length }}
+                </n-tag>
+              </div>
+              <ViewList
+                :views="views"
+                :selected-view="selectedView"
+                @select="handleSelectView"
+              />
+            </div>
+            <div class="main-panel">
+              <div class="routine-preview-card">
+                <template v-if="selectedView">
+                  <div class="routine-preview-header">
+                    <div>
+                      <h3 class="routine-preview-title">{{ selectedView.name }}</h3>
+                      <p class="routine-preview-subtitle">
+                        {{ selectedView.owner }} · VIEW
+                      </p>
+                    </div>
+                  </div>
+                  <div class="view-detail-body">
+                    <div class="view-detail-section">
+                      <label class="view-detail-label">视图备注</label>
+                      <div class="view-detail-text">
+                        {{ selectedView.original_comment || "无视图备注" }}
+                      </div>
+                    </div>
+                    <div class="view-detail-section">
+                      <label class="view-detail-label">视图定义</label>
+                      <n-scrollbar style="max-height: 520px">
+                        <pre class="routine-preview-body">{{
+                          selectedView.definition_text
+                        }}</pre>
+                      </n-scrollbar>
+                    </div>
+                  </div>
+                </template>
+                <div v-else class="routine-empty-state">
+                  请选择左侧视图查看定义；若列表为空，请先点击上方“同步视图”。
+                </div>
+              </div>
             </div>
           </div>
         </n-tab-pane>
@@ -1112,6 +1297,39 @@ const handleSingleTableSync = async (mode: "basic" | "ai_enhanced") => {
   color: #7b8190;
   font-size: 14px;
   text-align: center;
+}
+
+.view-detail-body {
+  flex: 1;
+  min-height: 0;
+  padding: 22px 24px 28px;
+  overflow: auto;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.view-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.view-detail-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4f5666;
+}
+
+.view-detail-text {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e6e9f0;
+  color: #253041;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 @media (max-width: 1100px) {

@@ -12,7 +12,8 @@ const hermesDefault = ref('')
 const hermesStatus = ref<'idle' | 'testing' | 'success' | 'error'>('idle')
 const hermesMessage = ref('')
 
-
+const wikiRoot = ref('')
+const wikiDefault = ref('')
 
 const fetchSettings = async () => {
   try {
@@ -20,7 +21,8 @@ const fetchSettings = async () => {
     hermesPath.value = data.hermes_cli_path.value || data.hermes_cli_path.default
     hermesDefault.value = data.hermes_cli_path.default
     
-
+    wikiRoot.value = data.wiki_root.value || data.wiki_root.default
+    wikiDefault.value = data.wiki_root.default
   } catch (e) {
     message.error('获取设置失败')
   }
@@ -33,6 +35,14 @@ const saveSetting = async (key: string, value: string) => {
   } catch (e: any) {
     message.error(e.message || '保存请求失败')
   }
+}
+
+const handleSaveWikiRoot = async () => {
+  await saveSetting('wiki_root', wikiRoot.value)
+}
+
+const resetWikiRoot = () => {
+  wikiRoot.value = wikiDefault.value
 }
 
 const runHermesTest = async () => {
@@ -48,37 +58,53 @@ const runHermesTest = async () => {
   }
 }
 
-
-
 const testHermes = async () => {
   await saveSetting('hermes_cli_path', hermesPath.value)
   await runHermesTest()
 }
 
-
-
 const resetHermes = () => {
   hermesPath.value = hermesDefault.value
 }
-
-
 
 onMounted(async () => {
   await fetchSettings()
   // 页面加载时自动执行一次静默检查
   if (hermesPath.value) runHermesTest()
-
 })
 </script>
 
 <template>
   <div class="settings-container">
     <div class="page-header">
-      <h2 class="page-title">本地运行设置</h2>
-      <p class="page-desc">配置本地环境路径，覆盖默认环境变量</p>
+      <h2 class="page-title">系统运行设置</h2>
+      <p class="page-desc">配置本地环境路径与知识库存储位置</p>
     </div>
 
     <div class="settings-content">
+      <!-- 知识库配置 -->
+      <n-card title="知识库存储设置" class="setting-card">
+        <n-form label-placement="top">
+          <n-form-item label="知识库根目录 (WIKI_ROOT)">
+            <n-input v-model:value="wikiRoot" placeholder="例如: /Users/yolanda/Documents/Wiki" />
+            <template #feedback>
+              生成的 Markdown 文件将存放在此目录下。修改后即时生效。
+            </template>
+          </n-form-item>
+          
+          <n-space style="margin-top: 16px;">
+            <n-button type="primary" @click="handleSaveWikiRoot">
+              <template #icon><n-icon><FolderOpenOutline /></n-icon></template>
+              保存路径
+            </n-button>
+            <n-button @click="resetWikiRoot">
+              <template #icon><n-icon><RefreshOutline /></n-icon></template>
+              恢复默认值
+            </n-button>
+          </n-space>
+        </n-form>
+      </n-card>
+
       <!-- Hermes CLI 配置 -->
       <n-card title="Hermes CLI 引擎" class="setting-card">
         <template #header-extra>
@@ -112,8 +138,6 @@ onMounted(async () => {
           </n-space>
         </n-form>
       </n-card>
-
-      <!-- Obsidian 配置已移除 -->
     </div>
   </div>
 </template>

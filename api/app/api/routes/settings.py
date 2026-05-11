@@ -17,12 +17,16 @@ def get_all_settings(session: Session = Depends(get_session)):
         "hermes_cli_path": {
             "value": setting_service.get_setting(session, "hermes_cli_path"),
             "default": env_settings.HERMES_CLI_PATH
+        },
+        "wiki_root": {
+            "value": setting_service.get_setting(session, "wiki_root"),
+            "default": env_settings.WIKI_ROOT
         }
     }
 
 @router.post("/{key}")
 def update_setting(key: str, req: RuntimeSettingUpdate, session: Session = Depends(get_session)):
-    allowed_keys = ["hermes_cli_path"]
+    allowed_keys = ["hermes_cli_path", "wiki_root"]
     if key not in allowed_keys:
         raise HTTPException(status_code=400, detail="不支持的配置键")
     return setting_service.set_setting(session, key, req.value)

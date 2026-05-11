@@ -12,6 +12,7 @@ import app.models.setting
 import app.models.user
 import app.models.login_log
 import app.models.routine
+import app.models.view
 import app.models.datasource
 import app.models.schema
 import app.models.knowledge
@@ -72,6 +73,18 @@ def ensure_compatible_schema():
                 conn.execute(sqlalchemy.text("ALTER TABLE routinedefinition ADD COLUMN lineage_message VARCHAR"))
             if "lineage_updated_at" not in routine_column_names:
                 conn.execute(sqlalchemy.text("ALTER TABLE routinedefinition ADD COLUMN lineage_updated_at DATETIME"))
+
+            view_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(viewdefinition)")).fetchall()
+            view_column_names = {row[1] for row in view_columns}
+            if view_columns:
+                if "original_comment" not in view_column_names:
+                    conn.execute(sqlalchemy.text("ALTER TABLE viewdefinition ADD COLUMN original_comment VARCHAR"))
+                if "lineage_status" not in view_column_names:
+                    conn.execute(sqlalchemy.text("ALTER TABLE viewdefinition ADD COLUMN lineage_status VARCHAR DEFAULT 'pending'"))
+                if "lineage_message" not in view_column_names:
+                    conn.execute(sqlalchemy.text("ALTER TABLE viewdefinition ADD COLUMN lineage_message VARCHAR"))
+                if "lineage_updated_at" not in view_column_names:
+                    conn.execute(sqlalchemy.text("ALTER TABLE viewdefinition ADD COLUMN lineage_updated_at DATETIME"))
     except sqlalchemy.exc.OperationalError as exc:
         if _is_sqlite_readonly_error(exc):
             return

@@ -1,18 +1,22 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pathlib import Path
 from typing import List, Dict, Optional
 import os
+from sqlmodel import Session
 from app.core.config import settings
+from app.core.database import get_session
+from app.services import setting_service
 
 router = APIRouter(prefix="/wiki", tags=["wiki"])
 
-def get_wiki_root() -> Path:
-    return Path(settings.WIKI_ROOT)
+def get_wiki_root(session: Session) -> Path:
+    root_str = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
+    return Path(root_str)
 
 @router.get("/tree")
-async def get_wiki_tree():
+async def get_wiki_tree(session: Session = Depends(get_session)):
     """获取知识库目录树结构"""
-    root = get_wiki_root()
+    root = get_wiki_root(session)
     if not root.exists():
         return []
     
@@ -41,9 +45,9 @@ async def get_wiki_tree():
     return build_tree(root)
 
 @router.get("/content")
-async def get_wiki_content(path: str):
+async def get_wiki_content(path: str, session: Session = Depends(get_session)):
     """获取指定 Markdown 文件的内容"""
-    root = get_wiki_root()
+    root = get_wiki_root(session)
     file_path = (root / path).resolve()
     
     # 安全性检查：确保请求的路径在 root 目录下

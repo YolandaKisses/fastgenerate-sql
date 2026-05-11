@@ -2,30 +2,30 @@
 import { computed, ref } from 'vue'
 import { NList, NListItem, NTag, NSpace, NText, NEmpty, NScrollbar, NInput } from 'naive-ui'
 import { NIcon } from 'naive-ui'
-import { CodeSlashOutline, SearchOutline } from '@vicons/ionicons5'
+import { BookOutline, SearchOutline } from '@vicons/ionicons5'
 
 const props = defineProps<{
-  routines: Array<{
+  views: Array<{
     id: number
     owner: string
     name: string
-    routine_type: string
     definition_text: string
+    original_comment?: string | null
   }>
-  selectedRoutine?: any | null
+  selectedView?: any | null
 }>()
 
 const emit = defineEmits(['select'])
 const keyword = ref('')
 
-const filteredRoutines = computed(() => {
+const filteredViews = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   if (!search) {
-    return props.routines
+    return props.views
   }
 
-  return props.routines.filter((routine: (typeof props.routines)[number]) => {
-    const haystack = [routine.name, routine.owner, routine.routine_type]
+  return props.views.filter((view: (typeof props.views)[number]) => {
+    const haystack = [view.name, view.owner, view.original_comment]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -43,33 +43,36 @@ const filteredRoutines = computed(() => {
         </template>
       </n-input>
     </div>
-    <div v-if="filteredRoutines.length === 0" class="empty-list-container">
-      <n-empty description="暂无已同步的存储过程或函数" size="large">
+    <div v-if="filteredViews.length === 0" class="empty-list-container">
+      <n-empty description="暂无已同步的视图" size="large">
         <template #icon>
           <n-icon>
-            <CodeSlashOutline />
+            <BookOutline />
           </n-icon>
         </template>
       </n-empty>
     </div>
-    <n-scrollbar v-else class="routine-scroll">
-      <n-list hoverable clickable class="routine-list">
+    <n-scrollbar v-else class="view-scroll">
+      <n-list hoverable clickable class="view-list">
         <n-list-item
-          v-for="routine in filteredRoutines"
-          :key="routine.id"
-          :class="{ 'selected-item': selectedRoutine?.id === routine.id }"
-          @click="emit('select', routine)"
+          v-for="view in filteredViews"
+          :key="view.id"
+          :class="{ 'selected-item': selectedView?.id === view.id }"
+          @click="emit('select', view)"
         >
-          <div class="routine-item">
-            <div class="routine-header">
-              <n-text strong class="routine-name">{{ routine.name }}</n-text>
-              <n-tag size="small" round :bordered="false" type="info">
-                {{ routine.routine_type }}
+          <div class="view-item">
+            <div class="view-header">
+              <n-text strong class="view-name">{{ view.name }}</n-text>
+              <n-tag size="small" round :bordered="false" type="success">
+                VIEW
               </n-tag>
             </div>
-            <n-space align="center" :size="8" class="routine-meta">
-              <n-text depth="3" class="routine-owner">{{ routine.owner }}</n-text>
+            <n-space align="center" :size="8" class="view-meta">
+              <n-text depth="3" class="view-owner">{{ view.owner }}</n-text>
             </n-space>
+            <n-text depth="3" class="view-comment">
+              {{ view.original_comment || "无视图备注" }}
+            </n-text>
           </div>
         </n-list-item>
       </n-list>
@@ -102,13 +105,13 @@ const filteredRoutines = computed(() => {
   padding: 40px 0;
 }
 
-.routine-list {
+.view-list {
   background: transparent;
   padding-right: 10px;
   box-sizing: border-box;
 }
 
-.routine-scroll {
+.view-scroll {
   flex: 1;
   min-height: 0;
 }
@@ -132,25 +135,31 @@ const filteredRoutines = computed(() => {
   box-shadow: 0 2px 8px rgba(32, 128, 240, 0.08);
 }
 
-.routine-item {
+.view-item {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.routine-header {
+.view-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.routine-name {
+.view-name {
   font-size: 14px;
   line-height: 1.4;
 }
 
-.routine-owner {
+.view-owner,
+.view-comment {
   font-size: 12px;
+}
+
+.view-comment {
+  display: block;
+  line-height: 1.4;
 }
 </style>

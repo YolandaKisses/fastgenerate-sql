@@ -12,7 +12,7 @@ from app.services.path_utils import sanitize_path_segment
 
 
 def delete_table_note_if_exists(session: Session, ds: DataSource, table_name: str) -> None:
-    vault_root = settings.WIKI_ROOT
+    vault_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
     if not vault_root:
         return
 
