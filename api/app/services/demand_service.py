@@ -112,6 +112,12 @@ def rename_demand_category(
     if new_dir.exists():
         raise ValueError("目标需求分类已存在")
     target_dir.rename(new_dir)
+    try:
+        from app.services.rag import retriever
+
+        retriever.rebuild_index(wiki_root)
+    except Exception:
+        pass
     return _build_category_node(new_dir, demand_root)
 
 
@@ -128,6 +134,12 @@ def delete_demand_category(
     if not target_dir.exists() or not target_dir.is_dir():
         raise ValueError("需求分类不存在")
     shutil.rmtree(target_dir)
+    try:
+        from app.services.rag import retriever
+
+        retriever.rebuild_index(wiki_root)
+    except Exception:
+        pass
 
 
 def _normalize_field(field: dict[str, Any]) -> dict[str, str]:
@@ -141,7 +153,7 @@ def _normalize_field(field: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _parse_demand_document(file_path: Path) -> dict[str, Any]:
+def _parse_demand_document(file_path: Path, wiki_root: Path) -> dict[str, Any]:
     content = file_path.read_text(encoding="utf-8")
     lines = content.splitlines()
 
@@ -193,12 +205,12 @@ def _parse_demand_document(file_path: Path) -> dict[str, Any]:
                 )
 
     return {
-        "id": file_path.as_posix(),
+        "id": file_path.relative_to(wiki_root).as_posix(),
         "name": table_name,
         "comment": table_comment,
         "related_tables": related_tables,
         "related_table_details": related_table_details,
-        "saved_path": file_path.as_posix(),
+        "saved_path": file_path.relative_to(wiki_root).as_posix(),
         "fields": fields,
     }
 
@@ -209,13 +221,14 @@ def list_demand_documents(
     datasource_name: str,
     demand_name: str,
 ) -> list[dict[str, Any]]:
-    demand_root = ensure_demand_root(wiki_root, datasource_name)
+    wiki_root_path = Path(wiki_root)
+    demand_root = ensure_demand_root(wiki_root_path, datasource_name)
     category_dir = _resolve_category_path(demand_root, demand_name)
     if not category_dir.exists() or not category_dir.is_dir():
         return []
 
     files = sorted(category_dir.glob("*.md"))
-    return [_parse_demand_document(file_path) for file_path in files]
+    return [_parse_demand_document(file_path, wiki_root_path) for file_path in files]
 
 
 def render_demand_document(
@@ -289,6 +302,7 @@ def save_demand_document(
     table_comment: str = "",
     related_tables: list[dict[str, Any]] | None = None,
     fields: list[dict[str, Any]],
+    original_saved_path: str | None = None,
 ) -> dict[str, str]:
     normalized_demand_name = _validate_required_text(demand_name, "需求名称")
     normalized_table_name = _validate_required_text(table_name, "表名")
@@ -315,10 +329,46 @@ def save_demand_document(
     relative_path = relative_dir / f"{sanitize_path_segment(normalized_table_name)}.md"
     absolute_path = root / relative_path
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
+
+    old_relative_path = str(original_saved_path or "").strip()
+    if old_relative_path and old_relative_path != relative_path.as_posix():
+        old_absolute_path = (root / old_relative_path).resolve()
+        if str(old_absolute_path).startswith(str(root.resolve())) and old_absolute_path.exists():
+            old_absolute_path.unlink()
+
     absolute_path.write_text(content, encoding="utf-8")
+
+    try:
+        from app.services.rag import retriever
+
+        if old_relative_path and old_relative_path != relative_path.as_posix():
+            retriever.remove_deleted_file(root, old_relative_path)
+        retriever.index_single_file(root, relative_path)
+    except Exception:
+        pass
 
     return {
         "relative_path": relative_path.as_posix(),
         "absolute_path": str(absolute_path),
         "content": content,
     }
+
+
+def delete_demand_document(
+    *,
+    wiki_root: str | Path,
+    saved_path: str,
+) -> None:
+    root = Path(wiki_root).resolve()
+    target = (root / saved_path).resolve()
+    if not str(target).startswith(str(root)):
+        raise ValueError("非法的文档路径")
+    if not target.exists() or not target.is_file():
+        raise ValueError("需求文档不存在")
+    target.unlink()
+    try:
+        from app.services.rag import retriever
+
+        retriever.remove_deleted_file(root, saved_path)
+    except Exception:
+        pass

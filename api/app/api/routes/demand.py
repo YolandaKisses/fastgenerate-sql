@@ -28,6 +28,7 @@ class DemandDocumentCreateRequest(BaseModel):
     demand_name: str = Field(min_length=1)
     table_name: str = Field(min_length=1)
     table_comment: str = ""
+    original_saved_path: str | None = None
     related_tables: list[DemandRelatedTableInput] = []
     fields: list[DemandFieldInput]
 
@@ -84,6 +85,11 @@ class DemandCategoryRenameRequest(BaseModel):
 class DemandCategoryDeleteRequest(BaseModel):
     datasource_id: int
     path: str = Field(min_length=1)
+
+
+class DemandDocumentDeleteRequest(BaseModel):
+    datasource_id: int
+    saved_path: str = Field(min_length=1)
 
 
 DemandCategoryNode.model_rebuild()
@@ -196,11 +202,32 @@ def create_demand_document(
             demand_name=payload.demand_name,
             table_name=payload.table_name,
             table_comment=payload.table_comment,
+            original_saved_path=payload.original_saved_path,
             related_tables=[item.model_dump() for item in payload.related_tables],
             fields=[field.model_dump() for field in payload.fields],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/documents")
+def delete_demand_document(
+    payload: DemandDocumentDeleteRequest,
+    session: Session = Depends(get_session),
+    current_user = Depends(get_current_user),
+):
+    datasource = get_owned_datasource_or_404(session, payload.datasource_id, current_user)
+    wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
+    if not payload.saved_path.startswith(f"{datasource.name}/"):
+        raise HTTPException(status_code=400, detail="文档路径与当前数据源不匹配")
+    try:
+        demand_service.delete_demand_document(
+            wiki_root=wiki_root,
+            saved_path=payload.saved_path,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True}
 
 
 @router.get("/documents/{datasource_id}", response_model=list[DemandDocumentReadResponse])

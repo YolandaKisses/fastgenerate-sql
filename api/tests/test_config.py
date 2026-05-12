@@ -15,3 +15,10 @@ def test_cors_origins_are_parsed_from_comma_separated_setting():
         "https://app.example.com",
         "http://localhost:4173",
     ]
+
+
+def test_rag_backend_defaults_to_local_with_remote_rebuild_disabled():
+    settings = Settings()
+
+    assert settings.RAG_RETRIEVAL_BACKEND == "local"
+    assert settings.LIGHTRAG_ENABLE_REMOTE_REBUILD is False

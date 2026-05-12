@@ -171,10 +171,26 @@ const handleRemoveTable = (tableId: string) => {
     content: `确定删除 ${target.name || "未命名表"} 吗？`,
     positiveText: "删除",
     negativeText: "取消",
-    onPositiveClick: () => {
-      tables.value = tables.value.filter((table) => table.id !== tableId);
-      if (selectedTableId.value === tableId) {
-        selectedTableId.value = tables.value[0]?.id || null;
+    onPositiveClick: async () => {
+      try {
+        if (target.savedPath && currentSource.value) {
+          await request("/demand/documents", {
+            method: "DELETE",
+            body: {
+              datasource_id: currentSource.value,
+              saved_path: target.savedPath,
+            },
+          });
+        }
+        tables.value = tables.value.filter((table) => table.id !== tableId);
+        if (selectedTableId.value === tableId) {
+          selectedTableId.value = tables.value[0]?.id || null;
+        }
+        if (target.savedPath) {
+          message.success("需求文档已删除");
+        }
+      } catch (error: any) {
+        message.error(error?.message || "删除失败");
       }
     },
   });
@@ -264,6 +280,7 @@ const saveCurrentTable = async () => {
       demand_name: demandName.value!.trim(),
       table_name: selectedTable.value!.name.trim(),
       table_comment: selectedTable.value!.comment.trim(),
+      original_saved_path: selectedTable.value!.savedPath || undefined,
       related_tables: selectedTable.value!.relatedTables.map((key) => ({
         table_name: key,
         relation_detail: selectedTable.value!.relatedTableDetails[key] || "",

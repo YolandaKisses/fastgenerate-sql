@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { NButton, NInput, NIcon, NSelect, NTabs, NTabPane } from "naive-ui";
-import { AddOutline, SaveOutline, TrashOutline } from "@vicons/ionicons5";
-import type { DemandDraftTable, SchemaTableOption } from "../types";
+import { AddOutline, SaveOutline, TrashOutline, CreateOutline, FolderOutline, GridOutline } from "@vicons/ionicons5";
+import type { DemandDraftTable, SchemaTableOption, DemandField } from "../types";
 
 const props = defineProps<{
   table: DemandDraftTable | null;
@@ -39,57 +39,70 @@ const relatedTableOptions = computed(() => {
 
 <template>
   <div v-if="table" class="editor-card">
+    <!-- 1. 紧凑型 Header：集成表名、备注、分类、操作 -->
     <div class="editor-header">
-      <div class="header-main">
-        <div class="header-title">需求表定义</div>
-        <div class="header-subtitle">
-          当前需求分类：{{ demandName || "未填写" }}
-        </div>
-      </div>
-      <n-button type="primary" :loading="saving" :disabled="!canSave" @click="emit('save')">
-        <template #icon>
-          <n-icon :component="SaveOutline" />
-        </template>
-        保存并生成 Wiki
-      </n-button>
-    </div>
-
-    <div class="table-meta-panel">
-      <div class="table-meta-grid">
-        <div class="table-meta-item">
-          <label class="section-label">表名</label>
+      <div class="header-left">
+        <div class="title-group">
           <n-input
             :value="table.name"
-            placeholder="请输入本次需求要创建的表名"
+            placeholder="请输入表名..."
+            class="table-name-input"
             @update:value="emit('update-table-name', $event)"
           />
+          <div v-if="table.savedPath" class="status-pill success">
+            <span class="dot"></span> 已同步 Wiki
+          </div>
         </div>
-        <div class="table-meta-item">
-          <label class="section-label">表备注</label>
+        <div class="comment-group">
           <n-input
             :value="table.comment"
-            placeholder="请输入表级备注说明"
+            placeholder="添加业务逻辑或口径描述..."
+            class="table-comment-input"
             @update:value="emit('update-table-comment', $event)"
           />
         </div>
       </div>
-      <div v-if="table.savedPath" class="saved-hint">已生成：{{ table.savedPath }}</div>
+
+      <div class="header-right">
+        <div class="meta-card">
+          <div class="meta-item">
+            <span class="meta-label">归属分类</span>
+            <div class="meta-value">
+              <n-icon :component="FolderOutline" />
+              <span class="text">{{ demandName || "未分类" }}</span>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <n-button
+            type="primary"
+            :loading="saving"
+            :disabled="!canSave"
+            class="save-btn"
+            @click="emit('save')"
+          >
+            <template #icon>
+              <n-icon :component="SaveOutline" />
+            </template>
+            保存同步
+          </n-button>
+        </div>
+      </div>
     </div>
 
+    <!-- 2. 编辑区：通过 flex: 1 自动撑满剩余高度 -->
     <div class="editor-content">
       <n-tabs
         type="line"
         class="full-height-tabs"
-        pane-style="flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 20px;"
+        pane-style="flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0;"
       >
-        <n-tab-pane name="schema" tab="表结构">
-          <div class="fields-panel">
-            <div class="panel-header">
-              <div>
-                <div class="section-title">表结构</div>
-                <div class="section-desc">字段名、类型、原始备注、本地补充备注都支持直接编辑</div>
+        <n-tab-pane name="schema" tab="表结构定义">
+          <div class="fields-container">
+            <div class="toolbar">
+              <div class="toolbar-text">
+                共 {{ table.fields.length }} 个字段 · 支持直接编辑
               </div>
-              <n-button secondary @click="emit('add-field')">
+              <n-button size="small" type="primary" secondary @click="emit('add-field')">
                 <template #icon>
                   <n-icon :component="AddOutline" />
                 </template>
@@ -97,56 +110,55 @@ const relatedTableOptions = computed(() => {
               </n-button>
             </div>
 
-            <div class="fields-table-header">
-              <table class="fields-table fields-table-static">
+            <div class="table-v-scroll">
+              <table class="fields-table">
                 <thead>
                   <tr>
-                    <th>字段名</th>
-                    <th>类型</th>
-                    <th>原始备注</th>
-                    <th>本地补充备注</th>
+                    <th style="width: 22%">字段名</th>
+                    <th style="width: 15%">数据类型</th>
+                    <th style="width: 25%">原始定义/备注</th>
+                    <th style="width: 30%">业务规则/补充备注</th>
                     <th class="action-col">操作</th>
                   </tr>
                 </thead>
-              </table>
-            </div>
-            <div class="fields-table-wrap">
-              <table class="fields-table">
                 <tbody>
                   <tr v-for="field in table.fields" :key="field.id">
                     <td>
                       <n-input
                         :value="field.name"
-                        placeholder="如 report_date"
+                        size="small"
+                        placeholder="字段英文名"
                         @update:value="emit('update-field', field.id, 'name', $event)"
                       />
                     </td>
                     <td>
                       <n-input
                         :value="field.type"
-                        placeholder="如 varchar(64)"
+                        size="small"
+                        placeholder="varchar(64)"
                         @update:value="emit('update-field', field.id, 'type', $event)"
                       />
                     </td>
                     <td>
                       <n-input
                         :value="field.original_comment"
-                        placeholder="来源定义或原始备注"
+                        size="small"
+                        placeholder="来源定义"
                         @update:value="emit('update-field', field.id, 'original_comment', $event)"
                       />
                     </td>
                     <td>
                       <n-input
                         :value="field.supplementary_comment"
-                        placeholder="补充业务口径、规则说明"
+                        size="small"
+                        placeholder="详细业务逻辑说明"
                         @update:value="emit('update-field', field.id, 'supplementary_comment', $event)"
                       />
                     </td>
                     <td class="action-cell">
                       <button
-                        class="remove-button"
+                        class="icon-btn-danger"
                         type="button"
-                        title="删除字段"
                         @click="emit('remove-field', field.id)"
                       >
                         <n-icon :component="TrashOutline" />
@@ -159,51 +171,48 @@ const relatedTableOptions = computed(() => {
           </div>
         </n-tab-pane>
 
-        <n-tab-pane name="relations" tab="关联表设置">
-          <div class="relation-panel">
+        <n-tab-pane name="relations" tab="关联关系设置">
+          <div class="relation-container">
             <div class="relation-header">
-              <div>
-                <label class="section-label">关联表 (Sibling Tables)</label>
-                <div class="section-tip">关联表信息将帮助后续文档更准确地表达表间关系。</div>
+              <div class="header-text">
+                <span class="main">业务关联表 (Sibling Tables)</span>
+                <span class="desc">关联信息将有助于提高 AI 生成 Wiki 的准确度。</span>
               </div>
             </div>
-            <n-select
-              :value="table.relatedTables"
-              multiple
-              filterable
-              placeholder="选择业务相关的关联表..."
-              :options="relatedTableOptions"
-              :max-tag-count="4"
-              @update:value="emit('update-related-tables', $event)"
-            />
+            
+            <div class="relation-content">
+              <div class="config-section">
+                <n-select
+                  :value="table.relatedTables"
+                  multiple
+                  filterable
+                  placeholder="搜索并关联其他业务表..."
+                  :options="relatedTableOptions"
+                  :max-tag-count="8"
+                  @update:value="emit('update-related-tables', $event)"
+                />
+              </div>
 
-            <div v-if="table.relatedTables.length > 0" class="relation-preview">
-              <div class="preview-title">已选关联表详情</div>
-              <div class="preview-scroll-area">
-                <div class="preview-list">
-                  <div
-                    v-for="key in table.relatedTables"
-                    :key="key"
-                    class="preview-item"
-                  >
-                    <div class="item-info">
-                      <span class="item-name">{{ key }}</span>
-                      <span class="item-comment">
-                        {{ schemaTables.find((item) => item.name === key)?.original_comment || "无备注" }}
-                      </span>
-                    </div>
-                    <div class="item-input">
-                      <n-input
-                        :value="table.relatedTableDetails[key] || ''"
-                        type="textarea"
-                        placeholder="例如：t1.user_id = t2.id"
-                        size="small"
-                        :autosize="{ minRows: 2, maxRows: 3 }"
-                        @update:value="emit('update-related-table-detail', key, $event)"
-                      />
-                    </div>
+              <div v-if="table.relatedTables.length > 0" class="relation-grid">
+                <div v-for="key in table.relatedTables" :key="key" class="relation-card">
+                  <div class="card-head">
+                    <span class="table-tag">{{ key }}</span>
+                    <span class="table-comment">
+                      {{ schemaTables.find((i) => i.name === key)?.original_comment || "暂无备注" }}
+                    </span>
                   </div>
+                  <n-input
+                    :value="table.relatedTableDetails[key] || ''"
+                    type="textarea"
+                    placeholder="请输入表间关联逻辑（如关联字段等）..."
+                    size="small"
+                    :autosize="{ minRows: 2, maxRows: 4 }"
+                    @update:value="emit('update-related-table-detail', key, $event)"
+                  />
                 </div>
+              </div>
+              <div v-else class="relation-empty">
+                尚未关联任何表，点击上方选择框开始关联。
               </div>
             </div>
           </div>
@@ -212,8 +221,11 @@ const relatedTableOptions = computed(() => {
     </div>
   </div>
 
-  <div v-else class="empty-editor">
-    请先在左侧新建一个表草稿
+  <div v-else class="empty-view">
+    <div class="empty-placeholder">
+      <div class="icon">📑</div>
+      <div class="text">请在左侧选择或新建一个需求表草稿</div>
+    </div>
   </div>
 </template>
 
@@ -221,297 +233,375 @@ const relatedTableOptions = computed(() => {
 .editor-card {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  flex: 1;
+  width: 100%;
+  height: 100%;
   background: #fff;
-  border: 1px solid #efeff5;
   border-radius: 12px;
+  border: 1px solid #efeff5;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
   overflow: hidden;
 }
 
-.table-meta-panel,
-.fields-panel,
-.relation-panel {
-  border-radius: 8px;
-  background: #ffffff;
+/* Header 深度美化 */
+.editor-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid #f0f2f5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff;
+  position: relative;
 }
 
+.header-left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0; /* 防止内容撑破父容器 */
+  max-width: calc(100% - 320px); /* 给右侧预留出足够的空间 */
+}
+
+.title-group,
+.comment-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-name-input {
+  max-width: 420px;
+}
+
+:deep(.table-name-input .n-input__input-el) {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2225;
+}
+
+.table-comment-input {
+  flex: 1;
+  max-width: 800px;
+}
+
+:deep(.table-comment-input .n-input__input-el) {
+  font-size: 13px;
+  color: #717785;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.status-pill.success {
+  background: #f6ffed;
+  color: #52c41a;
+  border: 1px solid #b7eb8f;
+}
+
+.status-pill .dot {
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0; /* 禁止压缩 */
+  margin-left: 24px;
+}
+
+.meta-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #f8f9fb;
+  padding: 4px 4px 4px 16px;
+  border-radius: 10px;
+  border: 1px solid #f0f2f5;
+  min-width: 300px; /* 强制设置最小宽度，保证右侧不缩水 */
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  flex: 1; /* 占据剩余空间 */
+  min-width: 0;
+}
+
+.meta-label {
+  font-size: 10px;
+  color: #8c92a0;
+  font-weight: 600;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.meta-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #414753;
+  white-space: nowrap;
+}
+
+.meta-value .text {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.divider {
+  width: 1px;
+  height: 24px;
+  background: #e1e4e8;
+}
+
+.save-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(24, 144, 255, 0.2);
+}
+
+/* 内容区域 */
 .editor-content {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 24px;
-  gap: 20px;
-  overflow: hidden;
-}
-
-.editor-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid #efeff5;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  background: #fbfcfd;
-}
-
-.header-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #1f2225;
-}
-
-.header-subtitle,
-.section-desc,
-.saved-hint {
-  font-size: 13px;
-  color: #717785;
-}
-
-.table-meta-panel {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border: 1px solid #efeff5;
-}
-
-.table-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.table-meta-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.section-label,
-.section-title {
-  font-weight: 600;
-  color: #414753;
-}
-
-.fields-panel {
-  flex: 1;
-  min-height: 0;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  border: 1px solid #efeff5;
-  overflow: hidden;
-}
-
-.relation-panel {
-  flex: 1;
-  min-height: 0;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  background: #fbfcfd;
-  border: 1px solid #efeff5;
-  overflow: hidden;
 }
 
 .full-height-tabs {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-:deep(.full-height-tabs .n-tabs-pane-wrapper) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-:deep(.full-height-tabs .n-tab-pane) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-:deep(.n-tabs) {
   height: 100%;
-  display: flex;
-  flex-direction: column;
 }
 
 :deep(.n-tabs-nav) {
-  padding: 0 4px;
+  padding: 0 24px;
 }
 
-.panel-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.relation-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 0;
-}
-
-.fields-table-wrap {
+:deep(.n-tabs-pane-wrapper) {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: auto;
 }
 
-.fields-table-header {
-  flex: 0 0 auto;
-  overflow: hidden;
-  border-bottom: 1px solid #efeff5;
+/* 表结构面板 */
+.fields-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fcfdfe;
+}
+
+.toolbar {
+  padding: 12px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.toolbar-text {
+  font-size: 13px;
+  color: #8c92a0;
+}
+
+.table-v-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 16px 24px 24px;
 }
 
 .fields-table {
   width: 100%;
-  min-width: 960px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
 }
 
-.fields-table th,
-.fields-table td {
-  padding: 12px 10px;
-  border-bottom: 1px solid #f0f2f5;
-  text-align: left;
-  vertical-align: top;
-}
-
 .fields-table th {
-  font-size: 13px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fff;
+  padding: 14px 12px;
+  text-align: left;
+  font-size: 12px;
   color: #717785;
   font-weight: 600;
-  background: #fbfcff;
+  border-bottom: 2px solid #f0f2f5;
 }
 
-.action-col,
+.fields-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f2f5;
+  vertical-align: middle;
+}
+
+.fields-table tr:hover td {
+  background: #f8f9fc;
+}
+
 .action-cell {
-  width: 72px;
+  width: 60px;
+  text-align: center;
 }
 
-.remove-button {
+.icon-btn-danger {
   width: 32px;
   height: 32px;
-  border: 1px solid #efeff5;
   border-radius: 8px;
-  background: #ffffff;
-  color: #717785;
+  border: 1px solid #efeff5;
+  background: #fff;
+  color: #8c92a0;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.remove-button:hover {
+.icon-btn-danger:hover {
+  background: #fff5f5;
   color: #d03050;
   border-color: #f3c4cf;
-  background: #fff7f8;
 }
 
-.relation-preview {
+/* 关联关系面板统一风格 */
+.relation-container {
   flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  margin-top: 8px;
-  padding-top: 20px;
-  border-top: 1px dashed #efeff5;
+  min-height: 0;
+  background: #fcfdfe;
+  border: 1px solid #efeff5;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
-.preview-title {
-  flex: 0 0 auto;
-  font-size: 14px;
+.relation-header {
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.relation-header .main {
+  font-size: 13px;
   font-weight: 600;
   color: #1f2225;
-  margin-bottom: 12px;
+  margin-right: 12px;
 }
 
-.preview-scroll-area {
+.relation-header .desc {
+  font-size: 12px;
+  color: #8c92a0;
+}
+
+.relation-content {
   flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding-right: 6px;
-}
-
-.preview-list {
+  overflow-y: auto;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 20px;
 }
 
-.preview-item {
+.config-section {
+  width: 100%;
+}
+
+.relation-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: 16px;
+}
+
+.relation-card {
+  padding: 16px;
+  background: #fbfcfd;
   border: 1px solid #efeff5;
-  border-radius: 6px;
-  background: #fff;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color 0.2s;
 }
 
-.item-info {
+.relation-card:hover {
+  border-color: #d0d7de;
+}
+
+.card-head {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.item-name {
-  font-family: "JetBrains Mono", monospace;
-  font-weight: 600;
+.table-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  font-size: 14px;
   color: #1f2225;
+  padding: 2px 6px;
+  background: #f0f2f5;
+  border-radius: 4px;
 }
 
-.item-comment {
-  font-size: 13px;
-  color: #717785;
-}
-
-.item-input {
-  width: 100%;
-}
-
-.section-tip {
+.table-comment {
   font-size: 12px;
-  color: #717785;
-  margin-top: 4px;
+  color: #8c92a0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.empty-editor {
+.relation-empty {
+  padding: 40px;
+  text-align: center;
+  color: #8c92a0;
+  background: #fbfcfd;
+  border: 1px dashed #efeff5;
+  border-radius: 12px;
+}
+
+/* 空视图 */
+.empty-view {
+  width: 100%;
   height: 100%;
-  border-radius: 14px;
-  border: 1px dashed #d6d9e0;
-  background: #ffffff;
-  color: #717785;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: #f9fafb;
 }
 
-@media (max-width: 960px) {
-  .editor-header,
-  .panel-header {
-    flex-direction: column;
-    align-items: stretch;
-  }
+.empty-placeholder {
+  text-align: center;
+}
 
-  .table-meta-grid {
-    grid-template-columns: 1fr;
-  }
+.empty-placeholder .icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-placeholder .text {
+  color: #8c92a0;
+  font-size: 15px;
 }
 </style>

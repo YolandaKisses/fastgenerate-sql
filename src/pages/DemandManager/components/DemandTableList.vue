@@ -63,11 +63,17 @@ const filteredTables = computed(() => {
           @click="emit('select', table.id)"
         >
           <div class="table-item-content">
-            <n-text strong class="table-name">{{ table.name || "未命名表" }}</n-text>
+            <n-text strong class="table-name">{{
+              table.name || "未命名表"
+            }}</n-text>
             <n-text depth="3" class="table-meta">
               {{ table.fields.length }} 个字段
             </n-text>
-            <n-text v-if="table.savedPath" depth="3" class="table-meta truncate">
+            <n-text
+              v-if="table.savedPath"
+              depth="3"
+              class="table-meta truncate"
+            >
               {{ table.savedPath }}
             </n-text>
           </div>
@@ -80,7 +86,9 @@ const filteredTables = computed(() => {
             <n-icon :component="TrashOutline" />
           </button>
         </div>
-        <div v-if="filteredTables.length === 0" class="empty-state">暂无需求表草稿</div>
+        <div v-if="filteredTables.length === 0" class="empty-state">
+          暂无需求表草稿
+        </div>
       </div>
     </n-scrollbar>
   </div>

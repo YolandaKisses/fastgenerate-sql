@@ -10,7 +10,12 @@ import {
   NTooltip,
   useMessage,
 } from "naive-ui";
-import { SyncOutline, BookOutline, SparklesOutline, GitNetworkOutline } from "@vicons/ionicons5";
+import {
+  SyncOutline,
+  BookOutline,
+  SparklesOutline,
+  GitNetworkOutline,
+} from "@vicons/ionicons5";
 import { get, patch } from "../../../services/request";
 
 const props = defineProps({
@@ -21,7 +26,12 @@ const props = defineProps({
   schemaSyncing: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(["sync", "sync-knowledge", "sync-table", "view-lineage"]);
+const emit = defineEmits([
+  "sync",
+  "sync-knowledge",
+  "sync-table",
+  "view-lineage",
+]);
 const message = useMessage();
 const isKnowledgeSyncActive = computed(() => Boolean(props.knowledgeSyncing));
 const isDatasourceKnowledgeSyncActive = computed(() => {
@@ -265,13 +275,16 @@ const handleDetailChange = (key: string, val: string) => {
               v-model:value="tableRemark"
               type="textarea"
               placeholder="补充业务背景、关键口径或表的用途说明..."
-              :autosize="{ minRows: 2, maxRows: 2 }"
+              :autosize="{ minRows: 1, maxRows: 2 }"
               @update:value="handleTableRemarkChange"
             />
           </div>
 
           <div class="panel table-section">
-            <div class="section-label" style="padding: 12px 16px">
+            <div
+              class="section-label"
+              style="padding: 8px 16px; margin-bottom: 0px"
+            >
               字段级补充备注
             </div>
             <div class="table-header-area">
@@ -499,7 +512,7 @@ const handleDetailChange = (key: string, val: string) => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 24px;
+  padding: 15px;
   gap: 20px;
   min-height: 0;
 }

@@ -17,6 +17,11 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/rag-qa',
+    component: () => import('./pages/RagQa/index.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/data-sources',
     component: () => import('./pages/DataSources/index.vue'),
     meta: { requiresAuth: true }

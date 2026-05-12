@@ -9,6 +9,7 @@ import {
   LogOutOutline,
   BookOutline,
   ClipboardOutline,
+  SparklesOutline,
 } from "@vicons/ionicons5";
 import appLogo from "../../assets/fastgenerate-sql-logo.png";
 import { clearAuth, getCurrentUser } from "../../services/auth";
@@ -25,6 +26,11 @@ function renderIcon(icon: Component) {
 }
 
 const menuOptions = [
+  {
+    label: "知识问答",
+    key: "/rag-qa",
+    icon: renderIcon(SparklesOutline),
+  },
   {
     label: "知识库 (Wiki)",
     key: "/wiki",

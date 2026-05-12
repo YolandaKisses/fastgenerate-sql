@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-import select
 import subprocess
-from collections.abc import Generator
 
 from app.core.config import settings
 
@@ -12,7 +10,6 @@ import urllib.request
 import urllib.error
 
 
-SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def _run_hermes_cli(
@@ -113,109 +110,72 @@ def run_deepseek_json(prompt: str) -> dict:
     return parse_hermes_json_output(content)
 
 
-def run_hermes_session_json(
-    prompt: str,
-    cwd: str | None = None,
-    hermes_cli_path: str | None = None,
-    session_id: str | None = None,
-) -> tuple[dict, dict | None, str | None]:
-    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
-    previous_session_ids = _list_hermes_session_ids(cli_path) if not session_id else set()
-    command = [
-        cli_path,
-        "chat",
-        "-q",
-        prompt,
-        "-Q",
-        "-t",
-        "file",
-        "--source",
-        "fastgenerate-sql",
-        "--ignore-rules",
-    ]
-    if session_id:
-        command.extend(["--resume", session_id])
+def run_deepseek_text(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.2,
+    max_tokens: int = 1200,
+) -> str:
+    api_key = settings.DEEPSEEK_API_KEY
+    if not api_key:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置，请在环境变量或 .env 中设置")
 
-    output = _run_hermes_cli(command, cwd=cwd)
-    next_session_id = parse_hermes_session_id(output)
-    if not next_session_id:
-        next_session_id = session_id or _find_new_hermes_session_id(cli_path, previous_session_ids)
-    return parse_hermes_json_output(output), extract_raw_hermes_result(output), next_session_id
+    base_url = settings.DEEPSEEK_BASE_URL.rstrip("/")
+    model = settings.DEEPSEEK_LLM_MODEL
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
 
-
-def iter_hermes_session_json(
-    prompt: str,
-    cwd: str | None = None,
-    hermes_cli_path: str | None = None,
-    session_id: str | None = None,
-) -> Generator[dict, None, None]:
-    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
-    previous_session_ids = _list_hermes_session_ids(cli_path) if not session_id else set()
-    command = [
-        cli_path,
-        "chat",
-        "-q",
-        prompt,
-        "-t",
-        "file",
-        "-v",
-        "--source",
-        "fastgenerate-sql",
-        "--ignore-rules",
-    ]
-    if session_id:
-        command.extend(["--resume", session_id])
+    req = urllib.request.Request(
+        f"{base_url}/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
 
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"Hermes CLI 不存在: {command[0]}") from exc
-
-    output_parts: list[str] = []
-    if process.stdout is not None:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        error_body = ""
         try:
-            fd = process.stdout.fileno()
-            while True:
-                ready, _, _ = select.select([fd], [], [], 30.0)
-                if not ready:
-                    process.kill()
-                    raise RuntimeError("Hermes CLI 超过 30 秒无输出，已终止")
-                raw_line = process.stdout.readline()
-                if not raw_line:
-                    break
-                output_parts.append(raw_line)
-                trace_message = hermes_trace_message_from_line(raw_line)
-                if trace_message:
-                    yield {"type": "trace", "message": trace_message}
-        finally:
-            process.stdout.close()
+            error_body = exc.read().decode("utf-8")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(f"DeepSeek API 返回错误 HTTP {exc.code}: {error_body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"DeepSeek API 连接失败: {exc.reason}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"DeepSeek API 请求超时或网络错误: {exc}") from exc
 
     try:
-        return_code = process.wait(timeout=120)
-    except subprocess.TimeoutExpired as exc:
-        process.kill()
-        raise RuntimeError("Hermes CLI 执行超时，请检查服务可用性") from exc
-    output = "".join(output_parts)
-    if return_code != 0:
-        raise RuntimeError(output.strip() or "Hermes 调用失败")
+        result = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"DeepSeek API 返回非 JSON: {body[:500]}") from exc
 
-    next_session_id = parse_hermes_session_id(output)
-    if not next_session_id:
-        next_session_id = session_id or _find_new_hermes_session_id(cli_path, previous_session_ids)
+    choices = result.get("choices", [])
+    if not choices:
+        raise RuntimeError("DeepSeek API 返回空 choices")
 
-    yield {
-        "type": "result",
-        "result": parse_hermes_json_output(output),
-        "raw_result": extract_raw_hermes_result(output),
-        "session_id": next_session_id,
-    }
+    content = choices[0].get("message", {}).get("content", "")
+    if not content:
+        raise RuntimeError("DeepSeek API 返回空内容")
+    return content.strip()
+
+
 
 
 def hermes_trace_message_from_line(line: str) -> str | None:
@@ -248,66 +208,6 @@ def hermes_trace_message_from_line(line: str) -> str | None:
     return cleaned[:300]
 
 
-def _find_new_hermes_session_id(cli_path: str, previous_session_ids: set[str]) -> str | None:
-    current_session_ids = _list_hermes_session_ids(cli_path)
-    for session_id in current_session_ids:
-        if session_id not in previous_session_ids:
-            return session_id
-    return None
-
-
-def _list_hermes_session_ids(cli_path: str, limit: int = 10) -> set[str]:
-    command = [cli_path, "sessions", "list", "--limit", str(limit)]
-    try:
-        output = _run_hermes_cli(command, timeout=10)
-    except RuntimeError:
-        return set()
-    return parse_hermes_session_ids_from_list(output)
-
-
-def parse_hermes_session_ids_from_list(output: str) -> set[str]:
-    session_ids: set[str] = set()
-    for line in output.splitlines():
-        for candidate in re.findall(r"\b\d{8}_\d{6}_[A-Za-z0-9]+\b", line):
-            if _looks_like_session_id(candidate):
-                session_ids.add(candidate)
-    return session_ids
-
-
-def parse_hermes_session_id(output: str) -> str | None:
-    for line in output.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            data = None
-
-        if isinstance(data, dict):
-            for key in ("session_id", "sessionId", "id"):
-                value = data.get(key)
-                if isinstance(value, str) and _looks_like_session_id(value):
-                    return value
-
-        patterns = [
-            r"^session[_\s-]*id\s*[:=]\s*([A-Za-z0-9_.:-]{8,128})\s*$",
-            r"^session\s*[:=]\s*([A-Za-z0-9_.:-]{8,128})\s*$",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, line, flags=re.I)
-            if match:
-                candidate = match.group(1).strip()
-                if _looks_like_session_id(candidate):
-                    return candidate
-    return None
-
-
-def _looks_like_session_id(value: str) -> bool:
-    if not SESSION_ID_PATTERN.fullmatch(value):
-        return False
-    return bool(re.search(r"[\d_.:-]", value))
 
 
 def parse_hermes_json_output(output: str) -> dict:
@@ -406,17 +306,10 @@ def _last_result_json_object(text: str) -> dict | None:
             except json.JSONDecodeError:
                 continue
 
-        # 1. 优先匹配 Workbench 类型的 JSON
-        if (
-            isinstance(value, dict)
-            and value.get("type") in {"clarification", "sql_candidate"}
-            and not _is_prompt_example_result(value)
-        ):
+        # 优先匹配包含知识库常用的字段（如 purpose）
+        if isinstance(value, dict) and "purpose" in value:
             candidates.append(value)
-        # 2. 如果没有 type，但包含知识库常用的字段（如 purpose），也视为有效
-        elif isinstance(value, dict) and "purpose" in value:
-            candidates.append(value)
-        # 3. 最后兜底：只要是字典且不是空的，也不是示例
+        # 兜底：只要是字典且不是空的，也不是示例
         elif isinstance(value, dict) and value and not _is_prompt_example_result(value):
             candidates.append(value)
 
@@ -493,10 +386,10 @@ def _clarification_from_text(text: str) -> dict | None:
         re.search(r"不在.*数据库.*范围|当前数据库查询范围", text, flags=re.I)
     )
 
-    from app.services.workbench_service import CLARIFICATION_TEMPLATES
-
-    template_key = "out_of_scope" if explicit_out_of_scope else "ambiguous"
-    message = CLARIFICATION_TEMPLATES[template_key]
+    message = (
+        "抱歉，该问题超出了当前数据库的知识范围。" if explicit_out_of_scope 
+        else "抱歉，我不确定您的意图，请提供更具体的信息。"
+    )
 
     return {
         "type": "clarification",

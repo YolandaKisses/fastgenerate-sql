@@ -226,3 +226,72 @@ def test_list_demand_documents_route_returns_saved_tables(tmp_path: Path):
     assert len(payload) == 1
     assert payload[0]["name"] == "ads_east_report_detail"
     assert payload[0]["comment"] == "EAST 明细报送表"
+
+
+def test_delete_demand_document_route_removes_saved_markdown(tmp_path: Path):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(
+            DataSource(
+                id=1,
+                name="监管ODS",
+                db_type="mysql",
+                host="localhost",
+                port=3306,
+                database="demo",
+                username="root",
+                password="secret",
+                user_id="test-admin",
+            )
+        )
+        session.commit()
+
+    def override_session():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_session] = override_session
+
+    original_get_setting = setting_service.get_setting
+    setting_service.get_setting = lambda session, key, default=None: str(tmp_path) if key == "wiki_root" else original_get_setting(session, key, default)
+
+    try:
+        with TestClient(app) as client:
+            client.post(
+                "/api/v1/demand/categories",
+                json={"datasource_id": 1, "name": "east报送", "parent_path": "demand"},
+            )
+            create_response = client.post(
+                "/api/v1/demand/documents",
+                json={
+                    "datasource_id": 1,
+                    "demand_name": "east报送",
+                    "table_name": "ads_east_report_detail",
+                    "fields": [
+                        {
+                            "name": "report_date",
+                            "type": "date",
+                            "original_comment": "报送日期",
+                            "supplementary_comment": "按自然日出数",
+                        }
+                    ],
+                },
+            )
+            delete_response = client.request(
+                "DELETE",
+                "/api/v1/demand/documents",
+                json={"datasource_id": 1, "saved_path": create_response.json()["relative_path"]},
+            )
+    finally:
+        setting_service.get_setting = original_get_setting
+        app.dependency_overrides.clear()
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["success"] is True

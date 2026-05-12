@@ -115,6 +115,47 @@ def test_save_demand_document_writes_markdown_file(tmp_path: Path):
     assert "| report_date | date | 报送日期 | 按自然日出数 |" in content
 
 
+def test_save_demand_document_renames_existing_saved_file_and_updates_index(tmp_path: Path):
+    demand_service.create_demand_category(
+        wiki_root=tmp_path,
+        datasource_name="dd_etl",
+        name="east报送",
+        parent_path="demand",
+    )
+    first = demand_service.save_demand_document(
+        wiki_root=tmp_path,
+        datasource_name="dd_etl",
+        demand_name="east报送",
+        table_name="ads_old_name",
+        fields=[
+            {
+                "name": "id",
+                "type": "varchar(32)",
+                "original_comment": "主键",
+                "supplementary_comment": "",
+            }
+        ],
+    )
+    second = demand_service.save_demand_document(
+        wiki_root=tmp_path,
+        datasource_name="dd_etl",
+        demand_name="east报送",
+        table_name="ads_new_name",
+        original_saved_path=first["relative_path"],
+        fields=[
+            {
+                "name": "id",
+                "type": "varchar(32)",
+                "original_comment": "主键",
+                "supplementary_comment": "",
+            }
+        ],
+    )
+
+    assert not (tmp_path / first["relative_path"]).exists()
+    assert (tmp_path / second["relative_path"]).exists()
+
+
 def test_list_demand_documents_returns_saved_tables(tmp_path: Path):
     demand_service.create_demand_category(
         wiki_root=tmp_path,
@@ -179,3 +220,33 @@ def test_save_demand_document_rejects_empty_fields(tmp_path: Path):
         assert False, "expected ValueError"
     except ValueError as exc:
         assert str(exc) == "字段列表不能为空"
+
+
+def test_delete_demand_document_removes_markdown_file(tmp_path: Path):
+    demand_service.create_demand_category(
+        wiki_root=tmp_path,
+        datasource_name="dd_etl",
+        name="east报送",
+        parent_path="demand",
+    )
+    result = demand_service.save_demand_document(
+        wiki_root=tmp_path,
+        datasource_name="dd_etl",
+        demand_name="east报送",
+        table_name="ads_east_report_detail",
+        fields=[
+            {
+                "name": "id",
+                "type": "varchar(32)",
+                "original_comment": "主键",
+                "supplementary_comment": "",
+            }
+        ],
+    )
+
+    demand_service.delete_demand_document(
+        wiki_root=tmp_path,
+        saved_path=result["relative_path"],
+    )
+
+    assert not (tmp_path / result["relative_path"]).exists()

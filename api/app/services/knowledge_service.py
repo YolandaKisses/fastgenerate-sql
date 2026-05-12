@@ -1771,6 +1771,13 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             session.add(task)
             session.add(datasource)
             session.commit()
+            if task.status == KnowledgeSyncTaskStatus.COMPLETED:
+                try:
+                    from app.services.rag import retriever
+
+                    retriever.rebuild_index(output_root)
+                except Exception:
+                    logger.exception("failed to rebuild rag index after knowledge sync")
             _notify_task_updated(task.id)
 
         except Exception as exc:
