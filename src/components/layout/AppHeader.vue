@@ -8,6 +8,7 @@ import {
   SettingsOutline,
   LogOutOutline,
   BookOutline,
+  ClipboardOutline,
 } from "@vicons/ionicons5";
 import appLogo from "../../assets/fastgenerate-sql-logo.png";
 import { clearAuth, getCurrentUser } from "../../services/auth";
@@ -33,6 +34,11 @@ const menuOptions = [
     label: "元数据管理",
     key: "/schema",
     icon: renderIcon(LayersOutline),
+  },
+  {
+    label: "需求管理",
+    key: "/demand",
+    icon: renderIcon(ClipboardOutline),
   },
   {
     label: "数据源配置",

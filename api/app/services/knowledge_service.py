@@ -26,6 +26,7 @@ from app.services.hermes_service import run_deepseek_json
 from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
 from app.services.routine_lineage_service import normalize_table_name
+from app.services import lineage_service
 
 run_hermes_json = run_deepseek_json
 
@@ -1406,6 +1407,22 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def stop_knowledge_sync_task(engine, task_id: int) -> bool:
+    """手动终止正在运行的同步任务"""
+    with Session(engine) as session:
+        task = session.get(KnowledgeSyncTask, task_id)
+        if not task or task.status != KnowledgeSyncTaskStatus.RUNNING:
+            return False
+        
+        task.status = KnowledgeSyncTaskStatus.CANCELLED
+        task.finished_at = datetime.now()
+        task.last_message = "任务已被用户手动终止"
+        session.add(task)
+        session.commit()
+        _notify_task_updated(task.id)
+        return True
+
+
 def run_knowledge_sync_task(engine, task_id: int) -> None:
     """后台执行知识库同步。SSE 只订阅进度，不负责驱动任务。"""
     with Session(engine) as session:
@@ -1529,6 +1546,12 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             failed_table_names_list: list[str] = []
 
             for idx, table in enumerate(tables_to_sync):
+                # 检查任务是否被取消
+                session.refresh(task)
+                if task.status == KnowledgeSyncTaskStatus.CANCELLED:
+                    logger.info(f"Task {task.id} was cancelled by user.")
+                    return
+
                 table_started = perf_counter()
                 update_knowledge_task_progress(
                     session,
@@ -1563,10 +1586,12 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                         # 增量模式：如果文件已存在且不是手动页面，尝试跳过
                         table_path = tables_dir / f"{sanitize_path_segment(table.name)}.md"
                         if task.is_incremental and table_path.exists():
-                            # 简单起见：只要存在就跳过。如果需要强制更新，用户可以使用全量同步。
-                            # 这里可以增加更复杂的判断，比如校验备注是否更新。
                             task.completed_tables += 1
-                            table_summaries.append((table.name, {"_source": "skipped"})) # 占位
+                            table_summaries.append((table.name, {"_source": "skipped"}))
+                            # 立即提交进度，防止界面卡在 0
+                            session.add(task)
+                            session.commit()
+                            _notify_task_updated(task.id)
                             continue
 
                         summary_started = perf_counter()
@@ -1584,6 +1609,10 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                         if task.is_incremental and table_path.exists():
                             task.completed_tables += 1
                             table_summaries.append((table.name, {"_source": "skipped"}))
+                            # 立即提交进度
+                            session.add(task)
+                            session.commit()
+                            _notify_task_updated(task.id)
                             continue
 
                         summary_started = perf_counter()
@@ -1657,6 +1686,10 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                                 extra={"reason": "人工标记 source=manual，跳过覆盖"},
                             )
                             task.completed_tables += 1
+                            # 立即提交进度
+                            session.add(task)
+                            session.commit()
+                            _notify_task_updated(task.id)
                             continue
                         # hybrid 模式：保留人工备注，仅更新 AI 段落
                         if existing_source == "hybrid":
@@ -1761,7 +1794,7 @@ def stream_knowledge_task_events(engine, task_id: int) -> Generator[str, None, N
     """订阅知识库同步任务进度；客户端断开不会影响后台任务。"""
     last_signature = None
     last_version = 0
-    terminal_statuses = {"completed", "partial_success", "failed"}
+    terminal_statuses = {"completed", "partial_success", "failed", "cancelled"}
 
     while True:
         with Session(engine) as session:

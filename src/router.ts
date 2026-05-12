@@ -27,6 +27,11 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/demand',
+    component: () => import('./pages/DemandManager/index.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/settings',
     component: () => import('./pages/Settings/index.vue'),
     meta: { requiresAuth: true }

@@ -235,6 +235,19 @@ def read_knowledge_task(task_id: int, session: Session = Depends(get_session), c
     return task
 
 
+@router.post("/knowledge/tasks/{task_id}/stop")
+def stop_knowledge_task(task_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
+    task = session.get(KnowledgeSyncTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    ds = session.get(DataSource, task.datasource_id)
+    if not ds or ds.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="DataSource not found")
+    
+    success = knowledge_service.stop_knowledge_sync_task(engine, task_id)
+    return {"success": success}
+
+
 @router.get("/knowledge/status/{datasource_id}", response_model=KnowledgeTaskStatusResponse)
 def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
     ds = session.get(DataSource, datasource_id)

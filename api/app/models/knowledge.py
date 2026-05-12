@@ -11,6 +11,7 @@ class KnowledgeSyncTaskStatus(str, Enum):
     COMPLETED = "completed"
     PARTIAL_SUCCESS = "partial_success"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class KnowledgeSyncScope(str, Enum):

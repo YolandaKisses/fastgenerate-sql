@@ -85,6 +85,9 @@ const formatKnowledgeBanner = (task: any | null) => {
   if (task.status === "failed") {
     return `知识库同步失败 ${completed} / ${total}`;
   }
+  if (task.status === "cancelled") {
+    return `知识库同步已由用户终止 ${completed} / ${total}`;
+  }
 
   // running 状态下显示当前正在处理的表名
   if (task.current_table) {
@@ -446,6 +449,10 @@ const subscribeKnowledgeTask = (taskId: number) => {
             message.warning(data.message || "知识库部分同步成功");
           }
           refreshAfterTerminal();
+        } else if (status === "cancelled") {
+          knowledgeSyncing.value = false;
+          message.info(data.message || "知识库同步已取消");
+          refreshAfterTerminal();
         } else if (status === "failed") {
           knowledgeSyncing.value = false;
           if (knowledgeTask.value?.scope === "table") {
@@ -497,6 +504,19 @@ const subscribeKnowledgeTask = (taskId: number) => {
       fetchSources();
     }
   });
+};
+
+const handleStopKnowledgeSync = async (taskId: number) => {
+  try {
+    const res: any = await post(`/schema/knowledge/tasks/${taskId}/stop`, {});
+    if (res.success) {
+      message.success("已发送停止指令");
+    } else {
+      message.warning("停止任务失败");
+    }
+  } catch (err) {
+    message.error("请求失败");
+  }
 };
 
 const handleKnowledgeSync = async () => {
@@ -723,6 +743,16 @@ const viewLineage = (type: string, name: string) => {
             >
               <span class="status-dot"></span>
               {{ formatKnowledgeBanner(latestDatasourceTask) }}
+              <n-button
+                v-if="latestDatasourceTask.status === 'running' || latestDatasourceTask.status === 'pending'"
+                text
+                type="error"
+                size="tiny"
+                style="margin-left: 12px; font-weight: 600"
+                @click="handleStopKnowledgeSync(latestDatasourceTask.id)"
+              >
+                停止同步
+              </n-button>
               <n-button
                 v-if="
                   latestDatasourceTask.status !== 'running' &&

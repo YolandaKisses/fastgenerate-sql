@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.config import settings as app_settings
 from app.core.database import create_db_and_tables
-from app.api.routes import auth, datasources, schema, settings, wiki, lineage
+from app.api.routes import auth, datasources, schema, settings, wiki, lineage, demand
 from app.core.database import engine
 from app.services.knowledge_service import mark_stale_knowledge_sync_tasks
 from app.services.auth_service import ensure_default_admin_user
@@ -60,6 +60,7 @@ app.include_router(schema.router, prefix="/api/v1")
 app.include_router(settings.router, prefix="/api/v1")
 app.include_router(wiki.router, prefix="/api/v1")
 app.include_router(lineage.router, prefix="/api/v1")
+app.include_router(demand.router, prefix="/api/v1")
 
 @app.get("/api/v1/health")
 def health_check():
