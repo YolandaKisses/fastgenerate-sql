@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NTag, NSelect, NSwitch, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NTag, useMessage } from 'naive-ui'
 import { CheckmarkCircleOutline, CloseCircleOutline, BuildOutline, FolderOpenOutline, RefreshOutline, FlashOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { get, post } from '../../services/request'
@@ -15,25 +15,6 @@ const hermesMessage = ref('')
 const wikiRoot = ref('')
 const wikiDefault = ref('')
 const ragRebuilding = ref(false)
-const ragBackend = ref<'local' | 'lightrag'>('local')
-const ragBackendDefault = ref<'local' | 'lightrag'>('local')
-const lightragBaseUrl = ref('')
-const lightragBaseUrlDefault = ref('')
-const lightragApiKey = ref('')
-const lightragApiKeyDefault = ref('')
-const lightragTimeoutSeconds = ref('20')
-const lightragTimeoutDefault = ref('20')
-const lightragEnableRemoteRebuild = ref(false)
-const lightragEnableRemoteRebuildDefault = ref(false)
-const lightragEnableRemoteAsk = ref(false)
-const lightragEnableRemoteAskDefault = ref(false)
-const lightragStatus = ref<'idle' | 'testing' | 'success' | 'error'>('idle')
-const lightragMessage = ref('')
-
-const ragBackendOptions = [
-  { label: '本地兼容后端', value: 'local' },
-  { label: 'LightRAG 后端', value: 'lightrag' },
-]
 
 const fetchSettings = async () => {
   try {
@@ -43,21 +24,6 @@ const fetchSettings = async () => {
     
     wikiRoot.value = data.wiki_root.value || data.wiki_root.default
     wikiDefault.value = data.wiki_root.default
-
-    ragBackend.value = (data.rag_retrieval_backend.value || data.rag_retrieval_backend.default || 'local') as 'local' | 'lightrag'
-    ragBackendDefault.value = (data.rag_retrieval_backend.default || 'local') as 'local' | 'lightrag'
-    lightragBaseUrl.value = data.lightrag_base_url.value || data.lightrag_base_url.default || ''
-    lightragBaseUrlDefault.value = data.lightrag_base_url.default || ''
-    lightragApiKey.value = data.lightrag_api_key.value || data.lightrag_api_key.default || ''
-    lightragApiKeyDefault.value = data.lightrag_api_key.default || ''
-    lightragTimeoutSeconds.value = data.lightrag_timeout_seconds.value || data.lightrag_timeout_seconds.default || '20'
-    lightragTimeoutDefault.value = data.lightrag_timeout_seconds.default || '20'
-    const rebuildValue = (data.lightrag_enable_remote_rebuild.value || data.lightrag_enable_remote_rebuild.default || 'false').toLowerCase()
-    lightragEnableRemoteRebuild.value = rebuildValue === 'true'
-    lightragEnableRemoteRebuildDefault.value = (data.lightrag_enable_remote_rebuild.default || 'false').toLowerCase() === 'true'
-    const askValue = (data.lightrag_enable_remote_ask.value || data.lightrag_enable_remote_ask.default || 'false').toLowerCase()
-    lightragEnableRemoteAsk.value = askValue === 'true'
-    lightragEnableRemoteAskDefault.value = (data.lightrag_enable_remote_ask.default || 'false').toLowerCase() === 'true'
   } catch (e) {
     message.error('获取设置失败')
   }
@@ -92,43 +58,6 @@ const rebuildRagIndex = async () => {
   } finally {
     ragRebuilding.value = false
   }
-}
-
-const saveRagBackendSettings = async () => {
-  await saveSetting('rag_retrieval_backend', ragBackend.value, { silent: true })
-  await saveSetting('lightrag_base_url', lightragBaseUrl.value, { silent: true })
-  await saveSetting('lightrag_api_key', lightragApiKey.value, { silent: true })
-  await saveSetting('lightrag_timeout_seconds', lightragTimeoutSeconds.value, { silent: true })
-  await saveSetting('lightrag_enable_remote_rebuild', lightragEnableRemoteRebuild.value ? 'true' : 'false', { silent: true })
-  await saveSetting('lightrag_enable_remote_ask', lightragEnableRemoteAsk.value ? 'true' : 'false', { silent: true })
-  message.success('RAG 后端配置已保存')
-}
-
-const resetRagBackendSettings = () => {
-  ragBackend.value = ragBackendDefault.value
-  lightragBaseUrl.value = lightragBaseUrlDefault.value
-  lightragApiKey.value = lightragApiKeyDefault.value
-  lightragTimeoutSeconds.value = lightragTimeoutDefault.value
-  lightragEnableRemoteRebuild.value = lightragEnableRemoteRebuildDefault.value
-  lightragEnableRemoteAsk.value = lightragEnableRemoteAskDefault.value
-}
-
-const runLightRagTest = async () => {
-  lightragStatus.value = 'testing'
-  lightragMessage.value = '正在测试 LightRAG 连通性...'
-  try {
-    const data = await post('/settings/test/lightrag')
-    lightragStatus.value = data.status === 'success' ? 'success' : 'error'
-    lightragMessage.value = data.message
-  } catch (e: any) {
-    lightragStatus.value = 'error'
-    lightragMessage.value = e.message || '测试请求失败'
-  }
-}
-
-const testLightRag = async () => {
-  await saveRagBackendSettings()
-  await runLightRagTest()
 }
 
 const runHermesTest = async () => {
@@ -195,7 +124,7 @@ onMounted(async () => {
         <n-form label-placement="top">
           <n-form-item label="重建问答索引">
             <template #feedback>
-              首次启用知识问答、批量外部修改 Wiki 文档或怀疑索引异常时，手动执行一次全量重建。
+              当前系统使用本地结构化检索链路。首次启用知识问答、批量外部修改 Wiki 文档或怀疑索引异常时，可手动执行一次全量重建。
             </template>
             <n-space>
               <n-button type="primary" secondary :loading="ragRebuilding" @click="rebuildRagIndex">
@@ -204,72 +133,6 @@ onMounted(async () => {
               </n-button>
             </n-space>
           </n-form-item>
-        </n-form>
-      </n-card>
-
-      <n-card title="RAG 检索后端" class="setting-card">
-        <template #header-extra>
-          <n-tag :type="lightragStatus === 'success' ? 'success' : (lightragStatus === 'error' ? 'error' : 'default')" round>
-            <template #icon>
-              <n-icon v-if="lightragStatus === 'success'"><CheckmarkCircleOutline /></n-icon>
-              <n-icon v-else-if="lightragStatus === 'error'"><CloseCircleOutline /></n-icon>
-            </template>
-            {{ lightragStatus === 'success' ? 'LightRAG 可用' : (lightragStatus === 'error' ? 'LightRAG 异常' : '未测试') }}
-          </n-tag>
-        </template>
-
-        <n-form label-placement="top">
-          <n-form-item label="当前检索后端">
-            <n-select v-model:value="ragBackend" :options="ragBackendOptions" />
-            <template #feedback>
-              业务接口保持不变，后端可在本地兼容实现与真实 LightRAG 之间切换。
-            </template>
-          </n-form-item>
-
-          <n-form-item label="LightRAG 服务地址">
-            <n-input v-model:value="lightragBaseUrl" placeholder="例如: http://127.0.0.1:9621" />
-          </n-form-item>
-
-          <n-form-item label="LightRAG API Key（可选）">
-            <n-input v-model:value="lightragApiKey" type="password" show-password-on="click" placeholder="Bearer Token" />
-          </n-form-item>
-
-          <n-form-item label="请求超时（秒）">
-            <n-input v-model:value="lightragTimeoutSeconds" placeholder="20" />
-          </n-form-item>
-
-          <n-form-item label="索引操作同步到远端">
-            <n-switch v-model:value="lightragEnableRemoteRebuild" />
-            <template #feedback>
-              开启后，重建索引、单文件更新和删除会同时尝试调用 LightRAG 远端索引接口。
-            </template>
-          </n-form-item>
-
-          <n-form-item label="问答优先走远端 LightRAG">
-            <n-switch v-model:value="lightragEnableRemoteAsk" />
-            <template #feedback>
-              开启后，`/rag/ask` 会优先调用远端 LightRAG `/ask`，失败时再回落到本地检索 + Hermes。
-            </template>
-          </n-form-item>
-
-          <div v-if="lightragMessage" class="test-message" :class="lightragStatus">
-            {{ lightragMessage }}
-          </div>
-
-          <n-space style="margin-top: 16px;">
-            <n-button type="primary" @click="saveRagBackendSettings">
-              <template #icon><n-icon><BuildOutline /></n-icon></template>
-              保存配置
-            </n-button>
-            <n-button secondary @click="testLightRag">
-              <template #icon><n-icon><FlashOutline /></n-icon></template>
-              测试 LightRAG
-            </n-button>
-            <n-button @click="resetRagBackendSettings">
-              <template #icon><n-icon><RefreshOutline /></n-icon></template>
-              恢复默认值
-            </n-button>
-          </n-space>
         </n-form>
       </n-card>
 

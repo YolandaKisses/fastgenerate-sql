@@ -9,7 +9,7 @@ from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
 from app.services import setting_service
-from app.services.rag import context_assembler, hermes_answer_service, retriever
+from app.services.rag import retriever
 
 router = APIRouter(prefix="/rag", tags=["rag"], dependencies=[Depends(get_current_user)])
 
@@ -68,13 +68,6 @@ class RagSearchResponse(BaseModel):
     diagnostics: RagDiagnosticsResponse
 
 
-class RagAskResponse(BaseModel):
-    answer: str
-    sources: List[RagSearchItem]
-    retrieval: RagRetrievalResponse
-    diagnostics: RagDiagnosticsResponse
-
-
 def _get_wiki_root(session: Session) -> str:
     return setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
 
@@ -102,46 +95,6 @@ def rag_search(payload: RagSearchRequest, session: Session = Depends(get_session
         top_k=payload.top_k,
     )
     return result.model_dump()
-
-
-@router.post("/ask", response_model=RagAskResponse)
-def rag_ask(payload: RagSearchRequest, session: Session = Depends(get_session)):
-    wiki_root = _get_wiki_root(session)
-    filters = _build_filters(payload)
-    remote_result = retriever.ask(
-        query=payload.query,
-        wiki_root=wiki_root,
-        filters=filters,
-        top_k=payload.top_k,
-    )
-    if remote_result:
-        return remote_result
-
-    search_result = retriever.search(
-        query=payload.query,
-        wiki_root=wiki_root,
-        filters=filters,
-        top_k=payload.top_k,
-    )
-    assembled = context_assembler.assemble_context(payload.query, search_result)
-    try:
-        answer_result = hermes_answer_service.answer_with_hermes(
-            payload.query,
-            assembled,
-            {"retrieval": search_result.retrieval, "diagnostics": search_result.diagnostics},
-        )
-    except Exception as exc:
-        answer_result = {
-            "answer": f"问答生成失败：{exc}",
-            "sources": assembled.sources,
-        }
-
-    return {
-        "answer": answer_result["answer"],
-        "sources": [item.model_dump() for item in answer_result["sources"]],
-        "retrieval": search_result.retrieval.model_dump(),
-        "diagnostics": search_result.diagnostics.model_dump(),
-    }
 
 
 @router.post("/index/rebuild")

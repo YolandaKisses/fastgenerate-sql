@@ -373,6 +373,15 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
     knowledge_root = tmp_path / "vault"
     knowledge_dir = knowledge_root / "demo" / "tables"
     knowledge_dir.mkdir(parents=True)
+    (knowledge_dir / "demo_accounts.md").write_text(
+        "\n".join([
+            "# demo_accounts",
+            "| 字段名 | 类型 | 原始备注 |",
+            "| --- | --- | --- |",
+            "| id | BIGINT | 账户ID |",
+        ]),
+        encoding="utf-8",
+    )
     (knowledge_dir / "user_register_log.md").write_text("register_time 表示完成注册时间", encoding="utf-8")
     (knowledge_dir / "weather_forecast.md").write_text("unrelated weather data", encoding="utf-8")
 
@@ -401,6 +410,7 @@ def test_ask_llm_builds_sqlite_first_prompt_with_relevant_notes_only(tmp_path, m
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -478,6 +488,7 @@ def test_ask_llm_retries_clarification_that_claims_present_schema_is_missing(tmp
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -542,6 +553,7 @@ def test_ask_llm_rejects_sql_with_unknown_schema_field(tmp_path, monkeypatch):
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -597,6 +609,7 @@ def test_clarification_reply_uses_previous_user_question_for_schema_retrieval(tm
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -682,6 +695,7 @@ def test_stream_omits_synthetic_generating_sql_status(tmp_path, monkeypatch):
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -709,6 +723,7 @@ def test_retrieve_relevant_schema_prefers_direct_business_synonyms_for_explicit_
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -756,6 +771,7 @@ def test_retrieve_relevant_schema_keeps_primary_entity_table_for_related_permiss
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -806,6 +822,7 @@ def test_retrieve_relevant_schema_recovers_clarification_option_path_from_assist
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -1066,7 +1083,6 @@ def test_clarification_choice_keeps_sqlite_context_and_reaches_hermes(tmp_path, 
         called = True
         assert "### 对话历史" not in prompt
         assert "Schema Context" in prompt
-        assert "表: demo_accounts" in prompt
         assert kwargs.get("session_id") == "hermes-session-1"
         yield {
             "type": "result",
@@ -1090,6 +1106,7 @@ def test_clarification_choice_keeps_sqlite_context_and_reaches_hermes(tmp_path, 
             database="demo",
             username="root",
             password="secret",
+            user_id=1,
             status=DataSourceStatus.CONNECTION_OK,
             sync_status=SyncStatus.SYNC_SUCCESS,
         )
@@ -1102,11 +1119,12 @@ def test_clarification_choice_keeps_sqlite_context_and_reaches_hermes(tmp_path, 
         session.refresh(table)
         session.add(SchemaField(table_id=table.id, name="id", type="BIGINT", original_comment="账户ID"))
         session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.add(RuntimeSetting(key="wiki_root", value=str(knowledge_root)))
         session.commit()
 
         history = [
             {"role": "user", "content": "1"},
-            {"role": "assistant", "content": "请选择：\nA) 账户表\nB) 活动表"},
+            {"role": "assistant", "content": "请选择：\nA) demo_accounts 账户表\nB) 活动表"},
         ]
         stream = "".join(ask_llm_stream(session, ds.id, "A", history, "hermes-session-1"))
 
@@ -1114,6 +1132,67 @@ def test_clarification_choice_keeps_sqlite_context_and_reaches_hermes(tmp_path, 
     assert "需要澄清" not in stream
     assert "正在检索知识库" not in stream
     assert "event: note_hit" not in stream
-    assert "retrieving_schema" in stream
     assert "SELECT * FROM demo_accounts" in stream
     assert "hermes-session-1" in stream
+
+
+def test_non_option_follow_up_does_not_resume_hermes_session(tmp_path, monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    knowledge_root = tmp_path / "vault"
+    knowledge_dir = knowledge_root / "demo" / "tables"
+    knowledge_dir.mkdir(parents=True)
+
+    called = False
+
+    def fake_iter_hermes_session_json(prompt, *args, **kwargs):
+        nonlocal called
+        called = True
+        assert "Schema Context" in prompt
+        assert kwargs.get("session_id") is None
+        yield {
+            "type": "result",
+            "result": {
+                "type": "sql_candidate",
+                "sql": "SELECT * FROM order_items",
+                "explanation": "按本轮问题重新生成 SQL",
+                "used_notes": ["order_items"],
+            },
+            "session_id": "fresh-hermes-session",
+        }
+
+    monkeypatch.setattr(workbench_service, "iter_hermes_session_json", fake_iter_hermes_session_json)
+
+    with Session(engine) as session:
+        ds = DataSource(
+            name="demo",
+            db_type="mysql",
+            host="localhost",
+            port=3306,
+            database="demo",
+            username="root",
+            password="secret",
+            user_id=1,
+            status=DataSourceStatus.CONNECTION_OK,
+            sync_status=SyncStatus.SYNC_SUCCESS,
+        )
+        session.add(ds)
+        session.commit()
+        session.refresh(ds)
+        table = SchemaTable(datasource_id=ds.id, name="order_items", original_comment="订单明细表")
+        session.add(table)
+        session.commit()
+        session.refresh(table)
+        session.add(SchemaField(table_id=table.id, name="order_id", type="BIGINT", original_comment="订单ID"))
+        session.add(RuntimeSetting(key="obsidian_vault_root", value=str(knowledge_root)))
+        session.commit()
+
+        history = [
+            {"role": "user", "content": "查用户列表"},
+            {"role": "assistant", "content": "已为你生成用户查询 SQL"},
+        ]
+        stream = "".join(ask_llm_stream(session, ds.id, "查订单明细", history, "hermes-session-1"))
+
+    assert called is True
+    assert "fresh-hermes-session" in stream

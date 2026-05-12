@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from typing import Generator
 
 from app.core.config import settings
 
@@ -201,6 +202,8 @@ def hermes_trace_message_from_line(line: str) -> str | None:
         r"^执行要求[:：]",
         r"^返回格式",
         r"^-\s*sql[:：]",
+        r'^"(?:type|sql|explanation|message|used_notes|candidates|sql_candidates|dataSource|dbType|purpose|limitations|additionalTablesFound)"\s*[:：]',
+        r'^\s*[{}[\],]\s*$',
     ]
     if any(re.search(pattern, cleaned, flags=re.I) for pattern in noisy_patterns):
         return None
@@ -238,9 +241,15 @@ def parse_hermes_json_output(output: str) -> dict:
             extracted_result = _extract_json_like_result(cleaned)
             if extracted_result is not None:
                 return extracted_result
-            clarification = _clarification_from_text(cleaned)
-            if clarification is not None:
-                return clarification
+            
+            # 兜底：如果完全无法解析 JSON，但包含大量文字，尝试封装成 clarification
+            if len(cleaned) > 50:
+                return {
+                    "type": "clarification",
+                    "message": cleaned[:2000],
+                    "used_notes": []
+                }
+                
             raise RuntimeError(f"Hermes 返回了非 JSON 内容: {cleaned[:500]}")
 
 
@@ -359,18 +368,27 @@ def _extract_json_like_result(text: str) -> dict | None:
             candidates.append(candidate)
 
     sql_pattern = re.compile(
-        r'"type"\s*:\s*"sql_candidate".*?"sql"\s*:\s*"(?P<sql>.*?)"\s*,\s*"explanation"\s*:\s*"(?P<explanation>.*?)"\s*,\s*"used_notes"\s*:\s*\[(?P<notes>.*?)\]',
+        r'"type"\s*:\s*"sql_candidate".*?(?:"sql"\s*:\s*"(?P<sql>.*?)"\s*,\s*"explanation"\s*:\s*"(?P<explanation>.*?)"|"candidates"\s*:\s*\[(?P<candidates>.*?)\])',
         flags=re.S,
     )
     for match in sql_pattern.finditer(normalized):
-        sql = match.group("sql").replace('\\"', '"').replace("\\n", "\n").strip()
-        explanation = match.group("explanation").replace('\\"', '"').replace("\\n", "\n").strip()
-        used_notes = re.findall(r'"([^"]+)"', match.group("notes"))
+        if match.group("candidates"):
+            # If it has candidates, we try to extract the first one
+            cand_text = match.group("candidates")
+            # Simple extraction of first sql/explanation pair in the candidates array
+            s_match = re.search(r'"sql"\s*:\s*"(?P<sql>.*?)"', cand_text, re.S)
+            e_match = re.search(r'"explanation"\s*:\s*"(?P<explanation>.*?)"', cand_text, re.S)
+            sql = s_match.group("sql").replace('\\"', '"').replace("\\n", "\n").strip() if s_match else ""
+            explanation = e_match.group("explanation").replace('\\"', '"').replace("\\n", "\n").strip() if e_match else ""
+        else:
+            sql = match.group("sql").replace('\\"', '"').replace("\\n", "\n").strip()
+            explanation = match.group("explanation").replace('\\"', '"').replace("\\n", "\n").strip()
+        
         candidate = {
             "type": "sql_candidate",
             "sql": sql,
             "explanation": explanation,
-            "used_notes": used_notes,
+            "used_notes": [],
         }
         if sql and not _is_prompt_example_result(candidate):
             candidates.append(candidate)
@@ -429,3 +447,201 @@ def _escape_newlines_inside_strings(text: str) -> str:
         result.append(ch)
 
     return "".join(result)
+
+
+SESSION_ID_PATTERN = re.compile(r"session_id:\s*([A-Za-z0-9._:-]+)")
+SESSION_LIST_ROW_PATTERN = re.compile(
+    r"^(?P<title>.+?)\s{2,}(?P<preview>.+?)\s{2,}(?P<last_active>(?:just now|\d+[mhdy] ago|\d+\s*[分钟小时天周月年]前|.+?ago))\s{2,}(?P<id>\d{8}_\d{6}_[A-Za-z0-9]+)$"
+)
+
+
+def parse_hermes_session_id(output: str) -> str | None:
+    match = SESSION_ID_PATTERN.search(output)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def run_hermes_session_json(
+    prompt: str,
+    *,
+    hermes_cli_path: str | None = None,
+    session_id: str | None = None,
+) -> tuple[dict, str | None]:
+    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
+    command = [cli_path, "chat", "-q", prompt, "-Q", "-v", "--source", "tool"]
+    if session_id:
+        command.extend(["--resume", session_id])
+    output = _run_hermes_cli(command, timeout=300, failure_message="Hermes 会话调用失败")
+    parsed = parse_hermes_json_output(output)
+    resolved_session_id = parse_hermes_session_id(output) or session_id
+    return parsed, resolved_session_id
+
+
+def iter_hermes_session_json(
+    prompt: str,
+    *,
+    hermes_cli_path: str | None = None,
+    session_id: str | None = None,
+) -> Generator[dict, None, None]:
+    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
+    command = [cli_path, "chat", "-q", prompt, "-Q", "-v", "--source", "tool"]
+    if session_id:
+        command.extend(["--resume", session_id])
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=None,
+    )
+    assert process.stdout is not None
+    lines: list[str] = []
+    try:
+        for line in process.stdout:
+            lines.append(line)
+            
+            # 提前捕获并抛出 Session ID 事件
+            if not session_id:
+                potential_id = parse_hermes_session_id(line)
+                if potential_id:
+                    session_id = potential_id
+                    yield {"type": "session_id", "session_id": session_id}
+
+            trace = hermes_trace_message_from_line(line)
+            if trace:
+                yield {"type": "trace", "message": trace}
+        return_code = process.wait(timeout=300)
+        output = "".join(lines)
+        if return_code != 0:
+            raise RuntimeError(output.strip() or "Hermes 流式会话失败")
+        result = parse_hermes_json_output(output)
+        resolved_session_id = parse_hermes_session_id(output) or session_id
+        yield {"type": "result", "result": result, "session_id": resolved_session_id}
+    finally:
+        if process.stdout:
+            process.stdout.close()
+
+
+def list_hermes_sessions(*, hermes_cli_path: str | None = None) -> list[dict]:
+    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
+    output = _run_hermes_cli([cli_path, "sessions", "list"], timeout=60, failure_message="读取 Hermes 会话列表失败")
+    sessions: list[dict] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("Title") or stripped.startswith("─"):
+            continue
+        match = SESSION_LIST_ROW_PATTERN.match(stripped)
+        if not match:
+            continue
+        title = match.group("title").strip()
+        preview = match.group("preview").strip()
+        sessions.append(
+            {
+                "title": "" if title == "—" else title,
+                "preview": preview,
+                "last_active": match.group("last_active").strip(),
+                "session_id": match.group("id").strip(),
+            }
+        )
+    return sessions
+
+
+def get_hermes_session_messages(session_id: str, *, hermes_cli_path: str | None = None) -> list[dict]:
+    cli_path = hermes_cli_path or settings.HERMES_CLI_PATH
+    command = [cli_path, "sessions", "export", "--session-id", session_id, "-"]
+    output = _run_hermes_cli(command, timeout=60, failure_message=f"读取 Hermes 会话 {session_id} 详情失败")
+    
+    raw_messages: list[dict] = []
+    
+    # Aggressive JSON object extraction
+    decoder = json.JSONDecoder()
+    pos = 0
+    while pos < len(output):
+        # Find potential start of a JSON object or array
+        start = output.find("{", pos)
+        if start == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(output[start:])
+            if isinstance(obj, dict):
+                if "role" in obj and "content" in obj:
+                    raw_messages.append(obj)
+                elif "messages" in obj and isinstance(obj["messages"], list):
+                    raw_messages.extend(obj["messages"])
+            elif isinstance(obj, list):
+                for item in obj:
+                    if isinstance(item, dict):
+                        if "role" in item and "content" in item:
+                            raw_messages.append(item)
+                        elif "messages" in item and isinstance(item["messages"], list):
+                            raw_messages.extend(item["messages"])
+            pos = start + end
+        except json.JSONDecodeError:
+            pos = start + 1
+
+    messages: list[dict] = []
+    # Deduplicate by ID if present, or just keep all
+    seen_ids = set()
+    for record in raw_messages:
+        msg_id = record.get("id")
+        if msg_id is not None:
+            if msg_id in seen_ids: continue
+            seen_ids.add(msg_id)
+            
+        role = record.get("role")
+        content = record.get("content")
+        if not role or not content:
+            continue
+            
+        msg = {
+            "role": role,
+            "content": content,
+            "kind": "text"
+        }
+        
+        if role == "assistant":
+            if isinstance(content, dict):
+                result = content
+            else:
+                result = extract_raw_hermes_result(content)
+                
+            if result:
+                if result.get("type") == "sql_candidate":
+                    msg["kind"] = "sql"
+                    # 兼容多候选格式
+                    if not result.get("sql") and result.get("sql_candidates"):
+                        cands = result.get("sql_candidates", [])
+                        if cands:
+                            msg["sql"] = cands[0].get("sql")
+                            msg["content"] = cands[0].get("explanation") or msg["content"]
+                    else:
+                        msg["sql"] = result.get("sql")
+                        msg["content"] = result.get("explanation") or msg["content"]
+                elif result.get("type") == "clarification":
+                    msg["kind"] = "clarification"
+                    msg["content"] = result.get("message") or msg["content"]
+        
+        messages.append(msg)
+    
+    # Clean up the initial system/context injection message
+    if messages and messages[0]["role"] == "user":
+        content = messages[0]["content"]
+        if "你是一个专业的数据库研发人员" in content or "Schema Context" in content:
+            # Try to extract the actual user question
+            # Look for common headers used in our prompt builder
+            question_match = re.search(r"### 用户问题\s*\n(.*?)(?:\n###|$)", content, re.DOTALL)
+            if question_match:
+                extracted = question_match.group(1).strip()
+                # If the question is repeated (sometimes happens in prompt construction), take the first part
+                lines = extracted.splitlines()
+                if len(lines) > 1 and lines[0].strip() == lines[1].strip():
+                    extracted = lines[0].strip()
+                messages[0]["content"] = extracted
+            else:
+                # If we can't find a clear question header, and it's a huge message, it might be better to keep it 
+                # but it's "ugly". For now, let's just keep the last 200 chars as a fallback or don't pop it.
+                pass
+        
+    return messages

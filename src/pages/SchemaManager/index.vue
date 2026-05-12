@@ -255,7 +255,10 @@ const handleSelectView = (view: any) => {
   selectedView.value = view;
 };
 
-const normalizeMetadataSyncMessage = (messageText: string | undefined, fallback: string) => {
+const normalizeMetadataSyncMessage = (
+  messageText: string | undefined,
+  fallback: string,
+) => {
   const text = (messageText || fallback).trim();
   return text
     .replace("，请继续同步到知识库", "")
@@ -359,14 +362,14 @@ const handleMetadataSync = async () => {
 
           message.info("开始同步存储过程...");
           const routineData = await runRoutineSync(sourceId);
-        message.success(routineData.message || "存储过程同步完成");
+          message.success(routineData.message || "存储过程同步完成");
 
-        message.info("开始同步视图...");
-        const viewData = await runViewSync(sourceId);
-        message.success(viewData.message || "视图同步完成");
+          message.info("开始同步视图...");
+          const viewData = await runViewSync(sourceId);
+          message.success(viewData.message || "视图同步完成");
 
-        await fetchSources();
-        message.success("数据库对象已同步完成");
+          await fetchSources();
+          message.success("数据库对象已同步完成");
         } catch (error: any) {
           message.error(error?.message || "数据库对象同步失败");
         } finally {
@@ -525,7 +528,7 @@ const handleKnowledgeSync = async () => {
   const totalTables = tables.value.length;
 
   dialog.warning({
-    title: "确认全量同步知识库 (WIKI)",
+    title: "确认全量同步WIKI",
     content:
       "将同步本地备注、关联表及存储过程事实。注意：此操作将清空并重建当前数据源下所有已生成的知识库页面。是否继续？",
     positiveText: "确认重建",
@@ -744,7 +747,10 @@ const viewLineage = (type: string, name: string) => {
               <span class="status-dot"></span>
               {{ formatKnowledgeBanner(latestDatasourceTask) }}
               <n-button
-                v-if="latestDatasourceTask.status === 'running' || latestDatasourceTask.status === 'pending'"
+                v-if="
+                  latestDatasourceTask.status === 'running' ||
+                  latestDatasourceTask.status === 'pending'
+                "
                 text
                 type="error"
                 size="tiny"
@@ -975,13 +981,21 @@ const viewLineage = (type: string, name: string) => {
                 <template v-if="selectedView">
                   <div class="routine-preview-header">
                     <div>
-                      <h3 class="routine-preview-title">{{ selectedView.name }}</h3>
+                      <h3 class="routine-preview-title">
+                        {{ selectedView.name }}
+                      </h3>
                       <p class="routine-preview-subtitle">
                         {{ selectedView.owner }} · VIEW
                       </p>
                     </div>
-                    <n-button secondary size="small" @click="viewLineage('view', selectedView.name)">
-                      <template #icon><n-icon><GitNetworkOutline /></n-icon></template>
+                    <n-button
+                      secondary
+                      size="small"
+                      @click="viewLineage('view', selectedView.name)"
+                    >
+                      <template #icon
+                        ><n-icon><GitNetworkOutline /></n-icon
+                      ></template>
                       查看血缘
                     </n-button>
                   </div>
@@ -1037,8 +1051,19 @@ const viewLineage = (type: string, name: string) => {
                         {{ selectedRoutine.routine_type }}
                       </p>
                     </div>
-                    <n-button secondary size="small" @click="viewLineage('routine', selectedRoutine.owner + '.' + selectedRoutine.name)">
-                      <template #icon><n-icon><GitNetworkOutline /></n-icon></template>
+                    <n-button
+                      secondary
+                      size="small"
+                      @click="
+                        viewLineage(
+                          'routine',
+                          selectedRoutine.owner + '.' + selectedRoutine.name,
+                        )
+                      "
+                    >
+                      <template #icon
+                        ><n-icon><GitNetworkOutline /></n-icon
+                      ></template>
                       查看血缘
                     </n-button>
                   </div>
@@ -1059,9 +1084,7 @@ const viewLineage = (type: string, name: string) => {
             :datasource-id="currentSource"
             :initial-object="selectedLineageObject"
           />
-          <div v-else class="routine-empty-state">
-            请先选择一个数据源
-          </div>
+          <div v-else class="routine-empty-state">请先选择一个数据源</div>
         </n-tab-pane>
       </n-tabs>
     </div>
@@ -1334,7 +1357,7 @@ const viewLineage = (type: string, name: string) => {
   flex: 1;
   min-height: 0;
   margin: 0;
-  padding: 22px 24px 28px;
+  padding: 12px 10px;
   overflow: auto;
   background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
   color: #253041;

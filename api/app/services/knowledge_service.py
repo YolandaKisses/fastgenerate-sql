@@ -1762,6 +1762,94 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
             
             import json
+
+            # --- 生成全局图谱文件 knowledge_graph.json ---
+            graph_data = {"nodes": [], "edges": []}
+            for table in all_tables:
+                graph_data["nodes"].append({"id": table.name, "type": "table", "path": f"tables/{sanitize_path_segment(table.name)}.md"})
+            for view_key, (_, ref_tables) in view_map.items():
+                graph_data["nodes"].append({"id": view_key, "type": "view", "path": f"views/{sanitize_path_segment(view_key)}.md"})
+                for t in ref_tables:
+                    graph_data["edges"].append({"source": view_key, "target": t, "relation": "depends_on_table"})
+            for routine_key, (_, ref_tables) in routine_map.items():
+                graph_data["nodes"].append({"id": routine_key, "type": "routine", "path": f"routines/{sanitize_path_segment(routine_key)}.md"})
+                for t in ref_tables:
+                    graph_data["edges"].append({"source": routine_key, "target": t, "relation": "depends_on_table"})
+            for term_name in final_term_names:
+                graph_data["nodes"].append({"id": term_name, "type": "term", "path": f"terms/{sanitize_path_segment(term_name)}.md"})
+            
+            (output_dir / "knowledge_graph.json").write_text(json.dumps(graph_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            
+            # --- 生成可视化图谱页面 knowledge_graph.html ---
+            html_content = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>知识图谱全景图</title>
+  <style> body { margin: 0; background-color: #1e1e1e; color: #fff; font-family: sans-serif; overflow: hidden; } </style>
+  <script src="https://unpkg.com/force-graph"></script>
+</head>
+<body>
+  <div id="graph"></div>
+  <script>
+    fetch('./knowledge_graph.json').then(res => res.json()).then(data => {
+      const gData = {
+        nodes: data.nodes.map(n => ({ id: n.id, name: n.id, group: n.type, path: n.path, val: 1 })),
+        links: data.edges.map(e => ({ source: e.source, target: e.target, name: e.relation }))
+      };
+      
+      // 按照引用次数动态计算节点大小，模拟 Obsidian 效果
+      const linkCounts = {};
+      gData.links.forEach(link => {
+        linkCounts[link.source] = (linkCounts[link.source] || 0) + 1;
+        linkCounts[link.target] = (linkCounts[link.target] || 0) + 1;
+      });
+      gData.nodes.forEach(n => { n.val = Math.max(1, (linkCounts[n.id] || 0) * 0.8) + 2; });
+
+      // 颜色映射
+      const colorMap = { "table": "#4A90E2", "view": "#50E3C2", "routine": "#F5A623", "term": "#B8E986" };
+
+      const Graph = ForceGraph()(document.getElementById('graph'))
+        .graphData(gData)
+        .nodeLabel('name')
+        .nodeColor(n => colorMap[n.group] || '#aaa')
+        .nodeVal('val')
+        .linkColor(() => 'rgba(255,255,255,0.2)')
+        .linkDirectionalArrowLength(3.5)
+        .linkDirectionalArrowRelPos(1)
+        // 增加连线文字标签
+        .onNodeClick(node => {
+           if(node.path) window.open('./' + node.path, '_blank');
+        });
+        
+      // 开启画布文字渲染（可选，如果你希望所有节点都带文字，类似 Obsidian）
+      Graph.nodeCanvasObject((node, ctx, globalScale) => {
+          const label = node.name;
+          const fontSize = 12/globalScale;
+          ctx.font = `${fontSize}px Sans-Serif`;
+          const textWidth = ctx.measureText(label).width;
+          const bckgDimensions = [textWidth, fontSize].map(n => n + fontSize * 0.2); 
+
+          ctx.fillStyle = 'rgba(30, 30, 30, 0.8)';
+          ctx.fillRect(node.x - bckgDimensions[0] / 2, node.y - bckgDimensions[1] / 2 - node.val - 4, ...bckgDimensions);
+
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = colorMap[node.group] || '#ccc';
+          ctx.fillText(label, node.x, node.y - node.val - 4);
+          
+          // 画圆点
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, node.val, 0, 2 * Math.PI, false);
+          ctx.fillStyle = colorMap[node.group] || '#ccc';
+          ctx.fill();
+      });
+    });
+  </script>
+</body>
+</html>"""
+            (output_dir / "knowledge_graph.html").write_text(html_content, encoding="utf-8")
+            
             task.failed_table_names = json.dumps(failed_table_names_list, ensure_ascii=False) if failed_table_names_list else None
             finalize_knowledge_task_status(task, datasource, total_tables=len(tables_to_sync))
             task.current_table = None

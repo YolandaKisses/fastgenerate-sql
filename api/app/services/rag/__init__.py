@@ -1,9 +1,7 @@
-from . import backends, context_assembler, hermes_answer_service, index_manager, retriever
+from . import index_manager, knowledge_tools, retriever
 
 __all__ = [
-    "backends",
-    "context_assembler",
-    "hermes_answer_service",
     "index_manager",
+    "knowledge_tools",
     "retriever",
 ]
