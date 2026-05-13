@@ -1138,3 +1138,204 @@ def test_append_knowledge_timing_log_writes_to_data_dir(tmp_path, monkeypatch):
     assert "table=users" in content
     assert "stage=hermes_call" in content
     assert "prompt_len=1024" in content
+
+
+def test_read_frontmatter_parses_scalar_and_list_values(tmp_path):
+    md_path = tmp_path / "sample.md"
+    md_path.write_text(
+        "\n".join(
+            [
+                "---",
+                "summary: 客户基本信息",
+                "tags:",
+                "  - db-table",
+                "  - 客户信息",
+                "related:",
+                "  - accorequest",
+                "  - accountinfo_zs",
+                "review_status: unreviewed",
+                "---",
+                "",
+                "# sample",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    frontmatter = knowledge_service._read_frontmatter(md_path)
+
+    assert frontmatter["summary"] == "客户基本信息"
+    assert frontmatter["tags"] == ["db-table", "客户信息"]
+    assert frontmatter["related"] == ["accorequest", "accountinfo_zs"]
+    assert frontmatter["review_status"] == "unreviewed"
+
+
+def test_build_manifest_collects_retrieval_friendly_fields(tmp_path):
+    output_dir = tmp_path / "demo"
+    (output_dir / "tables").mkdir(parents=True)
+    (output_dir / "views").mkdir()
+    (output_dir / "routines").mkdir()
+    (output_dir / "terms").mkdir()
+
+    (output_dir / "tables" / "users.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "summary: 用户基础信息表",
+                "table_type: 维表",
+                "tags:",
+                "  - db-table",
+                "  - 用户",
+                "related:",
+                "  - orders",
+                "keywords:",
+                "  - 用户",
+                "  - customerid",
+                "review_status: unreviewed",
+                "source_tables:",
+                "  - users",
+                "source_routines:",
+                "  - APP.P_SYNC_USERS",
+                "---",
+                "",
+                "# 🏷️ users",
+                "",
+                "## 概述",
+                "记录用户基础信息。",
+                "",
+                "## 字段明细",
+                "| 字段名 | 类型 | 原始备注 | 补充备注 |",
+                "| :--- | :--- | :--- | :--- |",
+                "| **customerid** | `VARCHAR(20)` | 客户号 | 主键 |",
+                "| **username** | `VARCHAR(50)` | 用户名 | |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "views" / "APP.V_USERS.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "project: demo",
+                "type: view-note",
+                "tags:",
+                "  - view-note",
+                "related:",
+                "  - users",
+                "view_owner: APP",
+                "---",
+                "",
+                "# 👁️ APP.V_USERS",
+                "",
+                "## 📜 定义",
+                "```sql",
+                "select * from users",
+                "```",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "routines" / "APP.P_SYNC_USERS.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "project: demo",
+                "type: routine-note",
+                "tags:",
+                "  - routine-note",
+                "related:",
+                "  - users",
+                "routine_type: PROCEDURE",
+                "---",
+                "",
+                "# ⚙️ APP.P_SYNC_USERS",
+                "",
+                "## 📜 源码",
+                "```sql",
+                "begin null; end;",
+                "```",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "terms" / "客户号.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "project: demo",
+                "type: business-term",
+                "tags:",
+                "  - business-term",
+                "aliases:",
+                "  - customerid",
+                "related:",
+                "  - users",
+                "confidence: 高",
+                "---",
+                "",
+                "# 📖 客户号",
+                "",
+                "::: info 业务术语定义",
+                "客户唯一标识。",
+                ":::",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = knowledge_service.build_manifest(output_dir=output_dir, datasource_name="demo")
+
+    assert manifest["datasource"] == "demo"
+    assert manifest["stats"]["tables"] == 1
+    assert manifest["stats"]["views"] == 1
+    assert manifest["stats"]["routines"] == 1
+    assert manifest["stats"]["terms"] == 1
+    assert manifest["stats"]["total_items"] == 4
+
+    users = next(item for item in manifest["items"] if item["id"] == "table:users")
+    assert users["summary"] == "用户基础信息表"
+    assert users["field_count"] == 2
+    assert users["keywords"] == ["用户", "customerid"]
+    assert users["related"] == ["orders"]
+    assert users["source_routines"] == ["APP.P_SYNC_USERS"]
+    assert "用户基础信息表" in users["search_text"]
+    assert "customerid" in users["search_text"]
+    assert users["business_topics"]
+    assert users["query_hints"]
+
+    term = next(item for item in manifest["items"] if item["id"] == "term:客户号")
+    assert term["aliases"] == ["customerid"]
+    assert "客户唯一标识" in term["summary"]
+
+    field_index = knowledge_service.build_field_index(output_dir=output_dir, datasource_name="demo")
+    customerid = next(item for item in field_index["items"] if item["field_name"] == "customerid")
+    assert customerid["tables"] == ["users"]
+    assert "客户号" in customerid["comments"][0]
+
+    table_cards = knowledge_service.build_table_cards(output_dir=output_dir, datasource_name="demo")
+    users_card = next(item for item in table_cards["items"] if item["name"] == "users")
+    assert users_card["field_count"] == 2
+    assert users_card["fields"][0]["name"] == "customerid"
+
+
+def test_strip_lineage_reference_sections_removes_duplicate_ai_blocks():
+    text = "\n".join(
+        [
+            "## 🧭 血缘关系",
+            "",
+            "### ⬆️ 上游表",
+            "- source_table",
+            "",
+            "### 👁️ 相关视图",
+            "- APP.V_USERS",
+            "",
+            "### 🛠️ 相关存储过程",
+            "- APP.P_SYNC_USERS",
+        ]
+    )
+
+    stripped = knowledge_service._strip_lineage_reference_sections(text)
+
+    assert "### ⬆️ 上游表" in stripped
+    assert "### 👁️ 相关视图" not in stripped
+    assert "### 🛠️ 相关存储过程" not in stripped

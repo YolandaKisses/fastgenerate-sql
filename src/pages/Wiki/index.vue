@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, h } from 'vue'
+import { ref, onMounted, onUnmounted, watch, h } from 'vue'
 import { 
   NLayout, NLayoutSider, NLayoutContent, NTree, NScrollbar, NEmpty, NSpin,
   useMessage, type TreeOption, NIcon, NSplit
 } from 'naive-ui'
-import { FolderOutline, DocumentTextOutline, BookOutline } from '@vicons/ionicons5'
+import { FolderOutline, DocumentTextOutline, BookOutline, EarthOutline } from '@vicons/ionicons5'
 import MarkdownIt from 'markdown-it'
 import container from 'markdown-it-container'
 import hljs from 'highlight.js'
@@ -17,6 +17,7 @@ const route = useRoute()
 const router = useRouter()
 
 const treeData = ref<TreeOption[]>([])
+const expandedKeys = ref<string[]>([])
 const currentContent = ref('')
 const currentPath = ref('')
 const isLoadingTree = ref(false)
@@ -88,13 +89,22 @@ const renderIcon = (icon: any) => {
 }
 
 const transformToTreeOptions = (nodes: any[]): TreeOption[] => {
-  return nodes.map(node => ({
-    label: node.name,
-    key: node.path,
-    isLeaf: !node.isDir,
-    prefix: node.isDir ? renderIcon(FolderOutline) : renderIcon(DocumentTextOutline),
-    children: node.children ? transformToTreeOptions(node.children) : undefined
-  }))
+  return nodes.map(node => {
+    let icon = DocumentTextOutline
+    if (node.isDir) {
+      icon = FolderOutline
+    } else if (node.path.endsWith('.html')) {
+      icon = EarthOutline
+    }
+    
+    return {
+      label: node.name,
+      key: node.path,
+      isLeaf: !node.isDir,
+      prefix: renderIcon(icon),
+      children: node.children ? transformToTreeOptions(node.children) : undefined
+    }
+  })
 }
 
 const findFirstFile = (options: TreeOption[]): string | null => {
@@ -108,13 +118,45 @@ const findFirstFile = (options: TreeOption[]): string | null => {
   return null
 }
 
+const isHtmlFile = ref(false)
+const iframeUrl = ref('')
+
+// 提取路径的所有父目录
+const getParentPaths = (path: string): string[] => {
+  const parts = path.split('/')
+  const parents: string[] = []
+  for (let i = 1; i < parts.length; i++) {
+    parents.push(parts.slice(0, i).join('/'))
+  }
+  return parents
+}
+
 const loadContent = async (path: string) => {
-  if (!path.endsWith('.md')) return
+  if (!path.endsWith('.md') && !path.endsWith('.html')) return
   
   isLoadingContent.value = false // 先重置
   currentPath.value = path
   isLoadingContent.value = true
+  isHtmlFile.value = path.endsWith('.html')
   
+  // 联动展开左侧目录
+  const parents = getParentPaths(path)
+  parents.forEach(p => {
+    if (!expandedKeys.value.includes(p)) {
+      expandedKeys.value.push(p)
+    }
+  })
+  
+  if (isHtmlFile.value) {
+    // 构造 raw 接口 URL (使用路径参数模式以支持相对路径)
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+    iframeUrl.value = `${baseUrl}/wiki/raw/${path}`
+    currentContent.value = ''
+    isLoadingContent.value = false
+    router.replace({ query: { ...route.query, path } })
+    return
+  }
+
   try {
     const data = await get(`/wiki/content?path=${encodeURIComponent(path)}`)
     let rawContent = data.content
@@ -152,7 +194,7 @@ const handleContentClick = (e: MouseEvent) => {
   if (a && a.getAttribute('href')) {
     const href = a.getAttribute('href') || ''
     // 处理相对路径链接
-    if (href.endsWith('.md') && !href.startsWith('http')) {
+    if ((href.endsWith('.md') || href.endsWith('.html')) && !href.startsWith('http')) {
       e.preventDefault()
       // 计算相对路径
       const basePath = currentPath.value.split('/').slice(0, -1).join('/')
@@ -172,8 +214,24 @@ const handleContentClick = (e: MouseEvent) => {
   }
 }
 
+// 监听 iframe 发来的跳转请求
+const handleMessage = (e: MessageEvent) => {
+  if (e.data && e.data.type === 'wiki-navigate') {
+    const relativePath = e.data.path
+    // 计算绝对路径 (相对于 wiki 根目录)
+    const currentDir = currentPath.value.split('/').slice(0, -1).join('/')
+    const targetPath = currentDir ? `${currentDir}/${relativePath}` : relativePath
+    loadContent(targetPath)
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('message', handleMessage)
   fetchTree()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('message', handleMessage)
 })
 </script>
 
@@ -197,7 +255,9 @@ onMounted(() => {
                       block-line
                       :data="treeData"
                       :selected-keys="[currentPath]"
+                      :expanded-keys="expandedKeys"
                       @update:selected-keys="handleSelect"
+                      @update:expanded-keys="(keys) => expandedKeys = keys"
                       expand-on-click
                     />
                   </n-spin>
@@ -209,7 +269,7 @@ onMounted(() => {
         <template #2>
           <div class="wiki-main" style="display: flex; flex-direction: column; height: 100%; overflow: hidden;">
             <div class="main-content-scroll">
-              <n-scrollbar>
+              <n-scrollbar v-if="!isHtmlFile">
                 <div class="content-wrapper">
                   <n-spin :show="isLoadingContent">
                     <div 
@@ -222,6 +282,9 @@ onMounted(() => {
                   </n-spin>
                 </div>
               </n-scrollbar>
+              <div v-else class="iframe-wrapper">
+                <iframe :src="iframeUrl" class="wiki-iframe"></iframe>
+              </div>
             </div>
           </div>
         </template>
@@ -263,6 +326,8 @@ onMounted(() => {
 .main-content-scroll {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .tree-container {
@@ -422,5 +487,21 @@ onMounted(() => {
   margin-bottom: 0.5rem;
   padding-top: 0.5rem;
   padding-bottom: 0.5rem;
+}
+
+.iframe-wrapper {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+}
+
+.wiki-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #1e1e1e;
+  flex: 1;
 }
 </style>

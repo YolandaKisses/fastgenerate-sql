@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     HERMES_CLI_PATH: str = os.path.expanduser("~/.local/bin/hermes")
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_LLM_MODEL: str = "deepseek-v4-flash"
+    DEEPSEEK_LLM_MODEL: str = "deepseek-v4-pro"
     AUTH_TOKEN_SECRET: str = ""
     AUTH_TOKEN_EXPIRE_MINUTES: int = 480
     ALLOWED_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173"

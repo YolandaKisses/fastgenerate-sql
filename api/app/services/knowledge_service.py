@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 import logging
 import re
 from time import perf_counter
-from typing import Generator
+from typing import Any, Generator
 import threading
 
 import sqlalchemy
@@ -483,7 +484,7 @@ def render_table_markdown(
     if lineage_section:
         lines.extend([
             "",
-            lineage_section.strip(),
+            _strip_lineage_reference_sections(lineage_section).strip(),
             "",
             "---",
         ])
@@ -1745,6 +1746,12 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
                     )
                     existing_term_names.add(term_name)
 
+            table_summary_map = {
+                table_name: summary
+                for table_name, summary in table_summaries
+                if summary.get("_source") != "skipped"
+            }
+
             # 刷新 index.md（确保使用 all_tables 而不是仅本次同步的 tables_to_sync）
             # 对于存储过程：直接使用 routine_map 中的全量键，确保索引完整
             # 对于术语：由于没有数据库记录，从 terms 目录扫描已有的文件
@@ -1761,24 +1768,30 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             )
             (output_dir / "index.md").write_text(index_markdown, encoding="utf-8")
             
-            import json
-
-            # --- 生成全局图谱文件 knowledge_graph.json ---
-            graph_data = {"nodes": [], "edges": []}
-            for table in all_tables:
-                graph_data["nodes"].append({"id": table.name, "type": "table", "path": f"tables/{sanitize_path_segment(table.name)}.md"})
-            for view_key, (_, ref_tables) in view_map.items():
-                graph_data["nodes"].append({"id": view_key, "type": "view", "path": f"views/{sanitize_path_segment(view_key)}.md"})
-                for t in ref_tables:
-                    graph_data["edges"].append({"source": view_key, "target": t, "relation": "depends_on_table"})
-            for routine_key, (_, ref_tables) in routine_map.items():
-                graph_data["nodes"].append({"id": routine_key, "type": "routine", "path": f"routines/{sanitize_path_segment(routine_key)}.md"})
-                for t in ref_tables:
-                    graph_data["edges"].append({"source": routine_key, "target": t, "relation": "depends_on_table"})
-            for term_name in final_term_names:
-                graph_data["nodes"].append({"id": term_name, "type": "term", "path": f"terms/{sanitize_path_segment(term_name)}.md"})
-            
+            graph_data = build_knowledge_graph(
+                output_dir=output_dir,
+                all_tables=all_tables,
+                view_map=view_map,
+                routine_map=routine_map,
+                term_names=final_term_names,
+                table_summary_map=table_summary_map,
+            )
             (output_dir / "knowledge_graph.json").write_text(json.dumps(graph_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            manifest = build_manifest(output_dir=output_dir, datasource_name=datasource.name)
+            (output_dir / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            field_index = build_field_index(output_dir=output_dir, datasource_name=datasource.name)
+            (output_dir / "field_index.json").write_text(
+                json.dumps(field_index, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            table_cards = build_table_cards(output_dir=output_dir, datasource_name=datasource.name)
+            (output_dir / "table_cards.json").write_text(
+                json.dumps(table_cards, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             
             # --- 生成可视化图谱页面 knowledge_graph.html ---
             html_content = """<!DOCTYPE html>
@@ -2836,6 +2849,460 @@ def render_frontmatter(properties: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def build_manifest(output_dir: str | Path, datasource_name: str) -> dict[str, object]:
+    root = Path(output_dir)
+    items: list[dict[str, object]] = []
+    counts = {
+        "tables": 0,
+        "views": 0,
+        "routines": 0,
+        "terms": 0,
+    }
+
+    sections = [
+        ("table", "tables", root / "tables"),
+        ("view", "views", root / "views"),
+        ("routine", "routines", root / "routines"),
+        ("term", "terms", root / "terms"),
+    ]
+    for item_type, counter_key, directory in sections:
+        if not directory.exists():
+            continue
+        for file_path in sorted(directory.glob("*.md")):
+            items.append(_build_manifest_item(file_path, root, item_type))
+            counts[counter_key] += 1
+
+    items.sort(key=lambda item: (str(item.get("type", "")), str(item.get("name", ""))))
+
+    return {
+        "datasource": datasource_name,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            **counts,
+            "total_items": len(items),
+        },
+        "items": items,
+    }
+
+
+def _build_manifest_item(file_path: Path, root: Path, item_type: str) -> dict[str, object]:
+    text = file_path.read_text(encoding="utf-8")
+    frontmatter = _read_frontmatter(file_path)
+    name = file_path.stem
+    title = _extract_title_from_markdown(text) or name
+    summary = _manifest_summary(frontmatter, text)
+    related = _string_list(frontmatter.get("related"))
+    keywords = _string_list(frontmatter.get("keywords"))
+    tags = _string_list(frontmatter.get("tags"))
+    aliases = _string_list(frontmatter.get("aliases"))
+    source_tables = _string_list(frontmatter.get("source_tables"))
+    source_routines = _string_list(frontmatter.get("source_routines"))
+    fields = _extract_table_fields(text) if item_type == "table" else []
+    field_names = [field["name"] for field in fields]
+    headings = _extract_markdown_headings(text)
+    owner = _manifest_owner(frontmatter, name, item_type)
+    business_topics = _derive_business_topics(item_type, summary, keywords, tags, aliases, headings, related)
+    query_hints = _build_query_hints(item_type, name, title, related, business_topics, field_names)
+
+    search_terms = _dedupe_preserve_order(
+        [
+            name,
+            title,
+            owner,
+            *aliases,
+            *keywords,
+            *related,
+            *source_tables,
+            *source_routines,
+            *field_names,
+        ]
+    )
+    search_text = "\n".join(
+        part
+        for part in [
+            f"type: {item_type}",
+            f"name: {name}",
+            f"title: {title}",
+            f"summary: {summary}",
+            f"owner: {owner}",
+            f"table_type: {_string_value(frontmatter.get('table_type'))}",
+            f"routine_type: {_string_value(frontmatter.get('routine_type'))}",
+            f"keywords: {', '.join(keywords)}" if keywords else "",
+            f"aliases: {', '.join(aliases)}" if aliases else "",
+            f"related: {', '.join(related)}" if related else "",
+            f"field_names: {', '.join(field_names)}" if field_names else "",
+            f"business_topics: {', '.join(business_topics)}" if business_topics else "",
+            f"query_hints: {' | '.join(query_hints)}" if query_hints else "",
+            f"headings: {' | '.join(headings)}" if headings else "",
+        ]
+        if part
+    )
+
+    item: dict[str, object] = {
+        "id": f"{item_type}:{name}",
+        "type": item_type,
+        "name": name,
+        "title": title,
+        "path": file_path.relative_to(root).as_posix(),
+        "summary": summary,
+        "keywords": keywords,
+        "related": related,
+        "tags": tags,
+        "aliases": aliases,
+        "owner": owner,
+        "review_status": _string_value(frontmatter.get("review_status")),
+        "table_type": _string_value(frontmatter.get("table_type")),
+        "routine_type": _string_value(frontmatter.get("routine_type")),
+        "source_tables": source_tables,
+        "source_routines": source_routines,
+        "field_count": len(fields),
+        "field_names": field_names,
+        "fields": fields,
+        "headings": headings,
+        "business_topics": business_topics,
+        "query_hints": query_hints,
+        "search_terms": search_terms,
+        "search_text": search_text,
+    }
+    return item
+
+
+def _extract_title_from_markdown(markdown: str) -> str:
+    content = _strip_frontmatter(markdown)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("#"):
+            continue
+        title = re.sub(r"^#+\s*", "", line).strip()
+        title = re.sub(r"^[^\w\u4e00-\u9fff]+", "", title).strip()
+        if title:
+            return title
+    return ""
+
+
+def _manifest_summary(frontmatter: dict[str, object], markdown: str) -> str:
+    summary = _string_value(frontmatter.get("summary"))
+    if summary:
+        return summary
+
+    content = _strip_frontmatter(markdown)
+    info_block = re.search(r":::\s*\w+[^\n]*\n(?P<body>.*?)\n:::", content, flags=re.S)
+    if info_block:
+        lines = [
+            line.strip()
+            for line in info_block.group("body").splitlines()
+            if line.strip() and not line.strip().startswith("- **")
+        ]
+        if lines:
+            return " ".join(lines)[:300]
+
+    paragraph_lines: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if (
+            not line
+            or line.startswith("#")
+            or line.startswith("[⬅️")
+            or line == "---"
+            or line.startswith(":::")
+            or line.startswith("```")
+            or line.startswith("|")
+            or line.startswith("*暂无")
+        ):
+            if paragraph_lines:
+                break
+            continue
+        paragraph_lines.append(line)
+    return " ".join(paragraph_lines)[:300]
+
+
+def _extract_markdown_headings(markdown: str) -> list[str]:
+    content = _strip_frontmatter(markdown)
+    headings: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("#"):
+            continue
+        heading = re.sub(r"^#+\s*", "", line).strip()
+        heading = re.sub(r"^[^\w\u4e00-\u9fff]+", "", heading).strip()
+        if heading:
+            headings.append(heading)
+    return headings
+
+
+def _extract_table_fields(markdown: str) -> list[dict[str, str]]:
+    fields: list[dict[str, str]] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("| **"):
+            continue
+        parts = [part.strip() for part in line.strip("|").split("|")]
+        if len(parts) < 4:
+            continue
+        field_name = parts[0].strip("* ").strip()
+        if not field_name:
+            continue
+        fields.append(
+            {
+                "name": field_name,
+                "type": parts[1].strip("`"),
+                "original_comment": parts[2],
+                "supplementary_comment": parts[3],
+            }
+        )
+    return fields
+
+
+def _manifest_owner(frontmatter: dict[str, object], name: str, item_type: str) -> str:
+    if item_type == "view":
+        return _string_value(frontmatter.get("view_owner"))
+    if "." in name and item_type in {"view", "routine"}:
+        return name.split(".", 1)[0]
+    return ""
+
+
+def build_field_index(output_dir: str | Path, datasource_name: str) -> dict[str, object]:
+    manifest = build_manifest(output_dir=output_dir, datasource_name=datasource_name)
+    index: dict[str, dict[str, object]] = {}
+    for item in manifest["items"]:
+        if item.get("type") != "table":
+            continue
+        table_name = str(item.get("name", ""))
+        table_summary = str(item.get("summary", ""))
+        for field in item.get("fields", []):
+            field_name = str(field.get("name", "")).strip()
+            if not field_name:
+                continue
+            normalized = normalize_table_name(field_name)
+            key = normalized or field_name.lower()
+            entry = index.setdefault(
+                key,
+                {
+                    "field_name": field_name,
+                    "normalized_name": key,
+                    "tables": [],
+                    "comments": [],
+                    "sample_types": [],
+                    "search_terms": [],
+                },
+            )
+            tables = entry["tables"]
+            if table_name not in tables:
+                tables.append(table_name)
+            comments = entry["comments"]
+            for comment in [field.get("original_comment", ""), field.get("supplementary_comment", ""), table_summary]:
+                value = str(comment).strip()
+                if value and value not in comments:
+                    comments.append(value)
+            sample_types = entry["sample_types"]
+            field_type = str(field.get("type", "")).strip()
+            if field_type and field_type not in sample_types:
+                sample_types.append(field_type)
+            search_terms = entry["search_terms"]
+            for token in [field_name, str(field.get("original_comment", "")), str(field.get("supplementary_comment", ""))]:
+                token = token.strip()
+                if token and token not in search_terms:
+                    search_terms.append(token)
+
+    items = sorted(index.values(), key=lambda item: str(item["field_name"]))
+    return {
+        "datasource": datasource_name,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            "total_fields": len(items),
+        },
+        "items": items,
+    }
+
+
+def build_table_cards(output_dir: str | Path, datasource_name: str) -> dict[str, object]:
+    manifest = build_manifest(output_dir=output_dir, datasource_name=datasource_name)
+    items = [item for item in manifest["items"] if item.get("type") == "table"]
+    cards: list[dict[str, object]] = []
+    for item in items:
+        card = {
+            "id": item["id"],
+            "name": item["name"],
+            "path": item["path"],
+            "summary": item["summary"],
+            "table_type": item.get("table_type") or "",
+            "review_status": item.get("review_status") or "",
+            "keywords": item.get("keywords") or [],
+            "related": item.get("related") or [],
+            "business_topics": item.get("business_topics") or [],
+            "query_hints": item.get("query_hints") or [],
+            "field_count": item.get("field_count") or 0,
+            "fields": item.get("fields") or [],
+            "search_text": item.get("search_text") or "",
+        }
+        cards.append(card)
+    return {
+        "datasource": datasource_name,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            "tables": len(cards),
+        },
+        "items": cards,
+    }
+
+
+def build_knowledge_graph(
+    *,
+    output_dir: str | Path,
+    all_tables: list[SchemaTable],
+    view_map: dict[str, tuple[ViewDefinition, set[str]]],
+    routine_map: dict[str, tuple[RoutineDefinition, set[str]]],
+    term_names: set[str],
+    table_summary_map: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    graph_data = {"nodes": [], "edges": []}
+    for table in all_tables:
+        graph_data["nodes"].append({"id": table.name, "type": "table", "path": f"tables/{sanitize_path_segment(table.name)}.md"})
+    for view_key, (_, ref_tables) in view_map.items():
+        graph_data["nodes"].append({"id": view_key, "type": "view", "path": f"views/{sanitize_path_segment(view_key)}.md"})
+        for table_name in ref_tables:
+            graph_data["edges"].append(
+                {
+                    "source": view_key,
+                    "target": table_name,
+                    "relation": "depends_on_table",
+                    "source_type": "view",
+                    "confidence": "high",
+                    "reason": "来自视图定义解析",
+                    "join_hint": "",
+                }
+            )
+    for routine_key, (_, ref_tables) in routine_map.items():
+        graph_data["nodes"].append({"id": routine_key, "type": "routine", "path": f"routines/{sanitize_path_segment(routine_key)}.md"})
+        for table_name in ref_tables:
+            graph_data["edges"].append(
+                {
+                    "source": routine_key,
+                    "target": table_name,
+                    "relation": "depends_on_table",
+                    "source_type": "routine",
+                    "confidence": "high",
+                    "reason": "来自存储过程定义解析",
+                    "join_hint": "",
+                }
+            )
+    for table_name, summary in (table_summary_map or {}).items():
+        for link in summary.get("graph_links") or []:
+            target = str(link.get("target_table", "")).strip()
+            if not target:
+                continue
+            graph_data["edges"].append(
+                {
+                    "source": table_name,
+                    "target": target,
+                    "relation": link.get("relation_type") or "related_table",
+                    "source_type": "table",
+                    "confidence": str(link.get("confidence") or "medium").lower(),
+                    "reason": link.get("reason") or "来自 AI 摘要推断",
+                    "join_hint": link.get("join_hint") or "",
+                }
+            )
+    for term_name in term_names:
+        graph_data["nodes"].append({"id": term_name, "type": "term", "path": f"terms/{sanitize_path_segment(term_name)}.md"})
+    return graph_data
+
+
+def _derive_business_topics(
+    item_type: str,
+    summary: str,
+    keywords: list[str],
+    tags: list[str],
+    aliases: list[str],
+    headings: list[str],
+    related: list[str],
+) -> list[str]:
+    generic_tags = {"db-table", "view-note", "routine-note", "business-term"}
+    topics = _dedupe_preserve_order(
+        [
+            *keywords,
+            *aliases,
+            *[tag for tag in tags if tag not in generic_tags],
+            *[heading for heading in headings if heading not in {"字段明细", "源码", "定义", "相关表", "相关视图", "相关存储过程"}],
+        ]
+    )
+    if topics:
+        return topics[:10]
+    if item_type == "table" and summary:
+        return [summary[:40]]
+    if related:
+        return related[:5]
+    return []
+
+
+def _build_query_hints(
+    item_type: str,
+    name: str,
+    title: str,
+    related: list[str],
+    business_topics: list[str],
+    field_names: list[str],
+) -> list[str]:
+    hints: list[str] = []
+    if item_type == "table":
+        hints.extend(
+            [
+                f"{name} 这张表是做什么的",
+                f"{name} 有哪些关键字段",
+            ]
+        )
+        if related:
+            hints.append(f"{name} 和 {related[0]} 怎么关联")
+        if field_names:
+            hints.append(f"{field_names[0]} 在 {name} 里表示什么")
+    elif item_type == "view":
+        hints.extend([f"{name} 这个视图基于哪些表", f"{name} 的定义 SQL 是什么"])
+    elif item_type == "routine":
+        hints.extend([f"{name} 这个过程读写哪些表", f"{name} 的作用是什么"])
+    elif item_type == "term":
+        hints.extend([f"{title} 的定义是什么", f"{title} 相关的表有哪些"])
+    hints.extend([f"{topic} 对应什么数据对象" for topic in business_topics[:2]])
+    return _dedupe_preserve_order(hints)
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _string_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ""
+    return str(value).strip()
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _strip_frontmatter(markdown: str) -> str:
+    lines = markdown.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return markdown
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "\n".join(lines[idx + 1 :])
+    return markdown
+
+
 def format_bullet_section(text: str) -> list[str]:
     normalized = (text or "").strip()
     if not normalized:
@@ -2869,7 +3336,7 @@ def format_bullet_section(text: str) -> list[str]:
 
 # ── LLM Wiki 人工页面保护辅助 ──
 
-def _read_frontmatter(file_path: Path) -> dict[str, str]:
+def _read_frontmatter(file_path: Path) -> dict[str, object]:
     """读取 markdown 文件的 YAML frontmatter（仅前 50 行）。"""
     try:
         text = file_path.read_text(encoding="utf-8")
@@ -2878,14 +3345,27 @@ def _read_frontmatter(file_path: Path) -> dict[str, str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}
-    fm: dict[str, str] = {}
+    fm: dict[str, object] = {}
+    current_list_key: str | None = None
     for line in lines[1:50]:
         stripped = line.strip()
         if stripped == "---":
             break
+        if stripped.startswith("- ") and current_list_key:
+            current_value = fm.setdefault(current_list_key, [])
+            if isinstance(current_value, list):
+                current_value.append(stripped[2:].strip().strip('"'))
+            continue
         if ":" in stripped:
             key, _, val = stripped.partition(":")
-            fm[key.strip()] = val.strip()
+            key = key.strip()
+            value = val.strip()
+            if value:
+                fm[key] = value
+                current_list_key = None
+            else:
+                fm[key] = []
+                current_list_key = key
     return fm
 
 
@@ -2920,3 +3400,19 @@ def _merge_hybrid_content(ai_markdown: str, manual_sections: list[str]) -> str:
     if not manual_sections:
         return ai_markdown
     return ai_markdown.rstrip() + "\n\n" + "\n\n".join(manual_sections) + "\n"
+
+
+def _strip_lineage_reference_sections(lineage_section: str) -> str:
+    lines = lineage_section.splitlines()
+    kept: list[str] = []
+    skip = False
+    skip_headers = {"### 👁️ 相关视图", "### 🛠️ 相关存储过程"}
+    for line in lines:
+        if line.strip() in skip_headers:
+            skip = True
+            continue
+        if skip and line.startswith("### ") and line.strip() not in skip_headers:
+            skip = False
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept).strip()

@@ -36,7 +36,7 @@ async def get_wiki_tree(session: Session = Depends(get_session)):
             if item.is_dir():
                 node["children"] = build_tree(item)
                 # 如果目录没有子节点且没有 markdown 文件，可以考虑过滤（可选）
-            elif not item.suffix == ".md":
+            elif not (item.suffix == ".md" or item.suffix == ".html"):
                 continue
             
             tree.append(node)
@@ -46,7 +46,7 @@ async def get_wiki_tree(session: Session = Depends(get_session)):
 
 @router.get("/content")
 async def get_wiki_content(path: str, session: Session = Depends(get_session)):
-    """获取指定 Markdown 文件的内容"""
+    """获取指定 Markdown 或 HTML 文件的内容"""
     root = get_wiki_root(session)
     file_path = (root / path).resolve()
     
@@ -57,11 +57,30 @@ async def get_wiki_content(path: str, session: Session = Depends(get_session)):
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     
-    if not file_path.suffix == ".md":
-        raise HTTPException(status_code=400, detail="Only markdown files are supported")
+    if not (file_path.suffix == ".md" or file_path.suffix == ".html"):
+        raise HTTPException(status_code=400, detail="Only markdown and html files are supported")
     
     try:
         content = file_path.read_text(encoding="utf-8")
         return {"content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+from fastapi.responses import FileResponse
+import mimetypes
+
+@router.get("/raw/{path:path}")
+async def get_wiki_raw(path: str, session: Session = Depends(get_session)):
+    """获取指定文件的原始响应 (用于 iframe 或图片)"""
+    root = get_wiki_root(session)
+    # 移除开头的斜杠（如果有）
+    clean_path = path.lstrip("/")
+    file_path = (root / clean_path).resolve()
+    
+    if not str(file_path).startswith(str(root.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(file_path)
