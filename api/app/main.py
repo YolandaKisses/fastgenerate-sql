@@ -16,7 +16,8 @@ except Exception as e:
     print(f"⚠️ Failed to initialize Oracle Thick Mode: {e}")
 
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.config import settings as app_settings
@@ -55,6 +56,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(ValueError)
+async def value_error_exception_handler(request: Request, exc: ValueError):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": str(exc)},
+    )
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(datasources.router, prefix="/api/v1")

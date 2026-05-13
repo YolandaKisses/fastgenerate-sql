@@ -2,8 +2,8 @@ export type DemandField = {
   id: string;
   name: string;
   type: string;
-  original_comment: string;
-  supplementary_comment: string;
+  originalComment: string;
+  supplementaryComment: string;
 };
 
 export type DemandDraftTable = {
@@ -25,7 +25,7 @@ export type DemandCategoryNode = {
 
 export type SchemaTableOption = {
   name: string;
-  original_comment?: string;
+  originalComment?: string;
 };
 
 export type DemandCategoryTreeResponse = {

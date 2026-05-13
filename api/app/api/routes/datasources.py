@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 from sqlmodel import Session
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_owned_datasource_or_404
 from app.core.database import get_session
 from app.models.datasource import DataSource, DataSourceCreate, DataSourceRead, DataSourceUpdate, DataSourceStatus
 from app.services import datasource_service
@@ -26,9 +26,7 @@ def delete_datasource(ds_id: int, session: Session = Depends(get_session), curre
 
 @router.post("/{ds_id}/test", response_model=dict)
 async def test_datasource(ds_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, ds_id)
-    if not ds or ds.user_id != current_user.user_id:
-        return {"success": False, "message": "DataSource not found"}
+    ds = get_owned_datasource_or_404(session, ds_id, current_user)
     
     # 将同步的测试连接操作放入线程池执行，防止超时阻塞主事件循环
     res = await run_in_threadpool(datasource_service.test_connection, ds)

@@ -59,8 +59,8 @@ const createField = (): DemandField => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   name: "",
   type: "",
-  original_comment: "",
-  supplementary_comment: "",
+  originalComment: "",
+  supplementaryComment: "",
 });
 
 const createTable = (): DemandDraftTable => ({
@@ -96,7 +96,7 @@ const fetchSchemaTables = async () => {
     const data = await get(`/schema/tables/${currentSource.value}`);
     schemaTables.value = data.map((item: any) => ({
       name: item.name,
-      original_comment: item.original_comment || "",
+      originalComment: item.original_comment || "",
     }));
   } catch {
     schemaTables.value = [];
@@ -144,8 +144,8 @@ const fetchDemandDocuments = async () => {
         id: `${item.id}:${field.name}`,
         name: field.name || "",
         type: field.type || "",
-        original_comment: field.original_comment || "",
-        supplementary_comment: field.supplementary_comment || "",
+        originalComment: field.original_comment || "",
+        supplementaryComment: field.supplementary_comment || "",
       })),
     }));
     selectedTableId.value = tables.value[0]?.id || null;
@@ -285,11 +285,11 @@ const saveCurrentTable = async () => {
         table_name: key,
         relation_detail: selectedTable.value!.relatedTableDetails[key] || "",
       })),
-      fields: selectedTable.value!.fields.map(({ name, type, original_comment, supplementary_comment }) => ({
+      fields: selectedTable.value!.fields.map(({ name, type, originalComment, supplementaryComment }) => ({
         name: name.trim(),
         type: type.trim(),
-        original_comment: original_comment.trim(),
-        supplementary_comment: supplementary_comment.trim(),
+        original_comment: originalComment.trim(),
+        supplementary_comment: supplementaryComment.trim(),
       })),
     });
     selectedTable.value!.savedPath = result.relative_path;

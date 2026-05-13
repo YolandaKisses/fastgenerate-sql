@@ -1,15 +1,34 @@
 import { clearAuth, getAuthToken } from './auth'
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1'
-
+import { buildUrl } from './config'
 type RequestOptions = Omit<RequestInit, 'body'> & {
   body?: unknown
 }
 
-export const buildUrl = (path: string) => {
-  if (/^https?:\/\//.test(path)) return path
-  return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
+async function handleResponseError(res: Response) {
+  if (res.status === 401) {
+    clearAuth()
+    if (window.location.hash !== '#/login') {
+      window.location.hash = '#/login'
+    }
+  }
+
+  const text = await res.text()
+  const data = text ? JSON.parse(text) : null
+  let message = data?.message || `请求失败 (${res.status})`
+
+  if (data?.detail) {
+    if (typeof data.detail === 'string') {
+      message = data.detail
+    } else if (Array.isArray(data.detail)) {
+      message = data.detail.map((err: any) => `${err.loc.join('.')}: ${err.msg}`).join('; ')
+    } else if (typeof data.detail === 'object') {
+      message = JSON.stringify(data.detail)
+    }
+  }
+  throw new Error(message)
 }
+
 
 export async function request<T = any>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers)
@@ -33,23 +52,7 @@ export async function request<T = any>(path: string, options: RequestOptions = {
   const data = text ? JSON.parse(text) : null
 
   if (!res.ok) {
-    if (res.status === 401) {
-      clearAuth()
-      if (window.location.hash !== '#/login') {
-        window.location.hash = '#/login'
-      }
-    }
-    let message = data?.message || `请求失败 (${res.status})`
-    if (data?.detail) {
-      if (typeof data.detail === 'string') {
-        message = data.detail
-      } else if (Array.isArray(data.detail)) {
-        message = data.detail.map((err: any) => `${err.loc.join('.')}: ${err.msg}`).join('; ')
-      } else if (typeof data.detail === 'object') {
-        message = JSON.stringify(data.detail)
-      }
-    }
-    throw new Error(message)
+    await handleResponseError(res)
   }
 
   return data as T
@@ -91,15 +94,7 @@ export async function streamSse(
   })
 
   if (!res.ok) {
-    if (res.status === 401) {
-      clearAuth()
-      if (window.location.hash !== '#/login') {
-        window.location.hash = '#/login'
-      }
-    }
-    const text = await res.text()
-    const data = text ? JSON.parse(text) : null
-    throw new Error(data?.detail || data?.message || `请求失败 (${res.status})`)
+    await handleResponseError(res)
   }
 
   if (!res.body) return

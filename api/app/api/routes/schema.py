@@ -3,7 +3,7 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_owned_datasource_or_404
 from app.core.database import engine, get_session
 from app.models.datasource import DataSource
 from app.models.knowledge import KnowledgeSyncTask
@@ -39,48 +39,36 @@ def _is_pending_task(task: KnowledgeSyncTask) -> bool:
 
 @router.post("/sync/{datasource_id}")
 def sync_schema(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        return {"success": False, "message": "DataSource not found"}
+    ds = get_owned_datasource_or_404(session, datasource_id, current_user)
     return schema_service.sync_schema_for_datasource(session, ds)
 
 
 @router.post("/routines/sync/{datasource_id}")
 def sync_routines(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        return {"success": False, "message": "DataSource not found"}
+    ds = get_owned_datasource_or_404(session, datasource_id, current_user)
     return routine_service.sync_routines_for_datasource(session, ds)
 
 
 @router.post("/views/sync/{datasource_id}")
 def sync_views(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        return {"success": False, "message": "DataSource not found"}
+    ds = get_owned_datasource_or_404(session, datasource_id, current_user)
     return view_service.sync_views_for_datasource(session, ds)
 
 
 @router.get("/routines/{datasource_id}", response_model=list[RoutineDefinition])
 def read_routines(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, datasource_id, current_user)
     return routine_service.get_routines(session, datasource_id)
 
 
 @router.get("/views/{datasource_id}", response_model=list[ViewDefinition])
 def read_views(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, datasource_id, current_user)
     return view_service.get_views(session, datasource_id)
 
 @router.get("/tables/{datasource_id}", response_model=list[SchemaTable])
 def read_tables(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, datasource_id, current_user)
     return schema_service.get_tables(session, datasource_id)
 
 @router.patch("/tables/{table_id}/remark", response_model=SchemaTable)
@@ -88,9 +76,7 @@ def update_table_remark(table_id: int, remark_data: RemarkUpdate, session: Sessi
     table = session.get(SchemaTable, table_id)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
-    ds = session.get(DataSource, table.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, table.datasource_id, current_user)
     return schema_service.update_table_remark(session, table_id, remark_data.remark)
 
 @router.patch("/tables/{table_id}/related-tables", response_model=SchemaTable)
@@ -98,9 +84,7 @@ def update_table_related_tables(table_id: int, data: RelatedTablesUpdate, sessio
     table = session.get(SchemaTable, table_id)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
-    ds = session.get(DataSource, table.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, table.datasource_id, current_user)
     return schema_service.update_table_related_tables(session, table_id, data.related_tables)
 
 @router.get("/fields/{table_id}", response_model=list[SchemaField])
@@ -108,9 +92,7 @@ def read_fields(table_id: int, session: Session = Depends(get_session), current_
     table = session.get(SchemaTable, table_id)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
-    ds = session.get(DataSource, table.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, table.datasource_id, current_user)
     return schema_service.get_fields(session, table_id)
 
 @router.patch("/fields/{field_id}/remark", response_model=SchemaField)
@@ -121,9 +103,7 @@ def update_field_remark(field_id: int, remark_data: RemarkUpdate, session: Sessi
     table = session.get(SchemaTable, field.table_id)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
-    ds = session.get(DataSource, table.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, table.datasource_id, current_user)
     return schema_service.update_field_remark(session, field_id, remark_data.remark)
 
 
@@ -137,23 +117,16 @@ def start_knowledge_sync(
     """启动数据源级后台知识库同步任务。"""
     from app.models.knowledge import KnowledgeSyncScope
 
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, datasource_id, current_user)
 
-    try:
-        mode = knowledge_service.validate_sync_mode(request_data.mode)
-        task = knowledge_service.create_knowledge_sync_task(
-            session, 
-            datasource_id, 
-            scope=KnowledgeSyncScope.DATASOURCE,
-            mode=mode,
-            is_incremental=request_data.is_incremental
-        )
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    mode = knowledge_service.validate_sync_mode(request_data.mode)
+    task = knowledge_service.create_knowledge_sync_task(
+        session, 
+        datasource_id, 
+        scope=KnowledgeSyncScope.DATASOURCE,
+        mode=mode,
+        is_incremental=request_data.is_incremental
+    )
 
     if _is_pending_task(task):
         threading.Thread(
@@ -178,21 +151,16 @@ def start_table_knowledge_sync(
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
     
-    ds = session.get(DataSource, table.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, table.datasource_id, current_user)
         
-    try:
-        mode = knowledge_service.validate_sync_mode(request_data.mode)
-        task = knowledge_service.create_knowledge_sync_task(
-            session, 
-            table.datasource_id, 
-            scope=KnowledgeSyncScope.TABLE,
-            mode=mode,
-            target_table_id=table_id
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    mode = knowledge_service.validate_sync_mode(request_data.mode)
+    task = knowledge_service.create_knowledge_sync_task(
+        session, 
+        table.datasource_id, 
+        scope=KnowledgeSyncScope.TABLE,
+        mode=mode,
+        target_table_id=table_id
+    )
 
     if _is_pending_task(task):
         threading.Thread(
@@ -209,9 +177,7 @@ def stream_knowledge_task_events(task_id: int, session: Session = Depends(get_se
     task = session.get(KnowledgeSyncTask, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    ds = session.get(DataSource, task.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, task.datasource_id, current_user)
 
     return StreamingResponse(
         knowledge_service.stream_knowledge_task_events(engine, task_id),
@@ -229,9 +195,7 @@ def read_knowledge_task(task_id: int, session: Session = Depends(get_session), c
     task = session.get(KnowledgeSyncTask, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    ds = session.get(DataSource, task.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, task.datasource_id, current_user)
     return task
 
 
@@ -240,9 +204,7 @@ def stop_knowledge_task(task_id: int, session: Session = Depends(get_session), c
     task = session.get(KnowledgeSyncTask, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    ds = session.get(DataSource, task.datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    get_owned_datasource_or_404(session, task.datasource_id, current_user)
     
     success = knowledge_service.stop_knowledge_sync_task(engine, task_id)
     return {"success": success}
@@ -250,9 +212,7 @@ def stop_knowledge_task(task_id: int, session: Session = Depends(get_session), c
 
 @router.get("/knowledge/status/{datasource_id}", response_model=KnowledgeTaskStatusResponse)
 def read_latest_knowledge_task(datasource_id: int, session: Session = Depends(get_session), current_user = Depends(get_current_user)):
-    ds = session.get(DataSource, datasource_id)
-    if not ds or ds.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
+    ds = get_owned_datasource_or_404(session, datasource_id, current_user)
     task = knowledge_service.get_latest_knowledge_sync_task(session, datasource_id)
     latest_ds_task = knowledge_service.get_latest_knowledge_sync_task(
         session, datasource_id, scope="datasource"

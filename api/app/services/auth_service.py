@@ -31,18 +31,21 @@ def ensure_default_admin_user(session: Session) -> AppUser:
     return user
 
 
-def authenticate_user(session: Session, account: str, password: str) -> AppUser | None:
+def authenticate_user(session: Session, account: str, password: str) -> tuple[AppUser | None, str | None]:
     user = session.exec(select(AppUser).where(AppUser.account == account)).first()
-    if not user or not user.is_active:
-        return None
+    if not user:
+        return None, "账号或密码错误"
+    if not user.is_active:
+        return user, "用户已禁用"
     if not verify_password(password, user.password_salt, user.password_hash):
-        return None
+        return user, "账号或密码错误"
+    
     user.last_login_at = datetime.now()
     user.updated_at = datetime.now()
     session.add(user)
     session.commit()
     session.refresh(user)
-    return user
+    return user, None
 
 
 def record_login_log(

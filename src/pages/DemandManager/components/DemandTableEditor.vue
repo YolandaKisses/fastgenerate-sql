@@ -31,7 +31,7 @@ const relatedTableOptions = computed(() => {
   return props.schemaTables
     .filter((item) => item.name.trim())
     .map((item) => ({
-      label: `${item.name}${item.original_comment ? ` (${item.original_comment})` : ""}`,
+      label: `${item.name}${item.originalComment ? ` (${item.originalComment})` : ""}`,
       value: item.name,
     }));
 });
@@ -141,18 +141,18 @@ const relatedTableOptions = computed(() => {
                     </td>
                     <td>
                       <n-input
-                        :value="field.original_comment"
+                        :value="field.originalComment"
                         size="small"
                         placeholder="来源定义"
-                        @update:value="emit('update-field', field.id, 'original_comment', $event)"
+                        @update:value="emit('update-field', field.id, 'originalComment', $event)"
                       />
                     </td>
                     <td>
                       <n-input
-                        :value="field.supplementary_comment"
+                        :value="field.supplementaryComment"
                         size="small"
                         placeholder="详细业务逻辑说明"
-                        @update:value="emit('update-field', field.id, 'supplementary_comment', $event)"
+                        @update:value="emit('update-field', field.id, 'supplementaryComment', $event)"
                       />
                     </td>
                     <td class="action-cell">
@@ -198,7 +198,7 @@ const relatedTableOptions = computed(() => {
                   <div class="card-head">
                     <span class="table-tag">{{ key }}</span>
                     <span class="table-comment">
-                      {{ schemaTables.find((i) => i.name === key)?.original_comment || "暂无备注" }}
+                      {{ schemaTables.find((i) => i.name === key)?.originalComment || "暂无备注" }}
                     </span>
                   </div>
                   <n-input

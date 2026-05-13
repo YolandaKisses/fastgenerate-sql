@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
-import { isAuthenticated } from './services/auth'
+import { authGuard } from './services/authGuard'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -43,16 +43,4 @@ export const router = createRouter({
   routes
 })
 
-router.beforeEach((to) => {
-  const authed = isAuthenticated()
-  if (to.path === '/login' && authed) {
-    return '/data-sources'
-  }
-  if (to.meta.requiresAuth && !authed) {
-    return {
-      path: '/login',
-      query: { redirect: to.fullPath }
-    }
-  }
-  return true
-})
+router.beforeEach(authGuard)

@@ -2,10 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_owned_datasource_or_404
 from app.core.config import settings
 from app.core.database import get_session
-from app.models.datasource import DataSource
 from app.services import demand_service, setting_service
 
 router = APIRouter(prefix="/demand", tags=["demand"], dependencies=[Depends(get_current_user)])
@@ -95,15 +94,6 @@ class DemandDocumentDeleteRequest(BaseModel):
 DemandCategoryNode.model_rebuild()
 
 
-def get_owned_datasource_or_404(
-    session: Session,
-    datasource_id: int,
-    current_user,
-) -> DataSource:
-    datasource = session.get(DataSource, datasource_id)
-    if not datasource or datasource.user_id != current_user.user_id:
-        raise HTTPException(status_code=404, detail="DataSource not found")
-    return datasource
 
 
 @router.get("/categories/{datasource_id}", response_model=DemandCategoryTreeResponse)
@@ -125,15 +115,12 @@ def create_demand_category(
         current_user,
     )
     wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
-    try:
-        return demand_service.create_demand_category(
-            wiki_root=wiki_root,
-            datasource_name=datasource.name,
-            name=payload.name,
-            parent_path=payload.parent_path,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return demand_service.create_demand_category(
+        wiki_root=wiki_root,
+        datasource_name=datasource.name,
+        name=payload.name,
+        parent_path=payload.parent_path,
+    )
 
 
 @router.patch("/categories", response_model=DemandCategoryNode)
@@ -148,15 +135,12 @@ def rename_demand_category(
         current_user,
     )
     wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
-    try:
-        return demand_service.rename_demand_category(
-            wiki_root=wiki_root,
-            datasource_name=datasource.name,
-            path=payload.path,
-            new_name=payload.new_name,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return demand_service.rename_demand_category(
+        wiki_root=wiki_root,
+        datasource_name=datasource.name,
+        path=payload.path,
+        new_name=payload.new_name,
+    )
 
 
 @router.delete("/categories")
@@ -171,14 +155,11 @@ def delete_demand_category(
         current_user,
     )
     wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
-    try:
-        demand_service.delete_demand_category(
-            wiki_root=wiki_root,
-            datasource_name=datasource.name,
-            path=payload.path,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    demand_service.delete_demand_category(
+        wiki_root=wiki_root,
+        datasource_name=datasource.name,
+        path=payload.path,
+    )
     return {"success": True}
 
 
@@ -195,19 +176,16 @@ def create_demand_document(
     )
 
     wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
-    try:
-        return demand_service.save_demand_document(
-            wiki_root=wiki_root,
-            datasource_name=datasource.name,
-            demand_name=payload.demand_name,
-            table_name=payload.table_name,
-            table_comment=payload.table_comment,
-            original_saved_path=payload.original_saved_path,
-            related_tables=[item.model_dump() for item in payload.related_tables],
-            fields=[field.model_dump() for field in payload.fields],
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return demand_service.save_demand_document(
+        wiki_root=wiki_root,
+        datasource_name=datasource.name,
+        demand_name=payload.demand_name,
+        table_name=payload.table_name,
+        table_comment=payload.table_comment,
+        original_saved_path=payload.original_saved_path,
+        related_tables=[item.model_dump() for item in payload.related_tables],
+        fields=[field.model_dump() for field in payload.fields],
+    )
 
 
 @router.delete("/documents")
@@ -220,13 +198,10 @@ def delete_demand_document(
     wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
     if not payload.saved_path.startswith(f"{datasource.name}/"):
         raise HTTPException(status_code=400, detail="文档路径与当前数据源不匹配")
-    try:
-        demand_service.delete_demand_document(
-            wiki_root=wiki_root,
-            saved_path=payload.saved_path,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    demand_service.delete_demand_document(
+        wiki_root=wiki_root,
+        saved_path=payload.saved_path,
+    )
     return {"success": True}
 
 
@@ -239,11 +214,8 @@ def read_demand_documents(
 ):
     datasource = get_owned_datasource_or_404(session, datasource_id, current_user)
     wiki_root = setting_service.get_setting(session, "wiki_root", settings.WIKI_ROOT)
-    try:
-        return demand_service.list_demand_documents(
-            wiki_root=wiki_root,
-            datasource_name=datasource.name,
-            demand_name=demand_name,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return demand_service.list_demand_documents(
+        wiki_root=wiki_root,
+        datasource_name=datasource.name,
+        demand_name=demand_name,
+    )
