@@ -130,7 +130,7 @@ const handleDelete = async (id: number | null) => {
         <div>
           <h1 class="page-title">数据源配置</h1>
           <p class="page-subtitle">
-            配置您的数据库连接。连接测试通过后即可进入工作台问答流程。
+            配置您的数据库连接。连接测试通过后即可进行元数据同步和知识库生成。
           </p>
         </div>
       </div>

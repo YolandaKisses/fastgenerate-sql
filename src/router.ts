@@ -17,11 +17,6 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
-    path: '/workbench',
-    component: () => import('./pages/Workbench/index.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
     path: '/data-sources',
     component: () => import('./pages/DataSources/index.vue'),
     meta: { requiresAuth: true }

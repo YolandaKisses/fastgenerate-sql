@@ -1,6 +1,6 @@
 # FastGenerate SQL
 
-FastGenerate SQL 是一个本地运行的 SQL 工作台项目，前端使用 Vue/Vite，后端使用 FastAPI。
+FastGenerate SQL 是一个本地运行的数据库元数据管理与知识库生成项目，前端使用 Vue/Vite，后端使用 FastAPI。
 
 ## 本地数据库
 

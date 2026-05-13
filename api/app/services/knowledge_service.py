@@ -22,7 +22,7 @@ from app.models.knowledge import (
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaField, SchemaTable
 from app.models.view import ViewDefinition, ViewSqlFact
-from app.services.hermes_service import run_deepseek_json
+from app.services.deepseek_service import run_deepseek_json
 from app.services import setting_service
 from app.services.path_utils import sanitize_path_segment
 from app.services.routine_lineage_service import normalize_table_name
@@ -1859,13 +1859,6 @@ def run_knowledge_sync_task(engine, task_id: int) -> None:
             session.add(task)
             session.add(datasource)
             session.commit()
-            if task.status == KnowledgeSyncTaskStatus.COMPLETED:
-                try:
-                    from app.services.rag import retriever
-
-                    retriever.rebuild_index(output_root)
-                except Exception:
-                    logger.exception("failed to rebuild rag index after knowledge sync")
             _notify_task_updated(task.id)
 
         except Exception as exc:

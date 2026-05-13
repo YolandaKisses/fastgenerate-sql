@@ -7,9 +7,8 @@ import {
   LayersOutline,
   SettingsOutline,
   LogOutOutline,
-  BookOutline,
   ClipboardOutline,
-  ChatbubblesOutline,
+  BookOutline,
 } from "@vicons/ionicons5";
 import appLogo from "../../assets/fastgenerate-sql-logo.png";
 import { clearAuth, getCurrentUser } from "../../services/auth";
@@ -26,11 +25,6 @@ function renderIcon(icon: Component) {
 }
 
 const menuOptions = [
-  {
-    label: "SQL 工作台",
-    key: "/workbench",
-    icon: renderIcon(ChatbubblesOutline),
-  },
   {
     label: "Wiki目录",
     key: "/wiki",

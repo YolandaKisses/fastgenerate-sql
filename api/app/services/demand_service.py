@@ -112,12 +112,6 @@ def rename_demand_category(
     if new_dir.exists():
         raise ValueError("目标需求分类已存在")
     target_dir.rename(new_dir)
-    try:
-        from app.services.rag import retriever
-
-        retriever.rebuild_index(wiki_root)
-    except Exception:
-        pass
     return _build_category_node(new_dir, demand_root)
 
 
@@ -134,12 +128,6 @@ def delete_demand_category(
     if not target_dir.exists() or not target_dir.is_dir():
         raise ValueError("需求分类不存在")
     shutil.rmtree(target_dir)
-    try:
-        from app.services.rag import retriever
-
-        retriever.rebuild_index(wiki_root)
-    except Exception:
-        pass
 
 
 def _normalize_field(field: dict[str, Any]) -> dict[str, str]:
@@ -338,15 +326,6 @@ def save_demand_document(
 
     absolute_path.write_text(content, encoding="utf-8")
 
-    try:
-        from app.services.rag import retriever
-
-        if old_relative_path and old_relative_path != relative_path.as_posix():
-            retriever.remove_deleted_file(root, old_relative_path)
-        retriever.index_single_file(root, relative_path)
-    except Exception:
-        pass
-
     return {
         "relative_path": relative_path.as_posix(),
         "absolute_path": str(absolute_path),
@@ -366,9 +345,3 @@ def delete_demand_document(
     if not target.exists() or not target.is_file():
         raise ValueError("需求文档不存在")
     target.unlink()
-    try:
-        from app.services.rag import retriever
-
-        retriever.remove_deleted_file(root, saved_path)
-    except Exception:
-        pass

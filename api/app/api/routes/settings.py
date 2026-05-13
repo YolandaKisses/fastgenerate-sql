@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 from app.api.deps import get_current_user
 from app.core.database import get_session
-from app.models.setting import RuntimeSetting, RuntimeSettingUpdate
+from app.models.setting import RuntimeSettingUpdate
 from app.services import setting_service
 from app.core.config import settings as env_settings
 
@@ -26,7 +26,10 @@ def get_all_settings(session: Session = Depends(get_session)):
 
 @router.post("/{key}")
 def update_setting(key: str, req: RuntimeSettingUpdate, session: Session = Depends(get_session)):
-    allowed_keys = ["hermes_cli_path", "wiki_root"]
+    allowed_keys = [
+        "hermes_cli_path",
+        "wiki_root",
+    ]
     if key not in allowed_keys:
         raise HTTPException(status_code=400, detail="不支持的配置键")
     return setting_service.set_setting(session, key, req.value)
@@ -38,7 +41,7 @@ def test_hermes(session: Session = Depends(get_session)):
         return {"status": "error", "message": f"可执行文件不存在: {cli_path}"}
     if not os.access(cli_path, os.X_OK):
         return {"status": "error", "message": f"文件没有执行权限: {cli_path}"}
-    
+
     try:
         result = subprocess.run([cli_path, "--version"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:

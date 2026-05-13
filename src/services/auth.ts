@@ -14,7 +14,6 @@ type LoginResponse = {
 
 const TOKEN_KEY = 'fg_sql_token'
 const USER_KEY = 'fg_sql_user'
-const WORKBENCH_STATE_KEY = 'workbench_state'
 const LAST_DATASOURCE_KEY = 'fastgenerate_last_datasource_id'
 const AUTH_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1'
 
@@ -24,11 +23,6 @@ const buildUrl = (path: string) => {
 }
 
 export function setAuthSession(token: string, user: CurrentUser) {
-  const previousUser = getCurrentUser()
-  if (previousUser && previousUser.user_id !== user.user_id) {
-    clearWorkbenchSessionState(previousUser)
-  }
-  sessionStorage.removeItem(WORKBENCH_STATE_KEY)
   localStorage.setItem(TOKEN_KEY, token)
   localStorage.setItem(USER_KEY, JSON.stringify(user))
 }
@@ -47,21 +41,7 @@ export function getCurrentUser(): CurrentUser | null {
   }
 }
 
-export function getUserScopedSessionStorageKey(
-  baseKey: string,
-  user: CurrentUser | null = getCurrentUser(),
-) {
-  if (!user?.user_id) return baseKey
-  return `${baseKey}:${user.user_id}`
-}
-
-function clearWorkbenchSessionState(user: CurrentUser | null = getCurrentUser()) {
-  sessionStorage.removeItem(WORKBENCH_STATE_KEY)
-  sessionStorage.removeItem(getUserScopedSessionStorageKey(WORKBENCH_STATE_KEY, user))
-}
-
 export function clearAuth() {
-  clearWorkbenchSessionState()
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
   localStorage.removeItem(LAST_DATASOURCE_KEY)
