@@ -44,7 +44,7 @@ const selectedTable = computed(() => {
 });
 
 const selectedCategoryLabel = computed(() => {
-  if (!demandName.value) return "";
+  if (!demandName.value || demandName.value === demandRootKey.value) return "";
   return demandName.value.split("/").filter(Boolean).join(" / ");
 });
 
@@ -245,8 +245,8 @@ const validateBeforeSave = () => {
   if (!currentSource.value) {
     throw new Error("请先选择数据源");
   }
-  if (!demandName.value?.trim()) {
-    throw new Error("请先选择需求分类");
+  if (!demandName.value?.trim() || demandName.value === demandRootKey.value) {
+    throw new Error("请先选择具体的需求分类（根目录不可直接保存）");
   }
   if (!selectedTable.value) {
     throw new Error("请先新建一个表");
@@ -459,7 +459,7 @@ onMounted(() => {
       <div class="editor">
         <DemandTableEditor
           :table="selectedTable"
-          :demand-name="selectedCategoryLabel || 'demand'"
+          :demand-name="selectedCategoryLabel"
           :schema-tables="schemaTables"
           :saving="saving"
           @update-table-name="updateSelectedTableName"

@@ -2816,8 +2816,9 @@ def build_note_properties(
         tags.insert(0, "db-table")
     note_properties["tags"] = tags
 
+    user_related_names, _ = _parse_related_table_config(table)
     related = []
-    for item in note_properties.get("related", []):
+    for item in sorted(user_related_names):
         normalized = _normalize_related_name(str(item))
         if normalized and normalized not in related:
             related.append(normalized)

@@ -69,7 +69,7 @@ const relatedTableOptions = computed(() => {
             <span class="meta-label">归属分类</span>
             <div class="meta-value">
               <n-icon :component="FolderOutline" />
-              <span class="text">{{ demandName || "未分类" }}</span>
+              <span class="text">{{ demandName || "未选择需求目录" }}</span>
             </div>
           </div>
           <div class="divider"></div>

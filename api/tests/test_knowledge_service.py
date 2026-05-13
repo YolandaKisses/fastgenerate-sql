@@ -11,6 +11,7 @@ from app.models.view import ViewDefinition, ViewSqlFact
 from app.services import knowledge_service
 from sqlmodel import SQLModel, Session, create_engine, select
 from pathlib import Path
+from datetime import datetime
 
 
 def test_format_bullet_section_splits_numbered_text():
@@ -71,6 +72,45 @@ def test_generate_table_summary_retries_on_non_json_hermes_output(monkeypatch):
     assert calls["count"] == 2
     assert setting_calls["count"] == 1
     assert result["purpose"] == "用途"
+
+
+def test_build_note_properties_related_only_keeps_manual_and_graph_links():
+    datasource = DataSource(
+        id=1,
+        name="demo",
+        db_type="mysql",
+        host="localhost",
+        port=3306,
+        database="demo",
+        username="root",
+        password="secret",
+    )
+    table = SchemaTable(
+        id=1,
+        datasource_id=1,
+        name="acco",
+        related_tables='{"accorequest":"人工确认关系","accountinfo_zs":"人工补充"}',
+    )
+    summary = {
+        "purpose": "账户表",
+        "note_properties": {
+            "summary": "账户信息",
+            "related": ["agh_vjk_wbfk_zyqxx", "accorequest", "cr_export_config"],
+        },
+        "graph_links": [
+            {"target_table": "accorequest", "relation_type": "一对多"},
+            {"target_table": "customer", "relation_type": "关联"},
+        ],
+    }
+
+    note_properties = knowledge_service.build_note_properties(
+        datasource=datasource,
+        table=table,
+        summary=summary,
+        generated_at=datetime(2026, 5, 13),
+    )
+
+    assert note_properties["related"] == ["accorequest", "accountinfo_zs", "customer"]
 
 
 def test_finalize_failed_knowledge_task_preserves_detailed_error():
