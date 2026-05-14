@@ -113,6 +113,103 @@ def test_build_note_properties_related_only_keeps_manual_and_graph_links():
     assert note_properties["related"] == ["accorequest", "accountinfo_zs", "customer"]
 
 
+def test_build_knowledge_graph_includes_manual_related_edges():
+    all_tables = [
+        SchemaTable(id=1, datasource_id=1, name="acco", related_tables='{"accorequest":"账户申请确认关系","accountinfo_zs":""}'),
+        SchemaTable(id=2, datasource_id=1, name="accorequest"),
+        SchemaTable(id=3, datasource_id=1, name="accountinfo_zs"),
+    ]
+
+    graph = knowledge_service.build_knowledge_graph(
+        output_dir="/tmp/demo",
+        all_tables=all_tables,
+        view_map={},
+        routine_map={},
+        term_names=set(),
+        table_summary_map={"acco": {"graph_links": []}},
+    )
+
+    assert {
+        "source": "acco",
+        "target": "accorequest",
+        "relation": "manual_related",
+        "source_type": "table",
+        "confidence": "high",
+        "reason": "来自人工维护关系",
+        "join_hint": "账户申请确认关系",
+    } in graph["edges"]
+    assert {
+        "source": "acco",
+        "target": "accountinfo_zs",
+        "relation": "manual_related",
+        "source_type": "table",
+        "confidence": "high",
+        "reason": "来自人工维护关系",
+        "join_hint": "",
+    } in graph["edges"]
+
+
+def test_build_knowledge_graph_normalizes_ai_targets_and_skips_unknown_nodes():
+    all_tables = [
+        SchemaTable(id=1, datasource_id=1, name="cr_export_config"),
+        SchemaTable(id=2, datasource_id=1, name="cr_export_fund"),
+        SchemaTable(id=3, datasource_id=1, name="cr_template_info"),
+    ]
+
+    graph = knowledge_service.build_knowledge_graph(
+        output_dir="/tmp/demo",
+        all_tables=all_tables,
+        view_map={},
+        routine_map={},
+        term_names=set(),
+        table_summary_map={
+            "cr_export_config": {
+                "graph_links": [
+                    {"target_table": "CR_EXPORT_FUND", "relation_type": "一对多"},
+                    {"target_table": "CR_TEMPLATE_INFO", "relation_type": "多对一"},
+                    {"target_table": "内部科目对照表", "relation_type": "引用"},
+                ]
+            }
+        },
+    )
+
+    assert {
+        "source": "cr_export_config",
+        "target": "cr_export_fund",
+        "relation": "一对多",
+        "source_type": "table",
+        "confidence": "medium",
+        "reason": "来自 AI 摘要推断",
+        "join_hint": "",
+    } in graph["edges"]
+    assert {
+        "source": "cr_export_config",
+        "target": "cr_template_info",
+        "relation": "多对一",
+        "source_type": "table",
+        "confidence": "medium",
+        "reason": "来自 AI 摘要推断",
+        "join_hint": "",
+    } in graph["edges"]
+    assert not any(edge["target"] == "内部科目对照表" for edge in graph["edges"])
+
+
+def test_render_knowledge_graph_html_uses_pinned_force_graph_bundle():
+    html = knowledge_service.render_knowledge_graph_html()
+
+    assert '<script src="https://unpkg.com/force-graph@1.49.3/dist/force-graph.min.js"></script>' in html
+    assert '<script src="https://unpkg.com/force-graph"></script>' not in html
+
+
+def test_render_knowledge_graph_html_prefers_in_app_navigation_with_fallback():
+    html = knowledge_service.render_knowledge_graph_html()
+
+    assert 'window.parent && window.parent !== window' in html
+    assert "window.parent.postMessage({ type: 'wiki-navigate', path: node.path }, '*');" in html
+    assert "window.location.href = './' + node.path;" in html
+    assert "window.open('./' + node.path, '_blank');" not in html
+
+
 def test_finalize_failed_knowledge_task_preserves_detailed_error():
     task = KnowledgeSyncTask(
         datasource_id=1,

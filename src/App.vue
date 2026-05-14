@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NDialogProvider, NLayout, NMessageProvider } from 'naive-ui'
+import { NDialogProvider, NMessageProvider } from 'naive-ui'
 import { RouterView, useRoute } from 'vue-router'
 import { computed } from 'vue'
 import AppHeader from './components/layout/AppHeader.vue'
@@ -22,13 +22,25 @@ const isLoginPage = computed(() => route.path === '/login')
         
         <main class="main-content">
           <div class="page-container">
-            <router-view v-slot="{ Component }">
-              <transition name="fade" mode="out-in" appear>
-                <div class="route-wrapper">
-                  <component :is="Component" />
-                </div>
-              </transition>
-            </router-view>
+            <div class="route-wrapper">
+              <router-view v-slot="{ Component, route: currentRoute }">
+                <transition name="fade" mode="out-in" appear>
+                  <template v-if="currentRoute.meta.keepAlive">
+                    <keep-alive>
+                      <component
+                        :is="Component"
+                        :key="currentRoute.path"
+                      />
+                    </keep-alive>
+                  </template>
+                  <component
+                    :is="Component"
+                    v-else
+                    :key="currentRoute.fullPath"
+                  />
+                </transition>
+              </router-view>
+            </div>
           </div>
         </main>
       </div>
