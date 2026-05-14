@@ -1,7 +1,17 @@
+from datetime import datetime
+
 from sqlmodel import Session, select
-from app.models.datasource import DataSource, DataSourceCreate, DataSourceUpdate, DataSourceStatus
+from app.models.datasource import (
+    DataSource,
+    DataSourceCreate,
+    DataSourceStatus,
+    DataSourceUpdate,
+    SourceMode,
+    SourceStatus,
+)
 from app.models.routine import RoutineDefinition, RoutineSqlFact
 from app.models.schema import SchemaTable, SchemaField
+from app.models.sql_import import SqlImportBatch, SqlImportFile
 from app.models.view import ViewDefinition, ViewSqlFact
 from app.core.security import (
     decrypt_datasource_password,
@@ -13,9 +23,24 @@ import sqlalchemy
 from urllib.parse import quote_plus
 
 CONNECTION_FIELDS = {"db_type", "host", "port", "database", "username", "password"}
+CONNECTION_REQUIRED_FIELDS = ("host", "port", "database", "username", "password")
+SQL_FILE_PLACEHOLDERS = {
+    "host": "",
+    "port": 0,
+    "database": "",
+    "username": "",
+    "password": "",
+}
 
 
 def build_database_url(ds: DataSource) -> str:
+    missing = [
+        field_name
+        for field_name in CONNECTION_REQUIRED_FIELDS
+        if not getattr(ds, field_name, None)
+    ]
+    if missing:
+        raise ValueError(f"连接型数据源缺少必要字段: {', '.join(missing)}")
     username = quote_plus(ds.username)
     password = quote_plus(decrypt_datasource_password(ds.password))
     if ds.db_type == "postgresql":
@@ -44,11 +69,54 @@ def build_connect_args(ds: DataSource, timeout_seconds: int) -> dict:
     return {}
 
 
-def create_datasource(session: Session, ds_in: DataSourceCreate, user_id: str) -> DataSource:
+def validate_datasource_payload(ds_in: DataSourceCreate | DataSourceUpdate, *, existing: DataSource | None = None) -> None:
+    source_mode = getattr(ds_in, "source_mode", None) or getattr(existing, "source_mode", SourceMode.CONNECTION)
+    if source_mode == SourceMode.SQL_FILE:
+        if not getattr(ds_in, "name", None) and existing is None:
+            raise HTTPException(status_code=400, detail="SQL 文件模式必须填写数据源名称")
+        if not getattr(ds_in, "db_type", None) and existing is None:
+            raise HTTPException(status_code=400, detail="SQL 文件模式必须选择数据库类型")
+        return
+
+    missing = []
+    for field_name in CONNECTION_REQUIRED_FIELDS:
+        incoming = getattr(ds_in, field_name, None)
+        if incoming is None and existing is not None:
+            incoming = getattr(existing, field_name, None)
+        if incoming in (None, ""):
+            missing.append(field_name)
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"连接型数据源缺少必要字段: {', '.join(missing)}",
+        )
+
+
+def normalize_sql_file_fields(ds_data: dict) -> dict:
+    normalized = dict(ds_data)
+    for key, value in SQL_FILE_PLACEHOLDERS.items():
+        normalized[key] = value
+    return normalized
+
+
+def create_datasource(session: Session, ds_in: DataSourceCreate, user_id: str = "system") -> DataSource:
+    validate_datasource_payload(ds_in)
     ds_data = ds_in.model_dump()
     ds_data["user_id"] = user_id
+    if ds_data.get("source_mode") == SourceMode.SQL_FILE:
+        ds_data = normalize_sql_file_fields(ds_data)
     ds = DataSource.model_validate(ds_data)
-    ds.password = encrypt_datasource_password(ds.password)
+    if ds.source_mode == SourceMode.SQL_FILE:
+        ds.host = SQL_FILE_PLACEHOLDERS["host"]
+        ds.port = SQL_FILE_PLACEHOLDERS["port"]
+        ds.database = SQL_FILE_PLACEHOLDERS["database"]
+        ds.username = SQL_FILE_PLACEHOLDERS["username"]
+        ds.password = SQL_FILE_PLACEHOLDERS["password"]
+        ds.source_status = SourceStatus.DRAFT
+        ds.status = DataSourceStatus.DRAFT
+    elif ds.password:
+        ds.password = encrypt_datasource_password(ds.password)
     session.add(ds)
     session.commit()
     session.refresh(ds)
@@ -71,11 +139,12 @@ def encrypt_existing_datasource_passwords(session: Session) -> int:
         session.commit()
     return migrated_count
 
-def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate, user_id: str) -> DataSource:
+def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate, user_id: str | None = None) -> DataSource:
     ds = session.get(DataSource, ds_id)
-    if not ds or ds.user_id != user_id:
+    if not ds or (user_id is not None and ds.user_id != user_id):
         raise HTTPException(status_code=404, detail="DataSource not found")
 
+    validate_datasource_payload(ds_in, existing=ds)
     ds_data = ds_in.model_dump(exclude_unset=True)
     if ds_data.get("password") is None:
         ds_data.pop("password", None)
@@ -87,8 +156,16 @@ def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate, use
             touched_connection_fields = True
         setattr(ds, key, next_value)
 
-    if touched_connection_fields and "status" not in ds_data:
+    if ds.source_mode == SourceMode.SQL_FILE:
+        ds.host = SQL_FILE_PLACEHOLDERS["host"]
+        ds.port = SQL_FILE_PLACEHOLDERS["port"]
+        ds.database = SQL_FILE_PLACEHOLDERS["database"]
+        ds.username = SQL_FILE_PLACEHOLDERS["username"]
+        ds.password = SQL_FILE_PLACEHOLDERS["password"]
+    elif touched_connection_fields and "status" not in ds_data:
         ds.status = DataSourceStatus.STALE
+        ds.source_status = SourceStatus.DRAFT
+    ds.updated_at = datetime.now()
 
     session.add(ds)
     session.commit()
@@ -97,6 +174,8 @@ def update_datasource(session: Session, ds_id: int, ds_in: DataSourceUpdate, use
 
 def test_connection(ds: DataSource) -> dict:
     try:
+        if ds.source_mode != SourceMode.CONNECTION:
+            return {"success": False, "reason": "unsupported_mode", "message": "SQL 文件模式不支持测试连接"}
         if not ds.database:
             return {"success": False, "reason": "database_required", "message": "测试连接失败：必须填写数据库名 (Database/Schema)"}
 
@@ -148,6 +227,23 @@ def delete_datasource(session: Session, ds_id: int, user_id: str) -> dict:
     if not ds or ds.user_id != user_id:
         raise HTTPException(status_code=404, detail="DataSource not found")
 
+    clear_datasource_metadata(session, ds_id)
+
+    batches = session.exec(select(SqlImportBatch).where(SqlImportBatch.datasource_id == ds_id)).all()
+    batch_ids = [batch.id for batch in batches if batch.id is not None]
+    if batch_ids:
+        files = session.exec(select(SqlImportFile).where(SqlImportFile.batch_id.in_(batch_ids))).all()
+        for file in files:
+            session.delete(file)
+    for batch in batches:
+        session.delete(batch)
+
+    session.delete(ds)
+    session.commit()
+    return {"success": True}
+
+
+def clear_datasource_metadata(session: Session, ds_id: int) -> None:
     tables = session.exec(select(SchemaTable).where(SchemaTable.datasource_id == ds_id)).all()
     table_ids = [table.id for table in tables if table.id is not None]
     if table_ids:
@@ -170,7 +266,3 @@ def delete_datasource(session: Session, ds_id: int, user_id: str) -> dict:
 
     for table in tables:
         session.delete(table)
-
-    session.delete(ds)
-    session.commit()
-    return {"success": True}

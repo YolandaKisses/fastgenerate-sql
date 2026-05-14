@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, computed } from "vue";
+import { ref, watch, onMounted, computed, type PropType } from "vue";
 import {
   NEmpty,
   NSpin,
@@ -27,7 +27,10 @@ import { get } from "../../../services/request";
 
 const props = defineProps({
   datasourceId: { type: Number, required: true },
-  initialObject: { type: Object, default: null }, // { type: 'table' | 'view' | 'routine', name: string }
+  initialObject: {
+    type: Object as PropType<{ type: string; name: string } | null>,
+    default: null,
+  },
 });
 
 const emit = defineEmits(["select-object"]);

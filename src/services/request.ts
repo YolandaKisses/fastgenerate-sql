@@ -5,7 +5,7 @@ type RequestOptions = Omit<RequestInit, 'body'> & {
   body?: unknown
 }
 
-async function handleResponseError(res: Response) {
+async function handleResponseError(res: Response, text?: string) {
   if (res.status === 401) {
     clearAuth()
     if (window.location.hash !== '#/login') {
@@ -13,8 +13,13 @@ async function handleResponseError(res: Response) {
     }
   }
 
-  const text = await res.text()
-  const data = text ? JSON.parse(text) : null
+  const rawText = text ?? await res.text()
+  let data: any = null
+  try {
+    data = rawText ? JSON.parse(rawText) : null
+  } catch {
+    data = null
+  }
   let message = data?.message || `请求失败 (${res.status})`
 
   if (data?.detail) {
@@ -43,16 +48,25 @@ export async function request<T = any>(path: string, options: RequestOptions = {
   }
 
   if (body !== undefined) {
-    headers.set('Content-Type', headers.get('Content-Type') || 'application/json')
-    init.body = typeof body === 'string' ? body : JSON.stringify(body)
+    if (body instanceof FormData) {
+      init.body = body
+    } else {
+      headers.set('Content-Type', headers.get('Content-Type') || 'application/json')
+      init.body = typeof body === 'string' ? body : JSON.stringify(body)
+    }
   }
 
   const res = await fetch(buildUrl(path), init)
   const text = await res.text()
-  const data = text ? JSON.parse(text) : null
+  let data: any = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    data = null
+  }
 
   if (!res.ok) {
-    await handleResponseError(res)
+    await handleResponseError(res, text)
   }
 
   return data as T

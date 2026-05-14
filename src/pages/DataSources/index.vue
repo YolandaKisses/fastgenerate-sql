@@ -12,6 +12,8 @@ const sources = ref<any[]>([]);
 const createDefaultSource = () => ({
   name: "New_Connection",
   db_type: "oracle",
+  source_mode: "connection",
+  source_status: "draft",
   host: "127.0.0.1",
   port: 1521,
   database: "",
@@ -52,16 +54,41 @@ const handleCreateNew = () => {
   selectedSource.value = createDefaultSource();
 };
 
-const handleSave = async (data: any) => {
+const buildDatasourceFormData = (data: any, files: File[]) => {
+  const formData = new FormData();
+  Object.entries(data).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    formData.append(key, String(value));
+  });
+  files.forEach((file) => formData.append("files", file));
+  return formData;
+};
+
+const handleSave = async ({
+  data,
+  files,
+}: {
+  data: any;
+  files: File[];
+}) => {
   try {
-    const saved = data.id
-      ? await patch(`/datasources/${data.id}`, data)
-      : await post("/datasources/", data);
+    let saved;
+    if (data.id) {
+      saved = await patch(`/datasources/${data.id}`, data);
+      if (data.source_mode === "sql_file" && files.length > 0) {
+        saved = await post(
+          `/datasources/${data.id}/upload-sql`,
+          buildDatasourceFormData({}, files),
+        );
+      }
+    } else if (data.source_mode === "sql_file") {
+      saved = await post("/datasources/", buildDatasourceFormData(data, files));
+    } else {
+      saved = await post("/datasources/", data);
+    }
     message.success("保存成功");
     await fetchSources();
-    if (!data.id) {
-      selectedSource.value = saved;
-    }
+    selectedSource.value = saved;
   } catch (error: any) {
     message.error(`保存失败: ${error.message || "请求失败"}`);
   }
@@ -130,7 +157,7 @@ const handleDelete = async (id: number | null) => {
         <div>
           <h1 class="page-title">数据源配置</h1>
           <p class="page-subtitle">
-            配置您的数据库连接。连接测试通过后即可进行元数据同步和知识库生成。
+            统一管理连接型与 SQL 文件型数据源。连接型用于直连同步，文件型用于上传 SQL 后解析元数据。
           </p>
         </div>
       </div>
@@ -139,7 +166,7 @@ const handleDelete = async (id: number | null) => {
     <div class="ds-container">
       <div class="sider-panel">
         <div class="panel-header">
-          <n-text depth="3" class="panel-tag">连接列表</n-text>
+          <n-text depth="3" class="panel-tag">数据源列表</n-text>
           <n-button
             quaternary
             size="small"
@@ -149,7 +176,7 @@ const handleDelete = async (id: number | null) => {
             <template #icon>
               <n-icon><AddOutline /></n-icon>
             </template>
-            新建连接
+            新建数据源
           </n-button>
         </div>
         <div class="list-wrapper">
@@ -179,25 +206,26 @@ const handleDelete = async (id: number | null) => {
 .page-shell {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 100px);
-  overflow: hidden;
+  min-height: calc(100vh - 100px);
+  overflow: auto;
+  padding-bottom: 12px;
 }
 
 .header-content {
-  margin-bottom: 24px;
+  margin-bottom: 12px;
 }
 
 .page-title {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 28px;
-  margin: 0 0 8px 0;
+  line-height: 24px;
+  margin: 0;
   color: #181c22;
 }
 
 .page-subtitle {
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 12px;
+  line-height: 18px;
   color: #717785;
   margin: 0;
 }
@@ -206,7 +234,8 @@ const handleDelete = async (id: number | null) => {
   display: flex;
   flex: 1;
   min-height: 0;
-  gap: 24px;
+  gap: 20px;
+  align-items: flex-start;
 }
 
 .sider-panel {
@@ -247,12 +276,20 @@ const handleDelete = async (id: number | null) => {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: auto;
 }
 
 .form-card {
   border-radius: 12px;
   border-color: #efeff5;
   box-shadow: none;
-  height: 100%;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.form-card :deep(.n-card__content) {
+  padding: 16px 20px !important;
+  overflow: visible;
 }
 </style>

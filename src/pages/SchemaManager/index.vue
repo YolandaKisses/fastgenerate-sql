@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from "vue";
+import { computed, ref, onMounted, onUnmounted, watch } from "vue";
 import {
   NSelect,
   NButton,
@@ -18,7 +18,6 @@ import {
 import {
   SyncOutline,
   BookOutline,
-  CodeSlashOutline,
   SparklesOutline,
   CloseOutline,
   RefreshOutline,
@@ -34,6 +33,7 @@ import { get, post, streamSse } from "../../services/request";
 const message = useMessage();
 const dialog = useDialog();
 const currentSource = ref<number | null>(null);
+const sourceRecords = ref<any[]>([]);
 const sourceOptions = ref<{ label: string; value: number }[]>([]);
 const tables = ref<any[]>([]);
 const selectedTable = ref<any | null>(null);
@@ -55,6 +55,15 @@ const selectedLineageObject = ref<{ type: string; name: string } | null>(null);
 const bannerDismissed = ref(false);
 const showFailedModal = ref(false);
 const LS_KEY = "fastgenerate_last_datasource_id";
+const currentSourceDetail = computed(
+  () => sourceRecords.value.find((item) => item.id === currentSource.value) || null,
+);
+const currentSourceMode = computed(
+  () => currentSourceDetail.value?.source_mode || "connection",
+);
+const metadataActionLabel = computed(() =>
+  currentSourceMode.value === "sql_file" ? "解析并同步对象" : "同步数据库对象",
+);
 
 // 当前活跃的知识库同步流式请求
 let activeKnowledgeController: AbortController | null = null;
@@ -120,6 +129,7 @@ const parseFailedTableNames = (task: any | null): string[] => {
 const fetchSources = async () => {
   try {
     const data = await get("/datasources/");
+    sourceRecords.value = data;
     sourceOptions.value = data.map((ds: any) => ({
       label: `${ds.name} (${ds.db_type})`,
       value: ds.id,
@@ -310,6 +320,10 @@ const runViewSync = async (sourceId: number) => {
 };
 
 const handleSync = async () => {
+  if (currentSourceMode.value === "sql_file") {
+    await handleMetadataSync();
+    return;
+  }
   if (!currentSource.value || schemaSyncing.value) return;
   const sourceId = currentSource.value;
 
@@ -344,6 +358,33 @@ const handleMetadataSync = async () => {
     return;
   }
   const sourceId = currentSource.value;
+  if (currentSourceMode.value === "sql_file") {
+    dialog.info({
+      title: "解析并同步 SQL 对象",
+      content: "将基于最新上传的 SQL 文件批次重新解析，并全量替换当前数据源下的对象，确定继续吗？",
+      positiveText: "开始解析",
+      negativeText: "取消",
+      onPositiveClick: () => {
+        void (async () => {
+          metadataSyncing.value = true;
+          try {
+            const data = await post(`/datasources/${sourceId}/parse-sql`);
+            await fetchTables(sourceId);
+            await fetchViews(sourceId);
+            await fetchRoutines(sourceId);
+            await fetchLatestKnowledgeTask(sourceId);
+            await fetchSources();
+            message.success(data.message || "SQL 解析并同步完成");
+          } catch (error: any) {
+            message.error(error?.message || "SQL 解析失败");
+          } finally {
+            metadataSyncing.value = false;
+          }
+        })();
+      },
+    });
+    return;
+  }
 
   dialog.info({
     title: "同步数据库对象",
@@ -379,6 +420,7 @@ const handleMetadataSync = async () => {
     },
   });
 };
+
 
 // ---------------------------------------------------------------------------
 // SSE 知识库同步：后端任务后台跑，前端只订阅进度
@@ -831,7 +873,7 @@ const viewLineage = (type: string, name: string) => {
             <template #icon>
               <n-icon><SyncOutline /></n-icon>
             </template>
-            同步数据库对象
+            {{ metadataActionLabel }}
           </n-button>
 
           <!-- <n-tooltip trigger="hover">
@@ -1017,7 +1059,11 @@ const viewLineage = (type: string, name: string) => {
                   </div>
                 </template>
                 <div v-else class="routine-empty-state">
-                  请选择左侧视图查看定义；若列表为空，请先点击上方“同步视图”。
+                  请选择左侧视图查看定义；若列表为空，请先{{
+                    currentSourceMode === "sql_file"
+                      ? "前往“数据源配置”上传 SQL，再回到这里执行“解析并同步对象”"
+                      : "点击上方“同步视图”"
+                  }}。
                 </div>
               </div>
             </div>
@@ -1072,7 +1118,11 @@ const viewLineage = (type: string, name: string) => {
                   }}</pre>
                 </template>
                 <div v-else class="routine-empty-state">
-                  请选择左侧存储过程查看原文；若列表为空，请先点击上方“同步存储过程”。
+                  请选择左侧存储过程查看原文；若列表为空，请先{{
+                    currentSourceMode === "sql_file"
+                      ? "前往“数据源配置”上传 SQL，再回到这里执行“解析并同步对象”"
+                      : "点击上方“同步存储过程”"
+                  }}。
                 </div>
               </div>
             </div>
@@ -1291,7 +1341,7 @@ const viewLineage = (type: string, name: string) => {
 }
 
 .sider-panel {
-  width: 320px;
+  width: 360px;
   display: flex;
   flex-direction: column;
   min-height: 0;

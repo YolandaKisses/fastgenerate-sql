@@ -1,143 +1,253 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import {
+  NAlert,
+  NButton,
   NForm,
   NFormItem,
-  NInput,
-  NSelect,
-  NInputNumber,
-  NButton,
-  NSpace,
-  NText,
-  NRadioGroup,
-  NRadioButton,
-  FormRules,
-  FormInst,
-  NGrid,
   NFormItemGi,
-  NAlert,
+  NGrid,
+  NIcon,
+  NInput,
+  NInputNumber,
+  NRadioButton,
+  NRadioGroup,
+  NSelect,
+  NSpace,
+  NTag,
+  NText,
+  useMessage,
+  type FormInst,
+  type FormRules,
 } from "naive-ui";
 import {
-  ShieldCheckmarkOutline,
   CloudOutline,
-  TrashOutline,
+  DocumentAttachOutline,
   FlaskOutline,
   SaveOutline,
+  ShieldCheckmarkOutline,
+  TrashOutline,
 } from "@vicons/ionicons5";
-import { NIcon } from "naive-ui";
 
 const props = defineProps<{
   sourceData: any | null;
 }>();
 
 const emit = defineEmits(["save", "test", "delete"]);
+const message = useMessage();
 
 const formRef = ref<FormInst | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const selectedFiles = ref<File[]>([]);
 const formModel = ref({
   id: null as number | null,
   name: "",
   db_type: "oracle",
   host: "",
-  port: 3306,
+  port: 1521,
   database: "",
   username: "",
   password: "",
   auth_type: "password",
+  source_mode: "connection",
+  source_status: "draft",
+  source_message: "",
+  source_file_count: 0,
 });
+
+const connectionTypeOptions = [{ label: "Oracle", value: "oracle" }];
+const fileTypeOptions = [{ label: "Oracle DDL / PL/SQL", value: "oracle" }];
 
 watch(
   () => props.sourceData,
   (newVal) => {
+    selectedFiles.value = [];
+    const defaults = {
+      id: null,
+      name: "",
+      db_type: "oracle",
+      host: "",
+      port: 1521,
+      database: "",
+      username: "",
+      password: "",
+      auth_type: "password",
+      source_mode: "connection",
+      source_status: "draft",
+      source_message: "",
+      source_file_count: 0,
+    };
     if (newVal) {
-      // 确保 auth_type 有默认值，同时保留已有状态
       formModel.value = {
-        auth_type: newVal.auth_type || "password",
-        password: "",
+        ...defaults,
         ...newVal,
-      };
-    } else {
-      formModel.value = {
-        id: null,
-        name: "",
-        db_type: "oracle",
-        host: "",
-        port: 3306,
-        database: "",
-        username: "",
         password: "",
-        auth_type: "password",
       };
+      return;
     }
+    formModel.value = defaults;
   },
   { immediate: true },
 );
 
 const rules: FormRules = {
-  name: { required: true, message: "请输入连接名称", trigger: "blur" },
+  name: { required: true, message: "请输入数据源名称", trigger: "blur" },
   db_type: { required: true, message: "请选择数据库类型", trigger: "change" },
-  host: { required: true, message: "请输入主机地址", trigger: "blur" },
-  port: {
-    required: true,
-    type: "number",
-    message: "请输入端口",
-    trigger: "blur",
-  },
-  database: { required: true, message: "请输入数据库名", trigger: "blur" },
-  username: {
-    validator(rule, value) {
-      if (formModel.value.auth_type === "password" && !value)
-        return new Error("请输入用户名");
+  host: {
+    validator() {
+      if (formModel.value.source_mode === "connection" && !formModel.value.host) {
+        return new Error("请输入主机地址");
+      }
       return true;
     },
-    trigger: ["input", "blur"],
+    trigger: ["blur", "input"],
+  },
+  port: {
+    validator() {
+      if (formModel.value.source_mode === "connection" && !formModel.value.port) {
+        return new Error("请输入端口");
+      }
+      return true;
+    },
+    trigger: ["blur", "input"],
+  },
+  database: {
+    validator() {
+      if (
+        formModel.value.source_mode === "connection" &&
+        !formModel.value.database
+      ) {
+        return new Error("请输入数据库名");
+      }
+      return true;
+    },
+    trigger: ["blur", "input"],
+  },
+  username: {
+    validator() {
+      if (
+        formModel.value.source_mode === "connection" &&
+        formModel.value.auth_type === "password" &&
+        !formModel.value.username
+      ) {
+        return new Error("请输入用户名");
+      }
+      return true;
+    },
+    trigger: ["blur", "input"],
   },
   password: {
-    validator(rule, value) {
-      const isExistingSource = Boolean(formModel.value.id);
+    validator() {
       if (
+        formModel.value.source_mode === "connection" &&
         formModel.value.auth_type === "password" &&
-        !isExistingSource &&
-        !value
-      )
+        !formModel.value.id &&
+        !formModel.value.password
+      ) {
         return new Error("请输入密码");
+      }
       return true;
     },
-    trigger: ["input", "blur"],
+    trigger: ["blur", "input"],
   },
 };
 
-const typeOptions = [
-  // { label: "PostgreSQL", value: "postgresql" },
-  // { label: "MySQL", value: "mysql" },
-  { label: "Oracle", value: "oracle" },
-];
+const handlePickFiles = () => {
+  fileInputRef.value?.click();
+};
+
+const handleFileChange = (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  selectedFiles.value = Array.from(input.files || []);
+};
+
+const getModeLabel = (mode: string) =>
+  mode === "sql_file" ? "SQL 文件导入" : "手动连接";
+
+const getSourceStatusLabel = (status: string) => {
+  switch (status) {
+    case "connection_ok":
+      return "连接正常";
+    case "file_uploaded":
+      return "已上传";
+    case "parse_success":
+      return "已解析";
+    case "parse_failed":
+      return "解析失败";
+    case "syncing":
+      return "处理中";
+    case "sync_failed":
+      return "失败";
+    default:
+      return "草稿";
+  }
+};
 
 const handleSave = async () => {
   if (!formRef.value) return;
   try {
     await formRef.value.validate();
-    const payload = { ...formModel.value };
-    if (payload.id && payload.auth_type === "password" && !payload.password) {
-      delete (payload as Partial<typeof payload>).password;
+    if (
+      formModel.value.source_mode === "sql_file" &&
+      !formModel.value.id &&
+      selectedFiles.value.length === 0
+    ) {
+      throw new Error("首次创建 SQL 文件型数据源时，必须上传至少一个 .sql 文件");
     }
-    emit("save", payload);
-  } catch {
-    // Naive UI 已在表单项内展示校验错误。
+
+    // 构造干净的 payload，避免参数污染
+    const {
+      id,
+      name,
+      db_type,
+      source_mode,
+      host,
+      port,
+      database,
+      username,
+      password,
+      auth_type,
+    } = formModel.value;
+
+    const payload: any = { id, name, db_type, source_mode };
+
+    if (source_mode === "connection") {
+      Object.assign(payload, {
+        host,
+        port,
+        database,
+        username,
+        auth_type,
+      });
+      // 只有输入了密码才发送（支持修改时不改密码）
+      if (password) {
+        payload.password = password;
+      }
+    }
+
+    emit("save", {
+      data: payload,
+      files: selectedFiles.value,
+    });
+  } catch (error: any) {
+    if (error?.message) {
+      message.error(error.message);
+    }
   }
 };
 </script>
 
 <template>
   <div v-if="props.sourceData" class="form-container">
-    <!-- 头部操作区 -->
     <div class="form-header">
       <div class="title-group">
-        <n-text class="main-title">{{
-          formModel.name || "新建连接配置"
-        }}</n-text>
-        <n-text depth="3" class="sub-title"
-          >配置数据库连接凭据及访问策略</n-text
-        >
+        <n-text class="main-title">{{ formModel.name || "新建数据源" }}</n-text>
+        <n-space align="center" :size="8">
+          <n-tag size="small" :bordered="false">{{ getModeLabel(formModel.source_mode) }}</n-tag>
+          <n-tag size="small" :bordered="false" type="info">
+            {{ getSourceStatusLabel(formModel.source_status) }}
+          </n-tag>
+        </n-space>
       </div>
       <n-space :size="12">
         <n-button
@@ -151,17 +261,22 @@ const handleSave = async () => {
           </template>
           删除数据源
         </n-button>
-        <n-button secondary @click="emit('test', formModel.id)">
+        <n-button
+          v-if="formModel.source_mode === 'connection'"
+          secondary
+          :disabled="!formModel.id"
+          @click="emit('test', formModel.id)"
+        >
           <template #icon>
             <n-icon><FlaskOutline /></n-icon>
           </template>
           测试连接
         </n-button>
-        <n-button type="primary" @click="handleSave" class="save-btn">
+        <n-button type="primary" @click="handleSave">
           <template #icon>
             <n-icon><SaveOutline /></n-icon>
           </template>
-          保存修改
+          {{ formModel.id ? "保存修改" : formModel.source_mode === "sql_file" ? "创建并上传" : "保存数据源" }}
         </n-button>
       </n-space>
     </div>
@@ -171,29 +286,47 @@ const handleSave = async () => {
       :model="formModel"
       :rules="rules"
       label-placement="top"
-      size="large"
+      size="small"
     >
-      <!-- 基本信息区块 -->
       <div class="section">
         <div class="section-header">
           <n-icon size="20" color="#2080f0"><CloudOutline /></n-icon>
+          <n-text class="section-title">来源模式</n-text>
+        </div>
+        <n-form-item label="选择来源类型">
+          <n-radio-group v-model:value="formModel.source_mode" name="source_mode">
+            <n-radio-button value="connection">手动连接</n-radio-button>
+            <n-radio-button value="sql_file">SQL 文件导入</n-radio-button>
+          </n-radio-group>
+        </n-form-item>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <n-icon size="20" color="#2080f0"><DocumentAttachOutline /></n-icon>
           <n-text class="section-title">基本信息</n-text>
         </div>
 
         <n-grid :cols="2" :x-gap="24">
-          <n-form-item-gi label="连接名称" path="name">
-            <n-input
-              v-model:value="formModel.name"
-              placeholder="例如: Production_DB"
-            />
+          <n-form-item-gi label="数据源名称" path="name">
+            <n-input v-model:value="formModel.name" placeholder="例如：监管 ODS SQL 文件" />
           </n-form-item-gi>
           <n-form-item-gi label="数据库类型" path="db_type">
             <n-select
               v-model:value="formModel.db_type"
-              :options="typeOptions"
+              :options="formModel.source_mode === 'sql_file' ? fileTypeOptions : connectionTypeOptions"
             />
           </n-form-item-gi>
+        </n-grid>
+      </div>
 
+      <div v-if="formModel.source_mode === 'connection'" class="section">
+        <div class="section-header">
+          <n-icon size="20" color="#2080f0"><CloudOutline /></n-icon>
+          <n-text class="section-title">连接信息</n-text>
+        </div>
+
+        <n-grid :cols="2" :x-gap="24">
           <n-form-item-gi label="主机地址 / 端点" path="host" span="2">
             <n-input
               v-model:value="formModel.host"
@@ -201,7 +334,6 @@ const handleSave = async () => {
               placeholder="127.0.0.1"
             />
           </n-form-item-gi>
-
           <n-form-item-gi label="端口" path="port">
             <n-input-number
               v-model:value="formModel.port"
@@ -209,105 +341,147 @@ const handleSave = async () => {
               class="full-width"
             />
           </n-form-item-gi>
-          <n-form-item-gi label="数据库名" path="database">
-            <n-input v-model:value="formModel.database" placeholder="app_db" />
+          <n-form-item-gi label="数据库名 / 服务名" path="database">
+            <n-input v-model:value="formModel.database" placeholder="orclpdb" />
           </n-form-item-gi>
         </n-grid>
       </div>
 
-      <!-- 身份验证区块 -->
-      <div class="section no-border">
+      <div v-if="formModel.source_mode === 'connection'" class="section no-border">
         <div class="section-header">
           <n-icon size="20" color="#2080f0"><ShieldCheckmarkOutline /></n-icon>
           <n-text class="section-title">身份验证</n-text>
         </div>
 
-        <n-form-item label="认证方式" class="auth-toggle">
-          <n-radio-group
-            v-model:value="formModel.auth_type"
-            name="auth_type"
-            size="medium"
-          >
-            <n-radio-button value="password">用户名密码</n-radio-button>
-            <!-- <n-radio-button value="ssh">SSH 通道模式</n-radio-button> -->
-          </n-radio-group>
-        </n-form-item>
 
-        <div class="auth-content">
-          <transition name="fade-slide" mode="out-in">
-            <div v-if="formModel.auth_type === 'password'" key="password">
-              <n-grid :cols="2" :x-gap="24">
-                <n-form-item-gi label="用户名" path="username">
-                  <n-input v-model:value="formModel.username" />
-                </n-form-item-gi>
-                <n-form-item-gi label="密码" path="password">
-                  <n-input
-                    v-model:value="formModel.password"
-                    type="password"
-                    show-password-on="click"
-                  />
-                </n-form-item-gi>
-              </n-grid>
+
+        <n-grid :cols="2" :x-gap="24">
+          <n-form-item-gi label="用户名" path="username">
+            <n-input v-model:value="formModel.username" />
+          </n-form-item-gi>
+          <n-form-item-gi label="密码" path="password">
+            <n-input
+              v-model:value="formModel.password"
+              type="password"
+              show-password-on="click"
+            />
+          </n-form-item-gi>
+        </n-grid>
+      </div>
+
+      <div v-else class="section no-border">
+        <div class="section-header">
+          <n-icon size="20" color="#2080f0"><DocumentAttachOutline /></n-icon>
+          <n-text class="section-title">SQL 文件</n-text>
+        </div>
+
+        <n-alert type="info" :bordered="false" class="file-alert">
+          文件型数据源支持一次上传多个 `.sql` 文件。系统会在元数据管理页按最新批次执行“解析并同步”，并用该批次结果全量替换旧对象。
+        </n-alert>
+
+        <div class="file-panel">
+          <n-space vertical :size="12" style="width: 100%">
+            <n-space align="center" justify="space-between">
+              <div>
+                <div class="file-title">上传 SQL 文件</div>
+                <div class="file-hint">
+                  {{ selectedFiles.length > 0 ? `已选择 ${selectedFiles.length} 个文件` : `当前批次文件数：${formModel.source_file_count || 0}` }}
+                </div>
+              </div>
+              <n-button secondary @click="handlePickFiles">
+                <template #icon>
+                  <n-icon><DocumentAttachOutline /></n-icon>
+                </template>
+                {{ formModel.id ? "选择替换文件" : "选择 SQL 文件" }}
+              </n-button>
+            </n-space>
+
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept=".sql"
+              multiple
+              class="hidden-file-input"
+              @change="handleFileChange"
+            />
+
+            <div v-if="selectedFiles.length > 0" class="file-list">
+              <div v-for="file in selectedFiles" :key="file.name" class="file-item">
+                {{ file.name }}
+              </div>
             </div>
-            <div v-else key="ssh" class="ssh-placeholder">
-              <n-alert title="SSH 通道连接" type="info" :bordered="false">
-                当前已启用 SSH
-                通道模式。系统将直接通过上述基本信息中的主机与端口，利用预设的网关进行隧道连接，无需额外凭据。
-              </n-alert>
-            </div>
-          </transition>
+            <n-text v-else depth="3">
+              {{ formModel.id ? "未选择新的替换文件" : "请至少选择一个 .sql 文件" }}
+            </n-text>
+
+            <n-alert
+              v-if="formModel.source_message"
+              type="default"
+              :bordered="false"
+            >
+              {{ formModel.source_message }}
+            </n-alert>
+          </n-space>
         </div>
       </div>
     </n-form>
   </div>
   <div v-else class="empty-state">
     <div class="empty-content">
-      <n-text depth="3">请在左侧选择或新建一个连接</n-text>
+      <n-text depth="3">请在左侧选择或新建一个数据源</n-text>
     </div>
   </div>
 </template>
 
 <style scoped>
 .form-container {
-  padding: 12px 4px;
+  padding: 12px 16px;
 }
 
 .form-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 32px;
-  padding-bottom: 20px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
   border-bottom: 1px solid #f0f0f5;
 }
 
-.main-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #181c22;
-  display: block;
-  margin-bottom: 4px;
+.title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.sub-title {
-  font-size: 13px;
+.main-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #181c22;
 }
 
 .section {
-  margin-bottom: 40px;
+  margin-bottom: 12px;
 }
 
 .section-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .section-title {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   color: #181c22;
+}
+
+:deep(.n-form-item) {
+  margin-bottom: 12px;
+}
+
+:deep(.n-form-item-label) {
+  padding-bottom: 2px !important;
 }
 
 .mono-input {
@@ -318,43 +492,56 @@ const handleSave = async () => {
   width: 100%;
 }
 
-.auth-toggle {
-  margin-bottom: 24px;
+.file-alert {
+  margin-bottom: 16px;
 }
 
-.auth-content {
-  min-height: 80px;
+.file-panel {
+  border: 1px dashed #d8deee;
+  border-radius: 12px;
+  padding: 16px;
+  background: #fafcff;
 }
 
-.save-btn {
-  padding: 0 24px;
-  font-weight: 500;
+.file-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #181c22;
+}
+
+.file-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #7b8190;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #edf1f8;
+  font-size: 13px;
+  color: #3b4252;
+}
+
+.hidden-file-input {
+  display: none;
 }
 
 .empty-state {
-  display: flex;
   height: 100%;
+  display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .empty-content {
   text-align: center;
-}
-
-/* 动画效果 */
-.fade-slide-enter-active,
-.fade-slide-leave-active {
-  transition: all 0.25s ease;
-}
-
-.fade-slide-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
 }
 </style>

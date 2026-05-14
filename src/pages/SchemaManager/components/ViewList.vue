@@ -62,17 +62,17 @@ const filteredViews = computed(() => {
         >
           <div class="view-item">
             <div class="view-header">
-              <n-text strong class="view-name">{{ view.name }}</n-text>
+              <div class="view-name">{{ view.name }}</div>
               <n-tag size="small" round :bordered="false" type="success">
                 VIEW
               </n-tag>
             </div>
-            <n-space align="center" :size="8" class="view-meta">
+            <div class="view-meta">
               <n-text depth="3" class="view-owner">{{ view.owner }}</n-text>
-            </n-space>
-            <n-text depth="3" class="view-comment">
+            </div>
+            <div class="view-comment">
               {{ view.original_comment || "无视图备注" }}
-            </n-text>
+            </div>
           </div>
         </n-list-item>
       </n-list>
@@ -117,11 +117,13 @@ const filteredViews = computed(() => {
 }
 
 .n-list-item {
-  margin: 4px 0;
+  margin: 6px 0;
   border-radius: 8px !important;
   transition: all 0.2s ease;
-  padding: 14px !important;
+  padding: 14px 16px !important;
   border: 1px solid transparent !important;
+  position: relative;
+  background-color: transparent !important;
 }
 
 .n-list-item:hover {
@@ -130,15 +132,34 @@ const filteredViews = computed(() => {
 }
 
 .selected-item {
-  background-color: #eef0fa !important;
-  border-color: #2080f033 !important;
-  box-shadow: 0 2px 8px rgba(32, 128, 240, 0.08);
+  background-color: #ffffff !important;
+  border: 1px solid #2080f0 !important;
+  box-shadow: 0 4px 12px rgba(32, 128, 240, 0.1);
+  transform: translateY(-1px);
+  z-index: 1;
+}
+
+/* 精细的左侧指示器 */
+.selected-item::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  background-color: #2080f0;
+  border-radius: 2px;
+}
+
+.selected-item .view-item {
+  padding-left: 6px;
 }
 
 .view-item {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  transition: padding 0.2s ease;
 }
 
 .view-header {
@@ -149,17 +170,25 @@ const filteredViews = computed(() => {
 }
 
 .view-name {
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: #262626;
+  line-height: 1.5;
+  word-break: break-all;
+  white-space: normal;
 }
 
 .view-owner,
 .view-comment {
   font-size: 12px;
+  color: #8c8c8c;
 }
 
 .view-comment {
   display: block;
   line-height: 1.4;
+  word-break: break-all;
+  white-space: normal;
 }
 </style>

@@ -16,6 +16,7 @@ import app.models.view
 import app.models.datasource
 import app.models.schema
 import app.models.knowledge
+import app.models.sql_import
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     ensure_compatible_schema()
@@ -58,6 +59,14 @@ def ensure_compatible_schema():
             ds_column_names = {row[1] for row in ds_columns}
             if "auth_type" not in ds_column_names:
                 conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN auth_type VARCHAR DEFAULT 'password'"))
+            if "source_mode" not in ds_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN source_mode VARCHAR DEFAULT 'connection'"))
+            if "source_status" not in ds_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN source_status VARCHAR DEFAULT 'draft'"))
+            if "source_message" not in ds_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN source_message VARCHAR"))
+            if "source_file_count" not in ds_column_names:
+                conn.execute(sqlalchemy.text("ALTER TABLE datasource ADD COLUMN source_file_count INTEGER DEFAULT 0"))
 
             # SchemaTable 迁移
             table_columns = conn.execute(sqlalchemy.text("PRAGMA table_info(schematable)")).fetchall()
