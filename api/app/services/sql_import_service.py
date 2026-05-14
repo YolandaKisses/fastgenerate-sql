@@ -174,7 +174,8 @@ def parse_latest_sql_import_batch(session: Session, datasource: DataSource) -> d
     datasource.source_status = SourceStatus.SYNCING
     datasource.source_message = "正在解析 SQL 文件并同步对象"
     datasource.updated_at = now
-    batch.status = SqlImportBatchStatus.UPLOADED
+    batch.status = SqlImportBatchStatus.PROCESSING
+    batch.message = "正在解析 SQL 文件并同步对象"
     batch.updated_at = now
     session.add(datasource)
     session.add(batch)

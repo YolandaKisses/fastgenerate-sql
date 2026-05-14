@@ -1,7 +1,14 @@
-from sqlmodel import Session, SQLModel, create_engine
+import pytest
+from fastapi import HTTPException
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.models.datasource import DataSource
-from app.services.sql_import_service import extract_sql_statements, parse_sql_text
+from app.models.routine import RoutineDefinition
+from app.models.schema import SchemaField, SchemaTable
+from app.models.sql_import import SqlImportBatch, SqlImportBatchStatus, SqlImportFile
+from app.models.view import ViewDefinition
+from app.services import sql_import_service
+from app.services.sql_import_service import ParsedSqlImport, extract_sql_statements, parse_sql_text
 
 
 def test_extract_sql_statements_ignores_oracle_export_headers_and_prompt_lines():
@@ -106,3 +113,209 @@ def test_parse_sql_text_reads_force_view_from_oracle_export_format():
 
     assert len(parsed.views) == 1
     assert parsed.views[0].name == "V_DIM_OBJ_SECURITY_TYPE_DETAIL"
+
+
+def test_parse_latest_sql_import_batch_marks_batch_processing_before_parse(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        datasource = DataSource(
+            name="dd_dm",
+            db_type="oracle",
+            source_mode="sql_file",
+            user_id="u1",
+            host="",
+            port=0,
+            database="DD_DM",
+            username="",
+            password="",
+        )
+        session.add(datasource)
+        session.commit()
+        session.refresh(datasource)
+
+        batch = SqlImportBatch(datasource_id=datasource.id, batch_no=1)
+        session.add(batch)
+        session.commit()
+        session.refresh(batch)
+
+        session.add(
+            SqlImportFile(
+                batch_id=batch.id,
+                file_name="demo.sql",
+                file_content="create table demo(id number);",
+                sort_order=0,
+            )
+        )
+        session.commit()
+
+        def fake_parse_sql_text(content: str, ds: DataSource) -> ParsedSqlImport:
+            with Session(engine) as check_session:
+                stored_batch = check_session.get(SqlImportBatch, batch.id)
+                assert stored_batch is not None
+                assert stored_batch.status == SqlImportBatchStatus.PROCESSING
+            return ParsedSqlImport()
+
+        monkeypatch.setattr(sql_import_service, "parse_sql_text", fake_parse_sql_text)
+
+        result = sql_import_service.parse_latest_sql_import_batch(session, datasource)
+
+    assert result["success"] is True
+
+
+def test_parse_latest_sql_import_batch_marks_batch_failed_on_error(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        datasource = DataSource(
+            name="dd_dm",
+            db_type="oracle",
+            source_mode="sql_file",
+            user_id="u1",
+            host="",
+            port=0,
+            database="DD_DM",
+            username="",
+            password="",
+        )
+        session.add(datasource)
+        session.commit()
+        session.refresh(datasource)
+
+        batch = SqlImportBatch(datasource_id=datasource.id, batch_no=1)
+        session.add(batch)
+        session.commit()
+        session.refresh(batch)
+
+        session.add(
+            SqlImportFile(
+                batch_id=batch.id,
+                file_name="demo.sql",
+                file_content="create table demo(id number);",
+                sort_order=0,
+            )
+        )
+        session.commit()
+
+        def fake_parse_sql_text(content: str, ds: DataSource) -> ParsedSqlImport:
+            raise ValueError("boom")
+
+        monkeypatch.setattr(sql_import_service, "parse_sql_text", fake_parse_sql_text)
+
+        with pytest.raises(HTTPException) as exc_info:
+            sql_import_service.parse_latest_sql_import_batch(session, datasource)
+
+        assert exc_info.value.status_code == 400
+
+        stored_batch = session.exec(select(SqlImportBatch)).one()
+        session.refresh(datasource)
+
+    assert stored_batch.status == SqlImportBatchStatus.FAILED
+    assert stored_batch.message == "boom"
+    assert datasource.source_status == "parse_failed"
+    assert datasource.source_message == "boom"
+
+
+def test_parse_latest_sql_import_batch_rolls_back_metadata_cleanup_on_failure(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        datasource = DataSource(
+            name="dd_dm",
+            db_type="oracle",
+            source_mode="sql_file",
+            user_id="u1",
+            host="",
+            port=0,
+            database="DD_DM",
+            username="",
+            password="",
+        )
+        session.add(datasource)
+        session.commit()
+        session.refresh(datasource)
+
+        table = SchemaTable(
+            datasource_id=datasource.id,
+            name="OLD_TABLE",
+            original_comment="keep me",
+        )
+        session.add(table)
+        session.commit()
+        session.refresh(table)
+        session.add(
+            SchemaField(
+                table_id=table.id,
+                name="old_field",
+                type="VARCHAR2(32)",
+                original_comment="old field",
+            )
+        )
+        session.add(
+            ViewDefinition(
+                datasource_id=datasource.id,
+                owner="DD_DM",
+                name="OLD_VIEW",
+                definition_text="select 1 from dual",
+            )
+        )
+        session.add(
+            RoutineDefinition(
+                datasource_id=datasource.id,
+                owner="DD_DM",
+                name="OLD_ROUTINE",
+                routine_type="FUNCTION",
+                definition_text="return 1;",
+            )
+        )
+        session.commit()
+
+        batch = SqlImportBatch(datasource_id=datasource.id, batch_no=1)
+        session.add(batch)
+        session.commit()
+        session.refresh(batch)
+
+        session.add(
+            SqlImportFile(
+                batch_id=batch.id,
+                file_name="demo.sql",
+                file_content="create table NEW_TABLE(id number);",
+                sort_order=0,
+            )
+        )
+        session.commit()
+
+        def fake_rebuild_view_sql_facts(*args, **kwargs):
+            raise ValueError("lineage rebuild failed")
+
+        monkeypatch.setattr(
+            sql_import_service,
+            "rebuild_view_sql_facts",
+            fake_rebuild_view_sql_facts,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            sql_import_service.parse_latest_sql_import_batch(session, datasource)
+
+        assert exc_info.value.status_code == 400
+
+        tables = session.exec(
+            select(SchemaTable).where(SchemaTable.datasource_id == datasource.id)
+        ).all()
+        fields = session.exec(
+            select(SchemaField).where(SchemaField.table_id == table.id)
+        ).all()
+        views = session.exec(
+            select(ViewDefinition).where(ViewDefinition.datasource_id == datasource.id)
+        ).all()
+        routines = session.exec(
+            select(RoutineDefinition).where(RoutineDefinition.datasource_id == datasource.id)
+        ).all()
+
+    assert [item.name for item in tables] == ["OLD_TABLE"]
+    assert [item.name for item in fields] == ["old_field"]
+    assert [item.name for item in views] == ["OLD_VIEW"]
+    assert [item.name for item in routines] == ["OLD_ROUTINE"]

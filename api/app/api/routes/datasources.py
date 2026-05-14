@@ -42,6 +42,11 @@ async def create_datasource(request: Request, session: Session = Depends(get_ses
 
     payload = await request.json()
     ds_in = DataSourceCreate.model_validate(payload)
+    if ds_in.source_mode == SourceMode.SQL_FILE:
+        raise HTTPException(
+            status_code=400,
+            detail="SQL 文件模式创建必须使用 multipart/form-data 并上传 .sql 文件",
+        )
     return datasource_service.create_datasource(session, ds_in, current_user.user_id)
 
 @router.get("/", response_model=list[DataSourceRead])

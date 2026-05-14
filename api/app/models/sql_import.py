@@ -7,6 +7,7 @@ from sqlmodel import Field, SQLModel
 
 class SqlImportBatchStatus(str, Enum):
     UPLOADED = "uploaded"
+    PROCESSING = "processing"
     PARSED = "parsed"
     FAILED = "failed"
 

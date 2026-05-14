@@ -57,6 +57,38 @@ def test_create_sql_file_datasource_requires_uploaded_files():
     assert response.json()["detail"] == "SQL 文件模式必须上传至少一个 .sql 文件"
 
 
+def test_create_sql_file_datasource_rejects_json_request_without_multipart():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    def override_session():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_session] = override_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/datasources/",
+                json={
+                    "name": "SQL 文件数据源",
+                    "db_type": "oracle",
+                    "source_mode": "sql_file",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "SQL 文件模式创建必须使用 multipart/form-data 并上传 .sql 文件"
+
+
 def test_sql_file_datasource_parse_replaces_existing_metadata():
     engine = create_engine(
         "sqlite://",
